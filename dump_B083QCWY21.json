@@ -1,0 +1,154 @@
+{
+  "asin": "B083QCWY21",
+  "images": [
+    {
+      "marketplaceId": "A1VC38T7YXB528",
+      "images": [
+        {
+          "variant": "MAIN",
+          "link": "https://m.media-amazon.com/images/I/51ptCnD1RLL.jpg",
+          "height": 500,
+          "width": 309
+        },
+        {
+          "variant": "MAIN",
+          "link": "https://m.media-amazon.com/images/I/51ptCnD1RLL._SL75_.jpg",
+          "height": 75,
+          "width": 46
+        },
+        {
+          "variant": "MAIN",
+          "link": "https://m.media-amazon.com/images/I/71nLktTp4SL.jpg",
+          "height": 1004,
+          "width": 620
+        },
+        {
+          "variant": "PT02",
+          "link": "https://m.media-amazon.com/images/I/41zGy0+g-yL.jpg",
+          "height": 281,
+          "width": 500
+        },
+        {
+          "variant": "PT02",
+          "link": "https://m.media-amazon.com/images/I/41zGy0+g-yL._SL75_.jpg",
+          "height": 42,
+          "width": 75
+        },
+        {
+          "variant": "PT02",
+          "link": "https://m.media-amazon.com/images/I/71ZaJvAuAWL.jpg",
+          "height": 1440,
+          "width": 2560
+        },
+        {
+          "variant": "PT03",
+          "link": "https://m.media-amazon.com/images/I/412-KDsGgyL.jpg",
+          "height": 280,
+          "width": 500
+        },
+        {
+          "variant": "PT03",
+          "link": "https://m.media-amazon.com/images/I/412-KDsGgyL._SL75_.jpg",
+          "height": 42,
+          "width": 75
+        },
+        {
+          "variant": "PT03",
+          "link": "https://m.media-amazon.com/images/I/71cS5Z+6nHL.jpg",
+          "height": 1431,
+          "width": 2560
+        },
+        {
+          "variant": "PT04",
+          "link": "https://m.media-amazon.com/images/I/51oXWebP21L.jpg",
+          "height": 281,
+          "width": 500
+        },
+        {
+          "variant": "PT04",
+          "link": "https://m.media-amazon.com/images/I/51oXWebP21L._SL75_.jpg",
+          "height": 42,
+          "width": 75
+        },
+        {
+          "variant": "PT04",
+          "link": "https://m.media-amazon.com/images/I/81vbUQ+Kd3L.jpg",
+          "height": 1438,
+          "width": 2560
+        },
+        {
+          "variant": "PT05",
+          "link": "https://m.media-amazon.com/images/I/51MDaXY1f2L.jpg",
+          "height": 281,
+          "width": 500
+        },
+        {
+          "variant": "PT05",
+          "link": "https://m.media-amazon.com/images/I/51MDaXY1f2L._SL75_.jpg",
+          "height": 42,
+          "width": 75
+        },
+        {
+          "variant": "PT05",
+          "link": "https://m.media-amazon.com/images/I/81BIem8k+9L.jpg",
+          "height": 1437,
+          "width": 2560
+        },
+        {
+          "variant": "PT06",
+          "link": "https://m.media-amazon.com/images/I/51WznV0307L.jpg",
+          "height": 279,
+          "width": 500
+        },
+        {
+          "variant": "PT06",
+          "link": "https://m.media-amazon.com/images/I/51WznV0307L._SL75_.jpg",
+          "height": 42,
+          "width": 75
+        },
+        {
+          "variant": "PT06",
+          "link": "https://m.media-amazon.com/images/I/81ZoMJseC+L.jpg",
+          "height": 1428,
+          "width": 2560
+        },
+        {
+          "variant": "PT07",
+          "link": "https://m.media-amazon.com/images/I/518FuTX1QdL.jpg",
+          "height": 280,
+          "width": 500
+        },
+        {
+          "variant": "PT07",
+          "link": "https://m.media-amazon.com/images/I/518FuTX1QdL._SL75_.jpg",
+          "height": 42,
+          "width": 75
+        },
+        {
+          "variant": "PT07",
+          "link": "https://m.media-amazon.com/images/I/81CrjrzG6YL.jpg",
+          "height": 1436,
+          "width": 2560
+        },
+        {
+          "variant": "PT08",
+          "link": "https://m.media-amazon.com/images/I/51-c--a5AVL.jpg",
+          "height": 281,
+          "width": 500
+        },
+        {
+          "variant": "PT08",
+          "link": "https://m.media-amazon.com/images/I/51-c--a5AVL._SL75_.jpg",
+          "height": 42,
+          "width": 75
+        },
+        {
+          "variant": "PT08",
+          "link": "https://m.media-amazon.com/images/I/81w4VGvsGaL.jpg",
+          "height": 1438,
+          "width": 2560
+        }
+      ]
+    }
+  ]
+}

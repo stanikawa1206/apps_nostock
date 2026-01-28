@@ -1,0 +1,723 @@
+{
+  "asin": "B08LGN5VQZ",
+  "attributes": {
+    "surround_sound_channel_configuration": [
+      {
+        "language_tag": "ja_JP",
+        "value": "2.0",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "item_weight": [
+      {
+        "unit": "grams",
+        "value": 209.0,
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "bullet_point": [
+      {
+        "language_tag": "ja_JP",
+        "value": "国内正規品 新品のみメーカー保証1年",
+        "marketplace_id": "A1VC38T7YXB528"
+      },
+      {
+        "language_tag": "ja_JP",
+        "value": "技適マーク認証済み商品。 周波数帯:2402 MHz − 2480 MHz",
+        "marketplace_id": "A1VC38T7YXB528"
+      },
+      {
+        "language_tag": "ja_JP",
+        "value": "屋内外で安心して使える防水・防塵(IP67)対応を実現",
+        "marketplace_id": "A1VC38T7YXB528"
+      },
+      {
+        "language_tag": "ja_JP",
+        "value": "持ち運びしやすいコンパクトさとJBLの高音質を両立",
+        "marketplace_id": "A1VC38T7YXB528"
+      },
+      {
+        "language_tag": "ja_JP",
+        "value": "ファッショナブルで豊富なカラーバリエーション",
+        "marketplace_id": "A1VC38T7YXB528"
+      },
+      {
+        "language_tag": "ja_JP",
+        "value": "安定したワイヤレス接続で最大5時間再生",
+        "marketplace_id": "A1VC38T7YXB528"
+      },
+      {
+        "language_tag": "ja_JP",
+        "value": "大胆なリニューアルで圧倒的な存在感を放つビジュアル",
+        "marketplace_id": "A1VC38T7YXB528"
+      },
+      {
+        "language_tag": "ja_JP",
+        "value": "付属品:充電用USB ケーブル(USB Type-C)",
+        "marketplace_id": "A1VC38T7YXB528"
+      },
+      {
+        "language_tag": "ja_JP",
+        "value": "原産国:中国",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "hazmat": [
+      {
+        "aspect": "transportation_regulatory_class",
+        "value": "9",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "item_package_quantity": [
+      {
+        "value": 1,
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "item_dimensions": [
+      {
+        "width": {
+          "unit": "centimeters",
+          "value": 4.13
+        },
+        "length": {
+          "unit": "centimeters",
+          "value": 8.75
+        },
+        "height": {
+          "unit": "centimeters",
+          "value": 7.5
+        },
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "unspsc_code": [
+      {
+        "value": "52161512",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "brand": [
+      {
+        "language_tag": "ja_JP",
+        "value": "JBL",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "control_method": [
+      {
+        "value": "touch",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "is_exclusive_product": [
+      {
+        "value": false,
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "externally_assigned_product_identifier": [
+      {
+        "value": "194644072575",
+        "type": "upc",
+        "marketplace_id": "A1VC38T7YXB528"
+      },
+      {
+        "value": "4968929077922",
+        "type": "ean",
+        "marketplace_id": "A1VC38T7YXB528"
+      },
+      {
+        "value": "0194644072575",
+        "type": "ean",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "audio_driver_type": [
+      {
+        "value": "dynamic_driver",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "item_package_dimensions": [
+      {
+        "length": {
+          "unit": "centimeters",
+          "value": 4.7
+        },
+        "width": {
+          "unit": "centimeters",
+          "value": 8.9
+        },
+        "height": {
+          "unit": "centimeters",
+          "value": 12.8
+        },
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "recommended_uses_for_product": [
+      {
+        "language_tag": "ja_JP",
+        "value": "屋外,屋内",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "part_number": [
+      {
+        "value": "JBLGO3BLK",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "number_of_lithium_ion_cells": [
+      {
+        "value": 3,
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "water_resistance_level": [
+      {
+        "value": "waterproof",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "battery": [
+      {
+        "cell_composition": [
+          {
+            "value": "lithium_ion"
+          }
+        ],
+        "weight": [
+          {
+            "unit": "grams",
+            "value": 5.0
+          }
+        ],
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "manufacturer": [
+      {
+        "language_tag": "ja_JP",
+        "value": "ハーマンインターナショナル(Harman International)",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "speaker_connectivity": [
+      {
+        "language_tag": "ja_JP",
+        "value": "Bluetooth",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "lithium_battery": [
+      {
+        "energy_content": [
+          {
+            "unit": "watt_hours",
+            "value": 2.77
+          }
+        ],
+        "packaging": [
+          {
+            "value": "batteries_contained_in_equipment"
+          }
+        ],
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "model_number": [
+      {
+        "value": "JBLGO3BLK",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "supplier_declared_dg_hz_regulation": [
+      {
+        "value": "not_applicable",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "num_batteries": [
+      {
+        "quantity": 1,
+        "type": "lithium_ion",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "display": [
+      {
+        "size": [
+          {
+            "unit": "inches",
+            "value": 7.0
+          }
+        ],
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "item_name": [
+      {
+        "language_tag": "ja_JP",
+        "value": "JBL GO3 Bluetoothスピーカー USB C充電/IP67防塵防水/パッシブラジエーター搭載/ポータブル/2020年モデル ブラック JBLGO3BLK",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "list_price": [
+      {
+        "currency": "JPY",
+        "value": 5400.0,
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "batteries_required": [
+      {
+        "value": true,
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "includes_rechargable_battery": [
+      {
+        "value": true,
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "product_site_launch_date": [
+      {
+        "value": "2020-10-21T04:10:00-00:00",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "audio_output_mode": [
+      {
+        "language_tag": "ja_JP",
+        "value": "ステレオ",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "batteries_included": [
+      {
+        "value": true,
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "connectivity_technology": [
+      {
+        "language_tag": "ja_JP",
+        "value": "Bluetooth",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "is_waterproof": [
+      {
+        "language_tag": "ja_JP",
+        "value": "True",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "included_components": [
+      {
+        "language_tag": "ja_JP",
+        "value": "充電用USB ケーブル(USB Type-C)",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "skip_offer": [
+      {
+        "value": false,
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "model_name": [
+      {
+        "language_tag": "ja_JP",
+        "value": "GO3",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "bluetooth_range": [
+      {
+        "unit": "meters",
+        "value": 10.0,
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "number_of_items": [
+      {
+        "value": 1,
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "speaker_amplification_type": [
+      {
+        "language_tag": "ja_JP",
+        "value": "アクティブ",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "warranty_description": [
+      {
+        "language_tag": "ja_JP",
+        "value": "納品より1年間、国内正規店購入（納品書必須）の新品かつ国内での使用に限り保証",
+        "marketplace_id": "A1VC38T7YXB528"
+      },
+      {
+        "language_tag": "ja_JP",
+        "value": "2次販売品（転売品）中古品は実費にて修理対応",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "color": [
+      {
+        "language_tag": "ja_JP",
+        "value": "ブラック",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "speakers_maximum_output_power": [
+      {
+        "unit": "watts",
+        "value": 3.0,
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "item_package_weight": [
+      {
+        "unit": "kilograms",
+        "value": 0.26,
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "speaker_type": [
+      {
+        "language_tag": "ja_JP",
+        "value": "アウトドア",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "recommended_browse_nodes": [
+      {
+        "value": "85396051",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "special_feature": [
+      {
+        "language_tag": "ja_JP",
+        "value": "Bluetooth",
+        "marketplace_id": "A1VC38T7YXB528"
+      },
+      {
+        "language_tag": "ja_JP",
+        "value": "防塵",
+        "marketplace_id": "A1VC38T7YXB528"
+      },
+      {
+        "language_tag": "ja_JP",
+        "value": "防水",
+        "marketplace_id": "A1VC38T7YXB528"
+      },
+      {
+        "language_tag": "ja_JP",
+        "value": "ポータブル",
+        "marketplace_id": "A1VC38T7YXB528"
+      },
+      {
+        "language_tag": "ja_JP",
+        "value": "ワイヤレス",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "wireless_communication_technology": [
+      {
+        "language_tag": "ja_JP",
+        "value": "Bluetooth",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "power_source_type": [
+      {
+        "language_tag": "ja_JP",
+        "value": "バッテリー",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "street_date": [
+      {
+        "value": "2020-11-13T00:00:01Z",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "speaker_size": [
+      {
+        "unit": "millimeters",
+        "value": 43.0,
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "item_depth_width_height": [
+      {
+        "depth": {
+          "unit": "centimeters",
+          "value": 4.13
+        },
+        "width": {
+          "unit": "centimeters",
+          "value": 8.75
+        },
+        "height": {
+          "unit": "centimeters",
+          "value": 7.5
+        },
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "compatible_devices": [
+      {
+        "language_tag": "ja_JP",
+        "value": "スマートフォン",
+        "marketplace_id": "A1VC38T7YXB528"
+      },
+      {
+        "language_tag": "ja_JP",
+        "value": "タブレット",
+        "marketplace_id": "A1VC38T7YXB528"
+      },
+      {
+        "language_tag": "ja_JP",
+        "value": "ノートパソコン",
+        "marketplace_id": "A1VC38T7YXB528"
+      },
+      {
+        "language_tag": "ja_JP",
+        "value": "デスクトップ",
+        "marketplace_id": "A1VC38T7YXB528"
+      },
+      {
+        "language_tag": "ja_JP",
+        "value": "MP3プレーヤー",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "material": [
+      {
+        "language_tag": "ja_JP",
+        "value": "保護フィルム。",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "mounting_type": [
+      {
+        "language_tag": "ja_JP",
+        "value": "テーブルトップマウント",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "subwoofer": [
+      {
+        "connectivity_technology": [
+          {
+            "value": "wireless"
+          }
+        ],
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "woofer": [
+      {
+        "diameter": [
+          {
+            "unit": "millimeters",
+            "value": 43.0
+          }
+        ],
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "tweeter": [
+      {
+        "diameter": [
+          {
+            "unit": "inches",
+            "value": 1.0
+          }
+        ],
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "unit_count": [
+      {
+        "type": {
+          "language_tag": "ja_JP",
+          "value": "台"
+        },
+        "value": 1.0,
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ]
+  },
+  "classifications": [
+    {
+      "marketplaceId": "A1VC38T7YXB528",
+      "classifications": [
+        {
+          "displayName": "ポータブルスピーカー",
+          "classificationId": "85396051",
+          "parent": {
+            "displayName": "ポータブルスピーカー・ドック",
+            "classificationId": "6905032051",
+            "parent": {
+              "displayName": "ポータブルオーディオ",
+              "classificationId": "3371411",
+              "parent": {
+                "displayName": "カテゴリー別",
+                "classificationId": "3210991",
+                "parent": {
+                  "displayName": "家電＆カメラ",
+                  "classificationId": "3210981"
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "identifiers": [
+    {
+      "marketplaceId": "A1VC38T7YXB528",
+      "identifiers": [
+        {
+          "identifierType": "EAN",
+          "identifier": "0194644072575"
+        },
+        {
+          "identifierType": "EAN",
+          "identifier": "4968929077922"
+        },
+        {
+          "identifierType": "UPC",
+          "identifier": "194644072575"
+        }
+      ]
+    }
+  ],
+  "images": [
+    {
+      "marketplaceId": "A1VC38T7YXB528",
+      "images": [
+        {
+          "variant": "MAIN",
+          "link": "https://m.media-amazon.com/images/I/41eMRQeH-iL.jpg",
+          "height": 500,
+          "width": 500
+        },
+        {
+          "variant": "MAIN",
+          "link": "https://m.media-amazon.com/images/I/41eMRQeH-iL._SL75_.jpg",
+          "height": 75,
+          "width": 75
+        },
+        {
+          "variant": "MAIN",
+          "link": "https://m.media-amazon.com/images/I/71qzKRckO9L.jpg",
+          "height": 1992,
+          "width": 1992
+        },
+        {
+          "variant": "PT06",
+          "link": "https://m.media-amazon.com/images/I/413qYfLlDeL.jpg",
+          "height": 500,
+          "width": 500
+        },
+        {
+          "variant": "PT06",
+          "link": "https://m.media-amazon.com/images/I/413qYfLlDeL._SL75_.jpg",
+          "height": 75,
+          "width": 75
+        },
+        {
+          "variant": "PT06",
+          "link": "https://m.media-amazon.com/images/I/81+YosnmwWL.jpg",
+          "height": 1992,
+          "width": 1992
+        },
+        {
+          "variant": "PT07",
+          "link": "https://m.media-amazon.com/images/I/41810Obe7aL.jpg",
+          "height": 500,
+          "width": 500
+        },
+        {
+          "variant": "PT07",
+          "link": "https://m.media-amazon.com/images/I/41810Obe7aL._SL75_.jpg",
+          "height": 75,
+          "width": 75
+        },
+        {
+          "variant": "PT07",
+          "link": "https://m.media-amazon.com/images/I/81OUw3TUgxL.jpg",
+          "height": 2503,
+          "width": 2503
+        },
+        {
+          "variant": "PT08",
+          "link": "https://m.media-amazon.com/images/I/318LxIgCccL.jpg",
+          "height": 500,
+          "width": 500
+        },
+        {
+          "variant": "PT08",
+          "link": "https://m.media-amazon.com/images/I/318LxIgCccL._SL75_.jpg",
+          "height": 75,
+          "width": 75
+        },
+        {
+          "variant": "PT08",
+          "link": "https://m.media-amazon.com/images/I/71n-ohU17WL.jpg",
+          "height": 1992,
+          "width": 1992
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "marketplaceId": "A1VC38T7YXB528",
+      "relationships": [
+        {
+          "parentAsins": [
+            "B08LLXR4VQ"
+          ],
+          "type": "VARIATION"
+        }
+      ]
+    }
+  ],
+  "summaries": [
+    {
+      "marketplaceId": "A1VC38T7YXB528",
+      "adultProduct": false,
+      "autographed": false,
+      "brand": "JBL",
+      "browseClassification": {
+        "displayName": "ポータブルスピーカー",
+        "classificationId": "85396051"
+      },
+      "color": "ブラック",
+      "itemClassification": "BASE_PRODUCT",
+      "itemName": "JBL GO3 Bluetoothスピーカー USB C充電/IP67防塵防水/パッシブラジエーター搭載/ポータブル/2020年モデル ブラック JBLGO3BLK",
+      "manufacturer": "ハーマンインターナショナル(Harman International)",
+      "memorabilia": false,
+      "modelNumber": "JBLGO3BLK",
+      "packageQuantity": 1,
+      "partNumber": "JBLGO3BLK",
+      "releaseDate": "2020-11-13",
+      "tradeInEligible": false,
+      "websiteDisplayGroup": "musical_instruments_display_on_website",
+      "websiteDisplayGroupName": "Musical Instruments"
+    }
+  ]
+}

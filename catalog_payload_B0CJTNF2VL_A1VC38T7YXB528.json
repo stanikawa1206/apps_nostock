@@ -1,0 +1,589 @@
+{
+  "asin": "B0CJTNF2VL",
+  "attributes": {
+    "connectivity_technology": [
+      {
+        "language_tag": "ja_JP",
+        "value": "USB-A",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "included_components": [
+      {
+        "language_tag": "ja_JP",
+        "value": "USBケーブル",
+        "marketplace_id": "A1VC38T7YXB528"
+      },
+      {
+        "language_tag": "ja_JP",
+        "value": "キーボード本体×1台、USB-A - USB Type-C(TM)ケーブル×1本",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "language": [
+      {
+        "type": "menu",
+        "value": "japanese",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "skip_offer": [
+      {
+        "value": false,
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "switch_type": [
+      {
+        "language_tag": "ja_JP",
+        "value": "リニア",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "model_name": [
+      {
+        "language_tag": "ja_JP",
+        "value": "エレコム メカニカルキーボード Leggero 有線 Nキーロールオーバー対応 TK-MCUKシリーズ",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "bullet_point": [
+      {
+        "language_tag": "ja_JP",
+        "value": "打鍵感に優れたメカニカルスイッチを搭載し、軽やかで心地よい打ち心地を実現した有線のメカニカルキーボード“Leggero(レジェロ)\"シリーズ。",
+        "marketplace_id": "A1VC38T7YXB528"
+      },
+      {
+        "language_tag": "ja_JP",
+        "value": "なめらかでソフトな感触と打鍵音の響きにくさを両立した赤軸(リニア)を搭載し、軽やかで心地よいキータッチを実現します。",
+        "marketplace_id": "A1VC38T7YXB528"
+      },
+      {
+        "language_tag": "ja_JP",
+        "value": "指にフィットするキー形状を採用し、スムーズな指運びと正確な入力をサポートします。",
+        "marketplace_id": "A1VC38T7YXB528"
+      },
+      {
+        "language_tag": "ja_JP",
+        "value": "タイピングに集中できるよう、無駄をそぎ落としたシンプルなキーデザインに仕上げました。",
+        "marketplace_id": "A1VC38T7YXB528"
+      },
+      {
+        "language_tag": "ja_JP",
+        "value": "キー印字は「かな表記」を省き、必要な文字だけを独自のフォントで配置しています。",
+        "marketplace_id": "A1VC38T7YXB528"
+      },
+      {
+        "language_tag": "ja_JP",
+        "value": "デスク周りのインテリアと調和するシンプルな外観でありつつ、なめらかな曲線を活かした優美なデザインを採用しています。",
+        "marketplace_id": "A1VC38T7YXB528"
+      },
+      {
+        "language_tag": "ja_JP",
+        "value": "着脱可能なUSB Type-C(TM)ケーブルを採用しています。作業場所の移動や収納に便利で、万が一断線した場合も簡単にケーブルを交換できます。",
+        "marketplace_id": "A1VC38T7YXB528"
+      },
+      {
+        "language_tag": "ja_JP",
+        "value": "Windows、macOS、ChromeOSの3つに対応しています。独自のファームウェアを搭載することで、OSを自動で識別して、入力モードに切り替えます。",
+        "marketplace_id": "A1VC38T7YXB528"
+      },
+      {
+        "language_tag": "ja_JP",
+        "value": "専用ドライバーなどのインストールは不要で、接続するだけですぐに使用できます。",
+        "marketplace_id": "A1VC38T7YXB528"
+      },
+      {
+        "language_tag": "ja_JP",
+        "value": "数字入力に便利なテンキー付きのフルキーボードで、Excelなどの作業を効率化します。",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "item_package_quantity": [
+      {
+        "value": 1,
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "item_dimensions": [
+      {
+        "width": {
+          "unit": "millimeters",
+          "value": 137.0
+        },
+        "length": {
+          "unit": "millimeters",
+          "value": 446.0
+        },
+        "height": {
+          "unit": "millimeters",
+          "value": 33.0
+        },
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "unspsc_code": [
+      {
+        "value": "43211706",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "brand": [
+      {
+        "language_tag": "ja_JP",
+        "value": "エレコム(ELECOM)",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "total_usb_2_0_ports": [
+      {
+        "value": 0,
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "is_exclusive_product": [
+      {
+        "value": false,
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "package_level": [
+      {
+        "value": "unit",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "number_of_items": [
+      {
+        "value": 1,
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "item_package_dimensions": [
+      {
+        "length": {
+          "unit": "centimeters",
+          "value": 4.0
+        },
+        "width": {
+          "unit": "centimeters",
+          "value": 17.8
+        },
+        "height": {
+          "unit": "centimeters",
+          "value": 46.9
+        },
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "recommended_uses_for_product": [
+      {
+        "language_tag": "ja_JP",
+        "value": "パーソナル",
+        "marketplace_id": "A1VC38T7YXB528"
+      },
+      {
+        "language_tag": "ja_JP",
+        "value": "ビジネス",
+        "marketplace_id": "A1VC38T7YXB528"
+      },
+      {
+        "language_tag": "ja_JP",
+        "value": "ゲーミング",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "size": [
+      {
+        "language_tag": "ja_JP",
+        "value": "フルサイズ",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "warranty_description": [
+      {
+        "language_tag": "ja_JP",
+        "value": "1年間",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "part_number": [
+      {
+        "value": "TK-MC50UKLBK",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "style": [
+      {
+        "language_tag": "ja_JP",
+        "value": "赤軸",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "color": [
+      {
+        "language_tag": "ja_JP",
+        "value": "ブラック",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "configuration": [
+      {
+        "language_tag": "ja_JP",
+        "value": "メカニカル",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "button_quantity": [
+      {
+        "value": 108,
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "pattern": [
+      {
+        "language_tag": "ja_JP",
+        "value": "なし",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "edition": [
+      {
+        "language_tag": "ja_JP",
+        "value": "Leggero",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "item_package_weight": [
+      {
+        "unit": "kilograms",
+        "value": 1.26,
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "customer_package_type": [
+      {
+        "language_tag": "ja_JP",
+        "value": "標準パッケージ",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "manufacturer": [
+      {
+        "language_tag": "ja_JP",
+        "value": "エレコム",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "platform_for_display": [
+      {
+        "language_tag": "ja_JP",
+        "value": "PC",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "externally_assigned_product_identifier": [
+      {
+        "value": "4549550275835",
+        "type": "ean",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "recommended_browse_nodes": [
+      {
+        "value": "2151977051",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "model_number": [
+      {
+        "value": "TK-MC50UKLBK",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "supplier_declared_dg_hz_regulation": [
+      {
+        "value": "not_applicable",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "keyboard_layout": [
+      {
+        "value": "qwerty",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "special_feature": [
+      {
+        "language_tag": "ja_JP",
+        "value": "ホットキーとメディアキー",
+        "marketplace_id": "A1VC38T7YXB528"
+      },
+      {
+        "language_tag": "ja_JP",
+        "value": "軽量",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "item_name": [
+      {
+        "language_tag": "ja_JP",
+        "value": "エレコム メカニカルキーボード Leggero 有線 フルサイズ Nキーロールオーバー対応 5000万回高耐久スイッチ採用 赤軸 ブラック TK-MC50UKLBK",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "keyboard_description": [
+      {
+        "language_tag": "ja_JP",
+        "value": "マルチファンクション",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "list_price": [
+      {
+        "currency": "JPY",
+        "value": 22702.0,
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "batteries_required": [
+      {
+        "value": false,
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "street_date": [
+      {
+        "value": "2023-10-13T00:00:01Z",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "product_site_launch_date": [
+      {
+        "value": "2023-10-02T15:00:01.000Z",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "compatible_devices": [
+      {
+        "language_tag": "ja_JP",
+        "value": "USBポートを装備したWindows OS、macOS、ChromeOS搭載機",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "mechanical_keyboard_switch_model": [
+      {
+        "value": "Cherry MX Red",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "material": [
+      {
+        "language_tag": "ja_JP",
+        "value": "プラスチック",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "batteries_included": [
+      {
+        "value": false,
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ],
+    "hand_orientation": [
+      {
+        "language_tag": "ja_JP",
+        "value": "左右共用",
+        "marketplace_id": "A1VC38T7YXB528"
+      }
+    ]
+  },
+  "classifications": [
+    {
+      "marketplaceId": "A1VC38T7YXB528",
+      "classifications": [
+        {
+          "displayName": "パソコン用キーボード",
+          "classificationId": "2151977051",
+          "parent": {
+            "displayName": "キーボード・マウス・入力機器",
+            "classificationId": "2151970051",
+            "parent": {
+              "displayName": "カテゴリー別",
+              "classificationId": "2127210051",
+              "parent": {
+                "displayName": "パソコン・周辺機器",
+                "classificationId": "2127209051"
+              }
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "identifiers": [
+    {
+      "marketplaceId": "A1VC38T7YXB528",
+      "identifiers": [
+        {
+          "identifierType": "EAN",
+          "identifier": "4549550275835"
+        }
+      ]
+    }
+  ],
+  "images": [
+    {
+      "marketplaceId": "A1VC38T7YXB528",
+      "images": [
+        {
+          "variant": "MAIN",
+          "link": "https://m.media-amazon.com/images/I/41D9X5sjATL.jpg",
+          "height": 500,
+          "width": 500
+        },
+        {
+          "variant": "MAIN",
+          "link": "https://m.media-amazon.com/images/I/41D9X5sjATL._SL75_.jpg",
+          "height": 75,
+          "width": 75
+        },
+        {
+          "variant": "MAIN",
+          "link": "https://m.media-amazon.com/images/I/61++biTrLWL.jpg",
+          "height": 1500,
+          "width": 1500
+        },
+        {
+          "variant": "PT01",
+          "link": "https://m.media-amazon.com/images/I/41A-gvpqodL.jpg",
+          "height": 500,
+          "width": 500
+        },
+        {
+          "variant": "PT01",
+          "link": "https://m.media-amazon.com/images/I/41A-gvpqodL._SL75_.jpg",
+          "height": 75,
+          "width": 75
+        },
+        {
+          "variant": "PT01",
+          "link": "https://m.media-amazon.com/images/I/71Xi0RXX2eL.jpg",
+          "height": 1500,
+          "width": 1500
+        },
+        {
+          "variant": "PT02",
+          "link": "https://m.media-amazon.com/images/I/51LfsiojkNL.jpg",
+          "height": 500,
+          "width": 500
+        },
+        {
+          "variant": "PT02",
+          "link": "https://m.media-amazon.com/images/I/51LfsiojkNL._SL75_.jpg",
+          "height": 75,
+          "width": 75
+        },
+        {
+          "variant": "PT02",
+          "link": "https://m.media-amazon.com/images/I/7189Am5VFzL.jpg",
+          "height": 1500,
+          "width": 1500
+        },
+        {
+          "variant": "PT03",
+          "link": "https://m.media-amazon.com/images/I/413LTEd+EPL.jpg",
+          "height": 500,
+          "width": 500
+        },
+        {
+          "variant": "PT03",
+          "link": "https://m.media-amazon.com/images/I/413LTEd+EPL._SL75_.jpg",
+          "height": 75,
+          "width": 75
+        },
+        {
+          "variant": "PT03",
+          "link": "https://m.media-amazon.com/images/I/61X5-rCvJwL.jpg",
+          "height": 1500,
+          "width": 1500
+        },
+        {
+          "variant": "PT04",
+          "link": "https://m.media-amazon.com/images/I/41L7ltEtmeL.jpg",
+          "height": 500,
+          "width": 500
+        },
+        {
+          "variant": "PT04",
+          "link": "https://m.media-amazon.com/images/I/41L7ltEtmeL._SL75_.jpg",
+          "height": 75,
+          "width": 75
+        },
+        {
+          "variant": "PT04",
+          "link": "https://m.media-amazon.com/images/I/61xCF7k5CSL.jpg",
+          "height": 1500,
+          "width": 1500
+        },
+        {
+          "variant": "PT05",
+          "link": "https://m.media-amazon.com/images/I/414ocyo--UL.jpg",
+          "height": 500,
+          "width": 500
+        },
+        {
+          "variant": "PT05",
+          "link": "https://m.media-amazon.com/images/I/414ocyo--UL._SL75_.jpg",
+          "height": 75,
+          "width": 75
+        },
+        {
+          "variant": "PT05",
+          "link": "https://m.media-amazon.com/images/I/617TJ6xVSYL.jpg",
+          "height": 1500,
+          "width": 1500
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "marketplaceId": "A1VC38T7YXB528",
+      "relationships": [
+        {
+          "parentAsins": [
+            "B0CL6S7YPG"
+          ],
+          "type": "VARIATION"
+        }
+      ]
+    }
+  ],
+  "summaries": [
+    {
+      "marketplaceId": "A1VC38T7YXB528",
+      "adultProduct": false,
+      "autographed": false,
+      "brand": "エレコム(ELECOM)",
+      "browseClassification": {
+        "displayName": "パソコン用キーボード",
+        "classificationId": "2151977051"
+      },
+      "color": "ブラック",
+      "itemClassification": "BASE_PRODUCT",
+      "itemName": "エレコム メカニカルキーボード Leggero 有線 フルサイズ Nキーロールオーバー対応 5000万回高耐久スイッチ採用 赤軸 ブラック TK-MC50UKLBK",
+      "manufacturer": "エレコム",
+      "memorabilia": false,
+      "modelNumber": "TK-MC50UKLBK",
+      "packageQuantity": 1,
+      "partNumber": "TK-MC50UKLBK",
+      "releaseDate": "2023-10-13",
+      "size": "フルサイズ",
+      "style": "赤軸",
+      "tradeInEligible": false,
+      "websiteDisplayGroup": "ce_display_on_website",
+      "websiteDisplayGroupName": "CE"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+# selenium / chrome profile
+selenium_profile/
+
+# python
+__pycache__/
+*.pyc
+
+# env
+.env
+
+logs/
+
+.history/
