@@ -139,10 +139,11 @@ def run_fetch_active_ebay(payload: dict):
             print(f"[PAGE] {page_idx+1} {url}", flush=True)
 
             driver.get(url)
-            WebDriverWait(driver, 15).until(
+            WebDriverWait(driver, 5).until(
                 EC.presence_of_element_located((By.TAG_NAME, "body"))
             )
 
+            print("[DEBUG] before get items")
             if vendor_name == "メルカリshops":
                 items = scroll_until_stagnant_collect_shops(driver, pause=0.6)
             else:

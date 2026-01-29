@@ -412,6 +412,14 @@ def get_sql_server_connection():
         f"PWD={os.getenv('DB_PASS')};"
         "TrustServerCertificate=yes;"
     )
+
+    print("DB_DRIVER =", os.getenv("DB_DRIVER"))
+    print("DB_SERVER =", os.getenv("DB_SERVER"))
+    print("DB_NAME   =", os.getenv("DB_NAME"))
+    print("DB_USER   =", os.getenv("DB_USER"))
+    print("DB_PASS   =", os.getenv("DB_PASS"))
+
+    
     return pyodbc.connect(conn_str)
 
 from selenium import webdriver
