@@ -241,10 +241,18 @@ def scroll_until_stagnant_collect_shops(driver, pause: float, stagnant_times: in
     """
     last_len = 0
     stagnant = 0
-    while True:
+    MAX_SCROLL = 20 
+
+    start = time.time()
+    TIMEOUT_SEC = 30  # まず30秒でOK（あとで調整）
+
+    for i in range(MAX_SCROLL):
         time.sleep(pause + random.uniform(0.15, 0.35))
         items = extract_shops_listings(driver)
         cur_len = len(items)
+
+        if time.time() - start > TIMEOUT_SEC:
+            break  # ←ここが修正②のキモ
 
         if cur_len <= last_len:
             stagnant += 1
