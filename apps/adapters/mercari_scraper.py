@@ -198,40 +198,64 @@ def extract_shops_listings(driver):
     """
     （shops用）
     一覧から (product_id, title, price) を抽出。
-    - product_id: /shops/product/<ID> の末尾IDを抽出
-    - title     : a要素の aria-label もしくはテキストを使う（先頭の価格行は除去）
-    - price     : 「¥ 123,456」などから数値だけを抜いて int 化（取れないときは None）
+    VPS / headless でも「必ず戻る」安全版。
     """
+    import time, re
+    from selenium.common.exceptions import StaleElementReferenceException, WebDriverException
+    from selenium.webdriver.common.by import By
+
     items, seen = [], set()
-    anchors = driver.find_elements(By.CSS_SELECTOR, "a[href*='/shops/product/']")
-    for a in anchors:
-        href = a.get_attribute("href") or ""
-        m = re.search(r"/shops/product/([A-Za-z0-9]+)", href)
-        if not m:
+
+    MAX_ANCHORS = 200          # ← 件数上限（まずは200で十分）
+    TIMEOUT_SEC = 10           # ← この関数単体の最大許容時間
+
+    start = time.time()
+
+    try:
+        anchors = driver.find_elements(By.CSS_SELECTOR, "a[href*='/shops/product/']")
+    except WebDriverException:
+        return items
+
+    for a in anchors[:MAX_ANCHORS]:
+
+        # ② 時間上限
+        if time.time() - start > TIMEOUT_SEC:
+            break
+
+        try:
+            href = a.get_attribute("href") or ""
+            m = re.search(r"/shops/product/([A-Za-z0-9]+)", href)
+            if not m:
+                continue
+            pid = m.group(1)
+            if pid in seen:
+                continue
+            seen.add(pid)
+
+            # タイトル
+            raw_title = (a.get_attribute("aria-label") or a.text or "").strip()
+            clean_title = re.sub(r"^¥\s?[\d,]+\s*", "", raw_title).strip()
+
+            # 価格
+            price = None
+            price_elem = a.find_elements(
+                By.CSS_SELECTOR,
+                "[data-testid*='price'], span[class*='number']",
+            )
+            if price_elem:
+                txt = (price_elem[0].get_attribute("innerText") or "").strip()
+                txt = re.sub(r"[^\d]", "", txt)
+                if txt.isdigit():
+                    price = int(txt)
+
+            items.append((pid, clean_title, price))
+
+        except (StaleElementReferenceException, WebDriverException):
+            # DOMが変わった / 参照切れ → 無視して次
             continue
-        pid = m.group(1)
-        if pid in seen:
-            continue
-        seen.add(pid)
 
-        # タイトル（先頭に価格が載ってくるケースがあるので除去）
-        raw_title = (a.get_attribute("aria-label") or a.text or "").strip()
-        clean_title = re.sub(r"^¥\s?[\d,]+\s*", "", raw_title).strip()
-
-        # 価格
-        price = None
-        price_elem = a.find_elements(
-            By.CSS_SELECTOR,
-            "[data-testid*='price'], span[class*='number']",
-        )
-        if price_elem:
-            txt = (price_elem[0].get_attribute("innerText") or price_elem[0].text or "").strip()
-            txt = re.sub(r"[^\d]", "", txt)
-            if txt.isdigit():
-                price = int(txt)
-
-        items.append((pid, clean_title, price))
     return items
+
 
 
 def scroll_until_stagnant_collect_shops(driver, pause: float, stagnant_times: int = 3):
