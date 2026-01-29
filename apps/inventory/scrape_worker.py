@@ -4,6 +4,11 @@
 import os
 import json
 import time
+import sys
+
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.insert(0, BASE_DIR)
+
 import traceback
 from datetime import datetime
 from urllib.parse import urlencode, urlparse, parse_qsl, urlunparse
