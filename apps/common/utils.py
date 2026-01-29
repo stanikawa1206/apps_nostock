@@ -404,21 +404,14 @@ Japanese description:
 # DB接続（SQL Server）
 # =========================
 def get_sql_server_connection():
-    driver = os.getenv("DB_DRIVER")
-    server = os.getenv("DB_SERVER")
-    database = os.getenv("DB_DATABASE")
-    user = os.getenv("DB_USER")
-    password = os.getenv("DB_PASSWORD")
-
     conn_str = (
-        f"DRIVER={{{driver}}};"
-        f"SERVER={server};"
-        f"DATABASE={database};"
-        f"UID={user};"
-        f"PWD={password};"
+        f"DRIVER={os.getenv('DB_DRIVER')};"
+        f"SERVER={os.getenv('DB_SERVER')};"
+        f"DATABASE={os.getenv('DB_NAME')};"
+        f"UID={os.getenv('DB_USER')};"
+        f"PWD={os.getenv('DB_PASS')};"
         "TrustServerCertificate=yes;"
     )
-
     return pyodbc.connect(conn_str)
 
 from selenium import webdriver

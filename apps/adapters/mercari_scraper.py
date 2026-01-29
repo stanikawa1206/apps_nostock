@@ -37,6 +37,7 @@ import random
 import tempfile
 import shutil
 import os
+import platform
 from pathlib import Path
 
 from selenium import webdriver
@@ -54,41 +55,57 @@ def build_driver(
     headless: bool = True,
 ) -> webdriver.Chrome:
     """
-    メルカリ一覧ページ取得用のシンプルな Chrome WebDriver を生成する。
+    メルカリ一覧ページ取得用の Chrome WebDriver（Windows / Linux 両対応）
 
-    - use_profile=True かつ user_data_dir 指定時:
-        そのプロファイルを利用
-    - それ以外:
-        一時ディレクトリを user-data-dir として作成（safe_quit で削除）
+    - Windows / ローカル: 通常Chrome
+    - Linux(VPS): headless + no-sandbox 対応
     """
     opts = Options()
 
+    # =========================
+    # OS 判定
+    # =========================
+    is_linux = platform.system() == "Linux"
+
     if headless:
-        # new headless モード
         opts.add_argument("--headless=new")
         opts.add_argument("--disable-gpu")
+
+    # ★ VPS(Linux) 必須
+    if is_linux:
+        opts.add_argument("--no-sandbox")
+        opts.add_argument("--disable-dev-shm-usage")
+
     opts.add_argument("--window-size=1400,1000")
 
-    # 言語・通知など最低限だけ
+    # 言語・通知など最低限
     opts.add_argument("--lang=ja-JP,ja")
     opts.add_argument("--disable-notifications")
 
+    # =========================
+    # user-data-dir
+    # =========================
     tmp_dir: Path | None = None
+
     if use_profile and user_data_dir:
-        # 既存プロファイルを使うパターン
         opts.add_argument(f"--user-data-dir={user_data_dir}")
     else:
-        # 一時プロファイル
-        tmp_dir = Path(tempfile.mkdtemp(prefix=f"chrome-sess-{os.getpid()}-"))
+        tmp_dir = Path(
+            tempfile.mkdtemp(prefix=f"chrome-sess-{os.getpid()}-")
+        )
         opts.add_argument(f"--user-data-dir={tmp_dir}")
 
+    # =========================
+    # Service
+    # =========================
+    # ★ パス指定しない → 環境に任せる
     service = Service()
+
     driver = webdriver.Chrome(service=service, options=opts)
 
-    # 一時ディレクトリのパスを driver にぶら下げておく（safe_quit 用）
+    # safe_quit 用
     driver._tmp_user_data_dir = str(tmp_dir) if tmp_dir else None
     return driver
-
 
 def safe_quit(driver) -> None:
     """
