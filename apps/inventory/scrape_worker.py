@@ -318,6 +318,7 @@ def handle_price_change_side_effects(
 # vendor_item UPSERT
 # =========================
 def upsert_vendor_items(conn, rows: List[Dict[str, Any]], now) -> int:
+    print(f"[UPSERT] begin rows={len(rows)} now={now}", flush=True)
     if not rows:
         return 0
 
@@ -403,7 +404,9 @@ WHEN NOT MATCHED THEN
             )
             cur.execute(sql, params)
 
+        print("[UPSERT] executed all MERGE, committing...", flush=True)
         conn.commit()
+        print("[UPSERT] commit done", flush=True)
         return len(rows)
     finally:
         try:
@@ -416,6 +419,8 @@ WHEN NOT MATCHED THEN
 # fetch_active_ebay scrape 本体（1 preset 分）
 # ============================================================
 def run_fetch_active_ebay(payload: dict):
+    print(f"[ENV] host={socket.gethostname()} pid={os.getpid()} SIMULATE={SIMULATE}", flush=True)
+
     preset = payload["preset"]
     vendor_name = payload["vendor_name"]
     mode = payload["mode"]
@@ -478,7 +483,9 @@ def run_fetch_active_ebay(payload: dict):
 
             # 旧価格をまとめて取得
             item_ids = [iid for iid, _, _ in items]
+            print(f"[F] old_price select start n={len(item_ids)}", flush=True)
             old_price_map = get_vendor_item_prices_batch(conn, vendor_name, item_ids)
+            print(f"[F] old_price select done got={len(old_price_map)}", flush=True)
 
             # 価格変更の副作用
             cnt_skip = cnt_changed = cnt_unchanged = 0
@@ -516,7 +523,10 @@ def run_fetch_active_ebay(payload: dict):
             } for iid, title, price in items]
 
             now = now_jst()
+            print(f"[G] upsert start rows={len(rows)} now={now}", flush=True)
             upsert_vendor_items(conn, rows, now)
+            print("[G] upsert done", flush=True)
+
             print(
                 f"[PAGE {page_idx+1} RESULT] upserted={len(rows)} "
                 f"skip={cnt_skip} changed={cnt_changed} unchanged={cnt_unchanged}",

@@ -202,6 +202,7 @@ def scroll_until_stagnant_collect_items(driver, pause: float, stagnant_times: in
     last_len = 0
     stagnant = 0
     while True:
+        print("[E] scrolling...", flush=True)
         time.sleep(pause + random.uniform(0.15, 0.35))
         items = extract_item_listings(driver)
         cur_len = len(items)
@@ -321,9 +322,13 @@ def scroll_until_stagnant_collect_shops(driver, pause: float, stagnant_times: in
     items = []  # ★必ず初期化しておく（最終 return 用）
 
     for i in range(MAX_SCROLL):
+        print("[E] scrolling...", flush=True)
         time.sleep(pause + random.uniform(0.15, 0.35))
 
         items = extract_shops_listings(driver)
+        print(f"[E] extracted items={len(items)}", flush=True)
+
+
         cur_len = len(items)
 
         # --- 進捗判定 ---
