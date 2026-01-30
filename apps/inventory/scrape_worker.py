@@ -64,8 +64,7 @@ WORKER_NAME = get_worker_name()
 
 JST = timezone(timedelta(hours=9))
 def now_jst():
-    return datetime.now(JST)
-
+    return datetime.now(JST).replace(tzinfo=None)
 
 
 POLL_SEC = 2
