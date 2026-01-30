@@ -167,12 +167,12 @@ def main():
             # ------------------------------------------------
             # ① 事前 sold チェック: fetch_sold_ebay.py を 1 回実行
             # ------------------------------------------------
-            pre_sold_script = APPS_INV / "fetch_sold_ebay.py"
-            print("\n=== ⭐ 事前 sold チェック: fetch_sold_ebay.py を実行します ===")
-            pre_start = datetime.now()
-            pre_code, pre_stdout = run_script(pre_sold_script)
-            pre_end = datetime.now()
-            send_script_mail(pre_sold_script, pre_start, pre_end, pre_code, round_no=set_no, conn=conn)
+            #pre_sold_script = APPS_INV / "fetch_sold_ebay.py"
+            #print("\n=== ⭐ 事前 sold チェック: fetch_sold_ebay.py を実行します ===")
+            #pre_start = datetime.now()
+            #pre_code, pre_stdout = run_script(pre_sold_script)
+            #pre_end = datetime.now()
+            #send_script_mail(pre_sold_script, pre_start, pre_end, pre_code, round_no=set_no, conn=conn)
 
             #time.sleep(WAIT_SECONDS)
 

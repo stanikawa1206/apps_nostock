@@ -428,8 +428,13 @@ def run_fetch_active_ebay(payload: dict):
     driver = None
 
     try:
+        print("[A] before get_sql_server_connection()", flush=True)
         conn = get_sql_server_connection()
+        print("[A] after get_sql_server_connection()", flush=True)
+
+        print("[B] before build_driver()", flush=True)
         driver = build_driver()
+        print("[B] after build_driver()", flush=True)
 
         base_url = make_search_url(
             vendor_name=vendor_name,
@@ -449,16 +454,23 @@ def run_fetch_active_ebay(payload: dict):
             url = page_url(base_url, page_idx)
             print(f"[PAGE] {page_idx+1} {url}", flush=True)
 
+            print(f"[C] driver.get start page={page_idx+1}", flush=True)
             driver.get(url)
+            print(f"[C] driver.get done page={page_idx+1}", flush=True)
+
+            print("[D] wait body start", flush=True)
             WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+            print("[D] wait body done", flush=True)
 
             if has_no_results_banner(driver):
                 break
 
+            print("[E] scroll start", flush=True)
             if vendor_name == "メルカリshops":
                 items = scroll_until_stagnant_collect_shops(driver, pause=0.6)   # [(id,title,price),...]
             else:
                 items = scroll_until_stagnant_collect_items(driver, pause=0.6)
+            print(f"[E] scroll done items={len(items)}", flush=True)
 
             print(f"[PAGE {page_idx+1}] items={len(items)} sample={items[:2]}", flush=True)
             if not items:
@@ -563,8 +575,11 @@ def main():
             cur = conn.cursor()
             now = now_jst()
             cur.execute(SQL_PICK_JOBS, WORKER_NAME, now)
+            print("[PICK] executed SQL_PICK_JOBS", flush=True)
             jobs = cur.fetchall()
+            print(f"[PICK] fetched jobs={len(jobs)}", flush=True)
             conn.commit()
+            print("[PICK] committed", flush=True)
         except Exception:
             conn.rollback()
             traceback.print_exc()
@@ -585,7 +600,13 @@ def main():
             print(f"[JOB START] id={job_id} kind={job_kind}", flush=True)
             cur2 = None
             try:
+
+                print(f"[JOB START] id={job_id} kind={job_kind}", flush=True)
+                print(f"[JOB PAYLOAD RAW] len={len(job_payload)}", flush=True)
+
                 payload = json.loads(job_payload)
+
+                print(f"[JOB PAYLOAD PARSED] keys={list(payload.keys())}", flush=True)
 
                 if job_kind == "fetch_active_ebay":
                     run_fetch_active_ebay(payload)
