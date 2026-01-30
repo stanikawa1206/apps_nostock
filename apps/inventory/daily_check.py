@@ -38,7 +38,7 @@ APPS_PUB = BASE_DIR / "apps" / "publish"
 APPS_DEL = BASE_DIR / "apps" / "publish" / "delete_ebay_daily.py"
 
 SCRIPTS = [
-    APPS_INV / "fetch_active_ebay.py",
+    #APPS_INV / "fetch_active_ebay.py",
     APPS_INV / "fetch_sold_ebay.py",
     APPS_INV / "check_remaining_ebay.py",
 ]
@@ -167,14 +167,14 @@ def main():
             # ------------------------------------------------
             # ① 事前 sold チェック: fetch_sold_ebay.py を 1 回実行
             # ------------------------------------------------
-            pre_sold_script = APPS_INV / "fetch_sold_ebay.py"
-            print("\n=== ⭐ 事前 sold チェック: fetch_sold_ebay.py を実行します ===")
-            pre_start = datetime.now()
-            pre_code, pre_stdout = run_script(pre_sold_script)
-            pre_end = datetime.now()
-            send_script_mail(pre_sold_script, pre_start, pre_end, pre_code, round_no=set_no, conn=conn)
+            #pre_sold_script = APPS_INV / "fetch_sold_ebay.py"
+            #print("\n=== ⭐ 事前 sold チェック: fetch_sold_ebay.py を実行します ===")
+            #pre_start = datetime.now()
+            #pre_code, pre_stdout = run_script(pre_sold_script)
+            #pre_end = datetime.now()
+            #send_script_mail(pre_sold_script, pre_start, pre_end, pre_code, round_no=set_no, conn=conn)
 
-            time.sleep(WAIT_SECONDS)
+            #time.sleep(WAIT_SECONDS)
 
             # ------------------------------------------------
             # ② フル在庫チェック（1回転）: active → sold → remaining

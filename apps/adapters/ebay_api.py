@@ -89,14 +89,14 @@ DB_DRIVER = _require_env("DB_DRIVER")
 DB_SERVER = _require_env("DB_SERVER")
 DB_NAME = _require_env("DB_NAME")
 DB_USER = _require_env("DB_USER")
-DB_PASSWORD = _require_env("DB_PASSWORD")
+DB_PASS = _require_env("DB_PASS")
 
 _ODBC = urllib.parse.quote_plus(
     f"DRIVER={DB_DRIVER};"
     f"SERVER={DB_SERVER};"
     f"DATABASE={DB_NAME};"
     f"UID={DB_USER};"
-    f"PWD={DB_PASSWORD};"
+    f"PWD={DB_PASS};"
 )
 ENGINE = create_engine(f"mssql+pyodbc:///?odbc_connect={_ODBC}", pool_pre_ping=True)
 

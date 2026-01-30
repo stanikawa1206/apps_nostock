@@ -103,6 +103,9 @@ def build_driver(
 
     driver = webdriver.Chrome(service=service, options=opts)
 
+    driver.set_page_load_timeout(20)
+    driver.set_script_timeout(20)
+
     # safe_quit 用
     driver._tmp_user_data_dir = str(tmp_dir) if tmp_dir else None
     return driver
@@ -126,40 +129,69 @@ def extract_item_listings(driver):
     """
     （personal用）
     一覧から (item_id, title, price) を抽出。
-    - item_id: /item/m12345678 の m～ を抽出
-    - title  : 先頭の「¥ 123,456」を除去してクリーンにする
-    - price  : 数字のみを抜いて int 化（取れないときは None）
+    VPS / headless でも「必ず戻る」安全版。
     """
+    import time, re
+    from selenium.common.exceptions import (
+        StaleElementReferenceException,
+        WebDriverException,
+        TimeoutException,
+    )
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+
     items, seen = [], set()
-    anchors = driver.find_elements(By.CSS_SELECTOR, "a[href*='/item/m']")
-    for a in anchors:
-        href = a.get_attribute("href") or ""
-        m = re.search(r"/item/(m\d{8,})", href)
-        if not m:
-            continue
-        iid = m.group(1)
-        if iid in seen:
-            continue
-        seen.add(iid)
 
-        raw_title = (a.get_attribute("aria-label") or a.text or "").strip()
-        # 先頭の価格（¥ 123,456）を除去
-        clean_title = re.sub(r"^¥\s?[\d,]+\s*", "", raw_title).strip()
+    MAX_ANCHORS = 200
+    TIMEOUT_SEC = 10
 
-        # 価格（取得できない場合は None）
-        price = None
-        price_elem = a.find_elements(
-            By.CSS_SELECTOR,
-            "span[class*='number'], [data-testid*='price']",
+    start = time.time()
+
+    # ★ 最大の修正ポイント（shops と同じ）
+    try:
+        anchors = WebDriverWait(driver, 10).until(
+            lambda d: d.find_elements(By.CSS_SELECTOR, "a[href*='/item/m']")
         )
-        if price_elem:
-            txt = (price_elem[0].get_attribute("innerText") or price_elem[0].text or "").strip()
-            txt = re.sub(r"[^\d]", "", txt)
-            if txt.isdigit():
-                price = int(txt)
+    except (TimeoutException, WebDriverException):
+        return items
 
-        items.append((iid, clean_title, price))
+    for a in anchors[:MAX_ANCHORS]:
+
+        # 時間上限
+        if time.time() - start > TIMEOUT_SEC:
+            break
+
+        try:
+            href = a.get_attribute("href") or ""
+            m = re.search(r"/item/(m\d{8,})", href)
+            if not m:
+                continue
+            iid = m.group(1)
+            if iid in seen:
+                continue
+            seen.add(iid)
+
+            raw_title = (a.get_attribute("aria-label") or a.text or "").strip()
+            clean_title = re.sub(r"^¥\s?[\d,]+\s*", "", raw_title).strip()
+
+            price = None
+            price_elem = a.find_elements(
+                By.CSS_SELECTOR,
+                "span[class*='number'], [data-testid*='price']",
+            )
+            if price_elem:
+                txt = (price_elem[0].get_attribute("innerText") or "").strip()
+                txt = re.sub(r"[^\d]", "", txt)
+                if txt.isdigit():
+                    price = int(txt)
+
+            items.append((iid, clean_title, price))
+
+        except (StaleElementReferenceException, WebDriverException):
+            continue
+
     return items
+
 
 
 def scroll_until_stagnant_collect_items(driver, pause: float, stagnant_times: int = 3):
@@ -201,24 +233,33 @@ def extract_shops_listings(driver):
     VPS / headless でも「必ず戻る」安全版。
     """
     import time, re
-    from selenium.common.exceptions import StaleElementReferenceException, WebDriverException
+    from selenium.common.exceptions import (
+        StaleElementReferenceException,
+        WebDriverException,
+        TimeoutException,
+    )
     from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
 
     items, seen = [], set()
 
-    MAX_ANCHORS = 200          # ← 件数上限（まずは200で十分）
-    TIMEOUT_SEC = 10           # ← この関数単体の最大許容時間
+    MAX_ANCHORS = 200
+    TIMEOUT_SEC = 10
 
     start = time.time()
 
+    # ★ ここが最大の修正ポイント
     try:
-        anchors = driver.find_elements(By.CSS_SELECTOR, "a[href*='/shops/product/']")
-    except WebDriverException:
+        anchors = WebDriverWait(driver, 10).until(
+            lambda d: d.find_elements(
+                By.CSS_SELECTOR, "a[href*='/shops/product/']"
+            )
+        )
+    except (TimeoutException, WebDriverException):
         return items
 
     for a in anchors[:MAX_ANCHORS]:
 
-        # ② 時間上限
         if time.time() - start > TIMEOUT_SEC:
             break
 
@@ -232,11 +273,9 @@ def extract_shops_listings(driver):
                 continue
             seen.add(pid)
 
-            # タイトル
             raw_title = (a.get_attribute("aria-label") or a.text or "").strip()
             clean_title = re.sub(r"^¥\s?[\d,]+\s*", "", raw_title).strip()
 
-            # 価格
             price = None
             price_elem = a.find_elements(
                 By.CSS_SELECTOR,
@@ -251,7 +290,6 @@ def extract_shops_listings(driver):
             items.append((pid, clean_title, price))
 
         except (StaleElementReferenceException, WebDriverException):
-            # DOMが変わった / 参照切れ → 無視して次
             continue
 
     return items
