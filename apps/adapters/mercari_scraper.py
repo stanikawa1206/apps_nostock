@@ -230,7 +230,9 @@ def extract_shops_listings(driver):
     """
     （shops用）
     一覧から (product_id, title, price) を抽出。
-    VPS / headless でも「必ず戻る」安全版。
+    ・進捗がある限りは処理を続ける
+    ・無進捗が一定時間続いたら打ち切る
+    ・必ず list を返す（None は返さない）
     """
     import time, re
     from selenium.common.exceptions import (
@@ -244,11 +246,10 @@ def extract_shops_listings(driver):
     items, seen = [], set()
 
     MAX_ANCHORS = 200
-    TIMEOUT_SEC = 10
+    TIMEOUT_SEC = 10  # 無進捗タイムアウト
 
-    start = time.time()
+    last_progress = time.time()   # ★最後に items が増えた時刻
 
-    # ★ ここが最大の修正ポイント
     try:
         anchors = WebDriverWait(driver, 10).until(
             lambda d: d.find_elements(
@@ -259,18 +260,16 @@ def extract_shops_listings(driver):
         return items
 
     for a in anchors[:MAX_ANCHORS]:
-
-        if time.time() - start > TIMEOUT_SEC:
-            break
-
         try:
             href = a.get_attribute("href") or ""
             m = re.search(r"/shops/product/([A-Za-z0-9]+)", href)
             if not m:
                 continue
+
             pid = m.group(1)
             if pid in seen:
                 continue
+
             seen.add(pid)
 
             raw_title = (a.get_attribute("aria-label") or a.text or "").strip()
@@ -289,45 +288,65 @@ def extract_shops_listings(driver):
 
             items.append((pid, clean_title, price))
 
+            # ★進捗があったので時刻を更新
+            last_progress = time.time()
+
         except (StaleElementReferenceException, WebDriverException):
-            continue
+            pass
+
+        # ★無進捗 TIMEOUT 判定
+        if time.time() - last_progress > TIMEOUT_SEC:
+            break
 
     return items
-
 
 
 def scroll_until_stagnant_collect_shops(driver, pause: float, stagnant_times: int = 3):
     """
     （shops用）
-    伸びなくなるまでスクロールして (product_id, title, price) を“1ページ分取り切って”返す。
+    伸びなくなるまでスクロールして (product_id, title, price) を
+    「1ページ分取り切って」返す。
+
+    ・進捗（件数増加）がある限りは待つ
+    ・一定時間「無進捗」が続いたら打ち切る
+    ・必ず list を返す（None は返さない）
     """
     last_len = 0
     stagnant = 0
-    MAX_SCROLL = 20 
+    MAX_SCROLL = 20
 
-    start = time.time()
-    TIMEOUT_SEC = 30  # まず30秒でOK（あとで調整）
+    TIMEOUT_SEC = 30
+    last_progress = time.time()   # ★最後に進捗があった時刻
+
+    items = []  # ★必ず初期化しておく（最終 return 用）
 
     for i in range(MAX_SCROLL):
-        if time.time() - start > TIMEOUT_SEC:
-            break  # ←ここが修正②のキモ
-
         time.sleep(pause + random.uniform(0.15, 0.35))
+
         items = extract_shops_listings(driver)
         cur_len = len(items)
 
-        if cur_len == last_len:
-            stagnant += 1
-        else:
+        # --- 進捗判定 ---
+        if cur_len > last_len:
+            last_progress = time.time()   # ★進捗あり
             stagnant = 0
+            last_len = cur_len
+        else:
+            stagnant += 1
 
+        # --- 伸びが止まった判定 ---
         if stagnant >= stagnant_times:
-            return items  # 伸びが止まった＝1ページ取り切った
+            return items
 
-        last_len = cur_len
+        # --- 無進捗 TIMEOUT 判定 ---
+        if time.time() - last_progress > TIMEOUT_SEC:
+            return items
+
         try:
             driver.execute_script(
-                "window.scrollBy(0, Math.floor(window.innerHeight*0.9));"
+                "window.scrollBy(0, Math.floor(window.innerHeight * 0.9));"
             )
         except Exception:
             return items
+
+    return items  # ★MAX_SCROLL 到達時も必ず返す
