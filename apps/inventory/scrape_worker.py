@@ -16,11 +16,17 @@ from datetime import datetime, timezone, timedelta
 # Path setup
 # =========================
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-sys.path.insert(0, BASE_DIR)
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
 
 # =========================
 # Third-party
 # =========================
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from selenium.common.exceptions import TimeoutException, WebDriverException
+
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -34,7 +40,6 @@ from apps.common.utils import (
 )
 from apps.adapters.mercari_search import make_search_url
 from apps.adapters.mercari_scraper import (
-    build_driver,
     safe_quit,
     scroll_until_stagnant_collect_items,
     scroll_until_stagnant_collect_shops,
@@ -48,12 +53,9 @@ from apps.adapters.ebay_api import (
 # 設定
 # =========================
 def get_worker_name() -> str:
-    # 明示指定があれば最優先
     name = os.environ.get("WORKER_NAME")
     if name:
         return name
-
-    # なければ OS の hostname
     try:
         return socket.gethostname()
     except Exception:
@@ -61,14 +63,12 @@ def get_worker_name() -> str:
 
 WORKER_NAME = get_worker_name()
 
-
 JST = timezone(timedelta(hours=9))
 def now_jst():
     return datetime.now(JST).replace(tzinfo=None)
 
-
 POLL_SEC = 2
-N = 1   # ★ 今回は 1 job ずつ
+N = 1   # ★ 1 job ずつ
 
 NO_RESULT_TEXT = "出品された商品がありません"
 SIMULATE = (os.environ.get("SIMULATE") == "1")  # 本番は未設定/0
@@ -76,6 +76,13 @@ SIMULATE = (os.environ.get("SIMULATE") == "1")  # 本番は未設定/0
 # --- debug toggles (temporary) ---
 EXIT_AFTER_PRICE_UPDATE = False
 EXIT_AFTER_DELETE = False
+
+# ★ 対策(8): renderer timeout のページリトライ回数
+MAX_RENDER_RETRY_PER_PAGE = 2
+
+# ★ 対策(10): swap警告を出すか（Linuxのみ）
+CHECK_SWAP = (os.environ.get("CHECK_SWAP", "1") == "1")
+
 
 # =========================
 # SQL
@@ -115,6 +122,7 @@ SET
     error_message = ?
 WHERE job_id = ?;
 """
+
 
 # =========================
 # util
@@ -160,6 +168,70 @@ def has_no_results_banner(driver) -> bool:
         return NO_RESULT_TEXT in txt
     except Exception:
         return False
+
+
+# =========================
+# 対策(10): swapチェック（Linuxのみ）
+# =========================
+def warn_if_no_swap():
+    if os.name != "posix":
+        return
+    try:
+        # /proc/swaps が空なら swapなし
+        with open("/proc/swaps", "r", encoding="utf-8") as f:
+            lines = f.read().strip().splitlines()
+        if len(lines) <= 1:
+            print("[WARN] swap が有効ではありません（VPSでrenderer timeoutが出やすい）", flush=True)
+        else:
+            print("[INFO] swap 有効", flush=True)
+    except Exception:
+        # 読めない環境もあるので黙る
+        pass
+
+
+# =========================
+# 対策(5)(6): 安定driverビルド
+# =========================
+def build_driver_stable() -> webdriver.Chrome:
+    """
+    - (5) disable-gpu / no-sandbox / disable-dev-shm-usage
+    - (6) 画像の“表示ロード”をブロック（画像URL取得は想定上OK）
+    """
+    options = Options()
+
+    # headlessは環境依存があるので、ここでは固定しない（必要なら環境変数で）
+    # ENV: HEADLESS=1 なら headless=new
+    if os.environ.get("HEADLESS", "1") == "1":
+        options.add_argument("--headless=new")
+
+    # (5) renderer安定化の定番
+    options.add_argument("--disable-gpu")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+
+    # 余計な機能は抑える（保険ではなく“負荷削減”）
+    options.add_argument("--disable-notifications")
+    options.add_argument("--disable-background-networking")
+    options.add_argument("--disable-background-timer-throttling")
+    options.add_argument("--disable-renderer-backgrounding")
+
+    # (6) 画像の“表示ロード”を止める（URL文字列はDOMに残る前提）
+    prefs = {
+        "profile.managed_default_content_settings.images": 2,
+    }
+    options.add_experimental_option("prefs", prefs)
+
+    # VPSはメモリがシビアなので、ウィンドウサイズを固定（再レイアウト抑制）
+    options.add_argument("--window-size=1280,800")
+
+    # chromedriver は PATH 上にある想定
+    driver = webdriver.Chrome(options=options)
+
+    # ページロード待ちが無限化しないように（renderer死んだら例外で落とす）
+    driver.set_page_load_timeout(45)
+    driver.set_script_timeout(45)
+    return driver
+
 
 # =========================
 # listings / vendor_item helpers
@@ -236,6 +308,7 @@ def get_vendor_item_prices_batch(conn, vendor_name: str, vendor_item_ids: List[s
         out.setdefault(v, None)
     return out
 
+
 # =========================
 # eBay side-effects
 # =========================
@@ -262,7 +335,6 @@ def handle_price_change_side_effects(
 ):
     ebay_item_id, account, listing_vendor = get_listing_core_by_sku(conn, sku, vendor_name=vendor_name)
 
-    # eBay出品がないSKUは副作用なし
     if not ebay_item_id:
         return
 
@@ -313,6 +385,7 @@ def handle_price_change_side_effects(
 
     if EXIT_AFTER_PRICE_UPDATE:
         sys.exit(0)
+
 
 # =========================
 # vendor_item UPSERT
@@ -383,7 +456,7 @@ WHEN NOT MATCHED THEN
 
                 # UPDATE
                 r["status"], r["preset"], r["title_jp"], r["vendor_page"],
-                now,  # ← ★ last_checked_at
+                now,  # last_checked_at
 
                 # prev_price 判定
                 r["price"], r["price"], r["price"],
@@ -398,8 +471,8 @@ WHEN NOT MATCHED THEN
                 r["vendor_name"], r["vendor_item_id"],
                 r["status"], r["preset"], r["title_jp"],
                 r["vendor_page"],
-                now,  # ← ★ created_at
-                now,  # ← ★ last_checked_at
+                now,  # created_at
+                now,  # last_checked_at
                 r["price"],
             )
             cur.execute(sql, params)
@@ -413,6 +486,18 @@ WHEN NOT MATCHED THEN
             cur.close()
         except Exception:
             pass
+
+
+# =========================
+# 対策(8): renderer timeout判定
+# =========================
+def is_renderer_timeout(e: BaseException) -> bool:
+    s = str(e).lower()
+    return (
+        "timed out receiving message from renderer" in s
+        or "disconnected: unable to receive message from renderer" in s
+        or "renderer" in s and "timeout" in s
+    )
 
 
 # ============================================================
@@ -433,13 +518,10 @@ def run_fetch_active_ebay(payload: dict):
     driver = None
 
     try:
-        print("[A] before get_sql_server_connection()", flush=True)
         conn = get_sql_server_connection()
-        print("[A] after get_sql_server_connection()", flush=True)
 
-        print("[B] before build_driver()", flush=True)
-        driver = build_driver()
-        print("[B] after build_driver()", flush=True)
+        # (7) 1 job = 1 driver
+        driver = build_driver_stable()
 
         base_url = make_search_url(
             vendor_name=vendor_name,
@@ -455,24 +537,41 @@ def run_fetch_active_ebay(payload: dict):
         page_idx = 0
         while True:
             page_start = time.time()
-
             url = page_url(base_url, page_idx)
             print(f"[PAGE] {page_idx+1} {url}", flush=True)
 
-            print(f"[C] driver.get start page={page_idx+1}", flush=True)
-            driver.get(url)
-            print(f"[C] driver.get done page={page_idx+1}", flush=True)
+            # (8) renderer timeout は即捨てて作り直してリトライ
+            for attempt in range(1, MAX_RENDER_RETRY_PER_PAGE + 1):
+                try:
+                    print(f"[C] driver.get start page={page_idx+1} attempt={attempt}", flush=True)
+                    driver.get(url)
+                    print(f"[C] driver.get done page={page_idx+1}", flush=True)
 
-            print("[D] wait body start", flush=True)
-            WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-            print("[D] wait body done", flush=True)
+                    print("[D] wait body start", flush=True)
+                    WebDriverWait(driver, 15).until(
+                        EC.presence_of_element_located((By.TAG_NAME, "body"))
+                    )
+                    print("[D] wait body done", flush=True)
+                    break  # 成功
+                except (TimeoutException, WebDriverException) as e:
+                    if is_renderer_timeout(e):
+                        print(f"[RENDERER TIMEOUT] page={page_idx+1} attempt={attempt} -> rebuild driver", flush=True)
+                        try:
+                            safe_quit(driver)
+                        except Exception:
+                            pass
+                        driver = build_driver_stable()
+                        if attempt >= MAX_RENDER_RETRY_PER_PAGE:
+                            raise
+                        continue
+                    raise  # renderer以外はそのまま上へ
 
             if has_no_results_banner(driver):
                 break
 
             print("[E] scroll start", flush=True)
             if vendor_name == "メルカリshops":
-                items = scroll_until_stagnant_collect_shops(driver, pause=0.6)   # [(id,title,price),...]
+                items = scroll_until_stagnant_collect_shops(driver, pause=0.6)
             else:
                 items = scroll_until_stagnant_collect_items(driver, pause=0.6)
             print(f"[E] scroll done items={len(items)}", flush=True)
@@ -481,13 +580,11 @@ def run_fetch_active_ebay(payload: dict):
             if not items:
                 break
 
-            # 旧価格をまとめて取得
             item_ids = [iid for iid, _, _ in items]
             print(f"[F] old_price select start n={len(item_ids)}", flush=True)
             old_price_map = get_vendor_item_prices_batch(conn, vendor_name, item_ids)
             print(f"[F] old_price select done got={len(old_price_map)}", flush=True)
 
-            # 価格変更の副作用
             cnt_skip = cnt_changed = cnt_unchanged = 0
             for iid, title, price in items:
                 if price is None:
@@ -511,7 +608,6 @@ def run_fetch_active_ebay(payload: dict):
                 else:
                     cnt_unchanged += 1
 
-            # UPSERT
             rows = [{
                 "vendor_name": vendor_name,
                 "vendor_item_id": iid,
@@ -533,12 +629,8 @@ def run_fetch_active_ebay(payload: dict):
                 flush=True
             )
 
-            # 次ページへ
             elapsed = time.time() - page_start
             TARGET = 35.0
-
-            # NOTE: ここで 35秒に揃える設計なら、末尾の time.sleep(1) は通常不要。
-            #       “最低でも+1秒”を意図してるならこのままでOK。
             if elapsed < TARGET:
                 time.sleep((TARGET - elapsed) + random.uniform(0.0, 3.0))
 
@@ -547,11 +639,18 @@ def run_fetch_active_ebay(payload: dict):
 
     finally:
         if driver:
-            safe_quit(driver)
+            try:
+                safe_quit(driver)
+            except Exception:
+                pass
         if conn:
-            conn.close()
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     print(f"[SCRAPE END] preset={preset}", flush=True)
+
 
 # =========================
 # Worker main loop
@@ -559,11 +658,14 @@ def run_fetch_active_ebay(payload: dict):
 def main():
     print(f"[WORKER START] {WORKER_NAME}", flush=True)
 
+    if CHECK_SWAP:
+        warn_if_no_swap()
+
     # job pick用の接続（長寿命）
     conn = get_sql_server_connection()
     conn.autocommit = False
 
-    # INITは “別接続で1回だけ” が安全（長寿命connを汚さない）
+    # INITは “別接続で1回だけ”
     if os.environ.get("DO_INIT_CLEAR_STATUS", "1") == "1":
         init_conn = None
         try:
@@ -585,11 +687,9 @@ def main():
             cur = conn.cursor()
             now = now_jst()
             cur.execute(SQL_PICK_JOBS, WORKER_NAME, now)
-            print("[PICK] executed SQL_PICK_JOBS", flush=True)
             jobs = cur.fetchall()
-            print(f"[PICK] fetched jobs={len(jobs)}", flush=True)
             conn.commit()
-            print("[PICK] committed", flush=True)
+            print(f"[PICK] fetched jobs={len(jobs)} committed", flush=True)
         except Exception:
             conn.rollback()
             traceback.print_exc()
@@ -608,14 +708,10 @@ def main():
 
         for job_id, job_kind, job_payload in jobs:
             print(f"[JOB START] id={job_id} kind={job_kind}", flush=True)
+
             cur2 = None
             try:
-
-                print(f"[JOB START] id={job_id} kind={job_kind}", flush=True)
-                print(f"[JOB PAYLOAD RAW] len={len(job_payload)}", flush=True)
-
                 payload = json.loads(job_payload)
-
                 print(f"[JOB PAYLOAD PARSED] keys={list(payload.keys())}", flush=True)
 
                 if job_kind == "fetch_active_ebay":
@@ -650,6 +746,7 @@ def main():
 
             if os.environ.get("ONESHOT") == "1":
                 return
+
 
 if __name__ == "__main__":
     main()
