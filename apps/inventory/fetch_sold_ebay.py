@@ -139,7 +139,7 @@ def is_account_excluded_for_sku(conn, vendor_item_id: str) -> bool:
         cur.execute("""
             SELECT a.is_excluded
             FROM trx.listings l
-            JOIN mst_ebay_accounts a
+            JOIN mst.ebay_accounts a
               ON l.account = a.account
             WHERE l.vendor_item_id = ?
         """, (vendor_item_id,))

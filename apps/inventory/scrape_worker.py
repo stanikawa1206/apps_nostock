@@ -326,7 +326,7 @@ def is_account_excluded(conn, account: str) -> bool:
     try:
         cur.execute("""
             SELECT is_excluded
-            FROM mst_ebay_accounts
+            FROM mst.ebay_accounts
             WHERE account = ?
         """, (account,))
         row = cur.fetchone()

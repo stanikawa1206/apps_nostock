@@ -83,7 +83,7 @@ def is_account_excluded_for_sku(conn, vendor_item_id: str) -> bool:
         cur.execute("""
             SELECT a.is_excluded
             FROM trx.listings l
-            JOIN mst_ebay_accounts a
+            JOIN mst.ebay_accounts a
               ON l.account = a.account
             WHERE l.vendor_item_id = ?
         """, (vendor_item_id,))
@@ -383,18 +383,20 @@ def run(urls: Optional[List[str]] = None):
             if status in {"削除", "オークション", "売り切れ", "公開停止"}:
                 if ebay_item_id:
                     try:
-                        res = delete_item_from_ebay(account, ebay_item_id)
-                        ok = bool(res.get("success")) or res.get("note") in {"already_deleted", "already_ended"}
-                        if ok:
-                            delete_ebay_listing_record(conn, ebay_item_id, account, vendor_name)
-                            deleted += 1
+                        if not is_account_excluded_for_sku(conn, sku):
+                            res = delete_item_from_ebay(account, ebay_item_id)
+                            ok = bool(res.get("success")) or res.get("note") in {"already_deleted", "already_ended"}
+                            if ok:
+                                delete_ebay_listing_record(conn, ebay_item_id, account, vendor_name)
+                                deleted += 1
+                            else:
+                                print(f"[WARN] eBay削除失敗 listingId={ebay_item_id} resp={res}")
                         else:
-                            print(f"[WARN] eBay削除失敗 listingId={ebay_item_id} resp={res}")
+                            print(f"[SKIP DELETE] excluded account sku={sku}")
                     except Exception as e:
                         print(f"[ERR] eBay削除処理で例外 listingId={ebay_item_id}: {e}")
                 else:
                     print(f"[WARN] eBay削除不可（listing_idなし） sku={sku}")
-
 
             total += 1
             human_sleep(*RATE["detail"])
