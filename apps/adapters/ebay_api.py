@@ -2,6 +2,9 @@
 """
 listings/ebay_api.py — 概要と関数一覧（公開関数のみ）
 ============================================================
+NOTE:
+- DBアクセスは pyodbc に統一する
+- SQLAlchemy は使用しない（ODBC18 の SSL 検証差異で事故るため）
 
 ■ 概要（端的に）
 - eBay への「出品・更新・公開」「価格改定」「出品終了（削除）」をまとめた実用関数群。
@@ -56,9 +59,11 @@ from typing import Dict, Any, Optional, Tuple
 from urllib.parse import urlencode, urlparse, parse_qsl, urlunparse, quote
 import xml.etree.ElementTree as ET
 
+# 自前ユーティリティ（pyodbc統一）
+from apps.common.utils import get_sql_server_connection
+
 from dotenv import load_dotenv
 load_dotenv()
-
 
 # --- Third-party ---
 import requests
@@ -80,26 +85,6 @@ TOKEN_URL = _require_env("EBAY_TOKEN_URL")
 TRADING_ENDPOINT = _require_env("EBAY_TRADING_ENDPOINT")
 TRADING_COMPAT_LEVEL = os.getenv("EBAY_TRADING_COMPAT_LEVEL", "1149")
 
-# DB（mst.ebay_accounts.refresh_token を読む）
-# ここは SQLAlchemy でも pyodbc でもOK。簡便に SQLAlchemy を利用。
-from sqlalchemy import create_engine, text
-import urllib.parse
-
-DB_DRIVER = _require_env("DB_DRIVER")
-DB_SERVER = _require_env("DB_SERVER")
-DB_NAME = _require_env("DB_NAME")
-DB_USER = _require_env("DB_USER")
-DB_PASS = _require_env("DB_PASS")
-
-_ODBC = urllib.parse.quote_plus(
-    f"DRIVER={DB_DRIVER};"
-    f"SERVER={DB_SERVER};"
-    f"DATABASE={DB_NAME};"
-    f"UID={DB_USER};"
-    f"PWD={DB_PASS};"
-)
-ENGINE = create_engine(f"mssql+pyodbc:///?odbc_connect={_ODBC}", pool_pre_ping=True)
-
 # ====== 例外 ======
 class ApiHandledError(Exception):
     def __init__(self, code: int, message: str):
@@ -114,12 +99,17 @@ class ListingLimitError(Exception):
 _TOKEN_CACHE: dict[str, dict] = {}
 
 def _get_refresh_token(account: str) -> Optional[str]:
-    with ENGINE.begin() as conn:
-        row = conn.execute(
-            text("SELECT refresh_token FROM mst.ebay_accounts WHERE LTRIM(RTRIM(account)) = LTRIM(RTRIM(:acc))"),
-            {"acc": account}
-        ).fetchone()
-    return row[0] if row else None
+    conn = get_sql_server_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT refresh_token FROM mst.ebay_accounts WHERE LTRIM(RTRIM(account)) = LTRIM(RTRIM(?))",
+            account
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
 
 def _fetch_access_token_from_refresh(refresh_token: str) -> Tuple[Optional[str], Optional[int]]:
     data = {

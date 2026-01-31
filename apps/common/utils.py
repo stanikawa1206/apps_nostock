@@ -1,6 +1,14 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+# =========================
+# DB接続（SQL Server）
+# 方針:
+# - pyodbc に統一
+# - SQLAlchemy / Engine は使用しない
+#   （ODBC18 の SSL 検証差異で VPS で事故るため）
+# =========================
+
 """
 共通ユーティリティ集（Keepa以外）
 
@@ -13,14 +21,12 @@ import os
 import re
 import time
 import unicodedata
-import urllib.parse
 import smtplib
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional, Tuple, Dict, List
 
 import requests
 import pyodbc
-from sqlalchemy import create_engine
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from email.mime.text import MIMEText
@@ -440,35 +446,6 @@ def build_driver(
     driver.set_page_load_timeout(30)
     driver.set_script_timeout(30)
     return driver
-
-
-# SQLAlchemy Engine（文字列生成だけなので import 時点で落ちにくい）
-def _build_odbc_params() -> str:
-    driver = os.getenv("SQLSERVER_DRIVER", "ODBC Driver 17 for SQL Server")
-    server = os.getenv("SQLSERVER_SERVER", "192.168.100.105,1433")
-    database = os.getenv("SQLSERVER_DATABASE", "nostock")
-    uid = os.getenv("SQLSERVER_UID", "")
-    pwd = os.getenv("SQLSERVER_PWD", "")
-
-    s = (
-        f"DRIVER={{{driver}}};"
-        f"SERVER={server};"
-        f"DATABASE={database};"
-        f"UID={uid};"
-        f"PWD={pwd};"
-    )
-    return urllib.parse.quote_plus(s)
-
-# engine は遅延生成（import時にDB/driver周りで落ちるのを防ぐ）
-_engine = None
-
-def get_engine():
-    global _engine
-    if _engine is None:
-        _engine = create_engine(f"mssql+pyodbc:///?odbc_connect={_build_odbc_params()}")
-    return _engine
-
-
 
 DEEPL_ENDPOINT = "https://api-free.deepl.com/v2/translate"
 
