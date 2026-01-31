@@ -3,7 +3,14 @@
 壊れた job で残った eBay 出品を 1 件だけ削除する
 """
 
+import os
+import sys
+
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.insert(0, BASE_DIR)
+
 from apps.adapters.ebay_api import delete_item_from_ebay
+
 
 # =========================
 # 手動指定（ここだけ触る）
