@@ -321,6 +321,20 @@ def _is_transient_inventory_error(resp: Dict[str, Any]) -> bool:
     codes = {int(e.get("errorId")) for e in errors if isinstance(e, dict) and str(e.get("errorId","")).isdigit()}
     return (25001 in codes) or ("internal error" in msgs)
 
+def is_account_excluded(conn, account: str) -> bool:
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT is_excluded
+            FROM mst_ebay_accounts
+            WHERE account = ?
+        """, (account,))
+        row = cur.fetchone()
+        return bool(row and row[0])
+    finally:
+        cur.close()
+
+
 def handle_price_change_side_effects(
     conn,
     sku: str,
@@ -337,7 +351,11 @@ def handle_price_change_side_effects(
 
     if not ebay_item_id:
         return
-
+    
+    if is_account_excluded(conn, account):
+        print(f"[SKIP] account excluded: {account} sku={sku}", flush=True)
+        return
+    
     usd = compute_start_price_usd(new_price_jpy, mode, low_usd_target, high_usd_target)
 
     if usd is None:

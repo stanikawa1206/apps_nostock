@@ -133,6 +133,22 @@ def upsert_vendor_item(conn: pyodbc.Connection, vendor_name: str, item_id: str, 
             """, (now_str, page_num, "売り切れ", preset, vendor_name, item_id))
     conn.commit()
 
+def is_account_excluded_for_sku(conn, vendor_item_id: str) -> bool:
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT a.is_excluded
+            FROM trx.listings l
+            JOIN mst_ebay_accounts a
+              ON l.account = a.account
+            WHERE l.vendor_item_id = ?
+        """, (vendor_item_id,))
+        rows = cur.fetchall()
+        # 紐づく listing が1つでも excluded なら true
+        return any(r[0] for r in rows)
+    finally:
+        cur.close()
+
 # ===== メイン =====
 def main():
     conn = None
@@ -225,8 +241,10 @@ def main():
 
                 for iid, title in new_items:
                     upsert_vendor_item(conn, vendor_name, iid, title, page_idx + 1, preset_name, now_str)
-                    handle_listing_delete(conn, iid, simulate=SIMULATE_DELETE)
-
+                    if not is_account_excluded_for_sku(conn, iid):
+                        handle_listing_delete(conn, iid, simulate=SIMULATE_DELETE)
+                    else:
+                        print(f"[SKIP DELETE] excluded account for sku={iid}", flush=True)
                 page_idx += 1
                 time.sleep(1)
 

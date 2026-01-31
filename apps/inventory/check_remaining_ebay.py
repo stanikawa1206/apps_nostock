@@ -77,6 +77,22 @@ def human_sleep(a: float, b: float):
     time.sleep(random.uniform(a, b))
 
 # ===================== DB I/O =====================
+def is_account_excluded_for_sku(conn, vendor_item_id: str) -> bool:
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT a.is_excluded
+            FROM trx.listings l
+            JOIN mst_ebay_accounts a
+              ON l.account = a.account
+            WHERE l.vendor_item_id = ?
+        """, (vendor_item_id,))
+        rows = cur.fetchall()
+        return any(r[0] for r in rows)
+    finally:
+        cur.close()
+
+
 def load_mercari_targets_from_db(limit: Optional[int] = None) -> List[Dict[str, str]]:
     """
     listings と vendor_item を (vendor_name, vendor_item_id) でJOIN。
@@ -304,18 +320,20 @@ def run(urls: Optional[List[str]] = None):
                             print(f"[PRICE] {sku}: {old_price} -> {price_jpy} JPY / 目標外レンジ ⇒ eBay出品を終了")
                             if ebay_item_id:
                                 try:
-                                    res = delete_item_from_ebay(account, ebay_item_id)
-                                    ok = bool(res.get("success")) or res.get("note") in {"already_deleted", "already_ended"}
-                                    if ok:
-                                        delete_ebay_listing_record(conn, ebay_item_id, account, vendor_name)
-                                        deleted += 1
+                                    if not is_account_excluded_for_sku(conn, sku):
+                                        res = delete_item_from_ebay(account, ebay_item_id)
+                                        ok = bool(res.get("success")) or res.get("note") in {"already_deleted", "already_ended"}
+                                        if ok:
+                                            delete_ebay_listing_record(conn, ebay_item_id, account, vendor_name)
+                                            deleted += 1
+                                        else:
+                                            print(f"[WARN] eBay削除失敗 listingId={ebay_item_id} resp={res}")
                                     else:
-                                        print(f"[WARN] eBay削除失敗 listingId={ebay_item_id} resp={res}")
+                                        print(f"[SKIP DELETE] excluded account sku={sku}")
                                 except Exception as e:
                                     print(f"[ERR] eBay削除処理で例外 listingId={ebay_item_id}: {e}")
                             else:
                                 print(f"[WARN] eBay削除不可（listing_idなし） sku={sku}")
-
                             update_vendor_item_price_and_status(conn, vendor_name, sku, price_jpy, status)
                             updated += 1
                         else:
@@ -324,7 +342,10 @@ def run(urls: Optional[List[str]] = None):
                             for wait in [0, 2, 6, 15]:
                                 if wait: 
                                     time.sleep(wait)
-                                resp = update_ebay_price(account, ebay_item_id, new_price_usd, sku=sku, debug=True)
+                                if not is_account_excluded_for_sku(conn, sku):
+                                    resp = update_ebay_price(account, ebay_item_id, new_price_usd, sku=sku, debug=True)
+                                else:
+                                    print(f"[SKIP UPDATE] excluded account sku={sku}")
                                 if resp and resp.get("success"):
                                     did_update_ebay = True
                                     break
@@ -373,6 +394,7 @@ def run(urls: Optional[List[str]] = None):
                         print(f"[ERR] eBay削除処理で例外 listingId={ebay_item_id}: {e}")
                 else:
                     print(f"[WARN] eBay削除不可（listing_idなし） sku={sku}")
+
 
             total += 1
             human_sleep(*RATE["detail"])
@@ -430,13 +452,16 @@ def run(urls: Optional[List[str]] = None):
                                 print(f"[PRICE-RETRY] {sku}: {old_price} -> {price_jpy} JPY / 目標外レンジ ⇒ eBay出品を終了")
                                 if ebay_item_id:
                                     try:
-                                        res = delete_item_from_ebay(account, ebay_item_id)
-                                        ok = bool(res.get("success")) or res.get("note") in {"already_deleted", "already_ended"}
-                                        if ok:
-                                            delete_ebay_listing_record(conn, ebay_item_id, account, vendor_name)
-                                            deleted += 1
+                                        if not is_account_excluded_for_sku(conn, sku):
+                                            res = delete_item_from_ebay(account, ebay_item_id)
+                                            ok = bool(res.get("success")) or res.get("note") in {"already_deleted", "already_ended"}
+                                            if ok:
+                                                delete_ebay_listing_record(conn, ebay_item_id, account, vendor_name)
+                                                deleted += 1
+                                            else:
+                                                print(f"[WARN] (RETRY) eBay削除失敗 listingId={ebay_item_id} resp={res}")
                                         else:
-                                            print(f"[WARN] (RETRY) eBay削除失敗 listingId={ebay_item_id} resp={res}")
+                                                print(f"[SKIP DELETE] excluded account sku={sku}")
                                     except Exception as e:
                                         print(f"[ERR] (RETRY) eBay削除処理で例外 listingId={ebay_item_id}: {e}")
                                 else:
@@ -450,7 +475,10 @@ def run(urls: Optional[List[str]] = None):
                                 for wait in [0, 2, 6, 15]:
                                     if wait:
                                         time.sleep(wait)
-                                    resp = update_ebay_price(account, ebay_item_id, new_price_usd, sku=sku, debug=True)
+                                    if not is_account_excluded_for_sku(conn, sku):
+                                        resp = update_ebay_price(account, ebay_item_id, new_price_usd, sku=sku, debug=True)
+                                    else:
+                                        print(f"[SKIP UPDATE] excluded account sku={sku}")
                                     if resp and resp.get("success"):
                                         did_update_ebay = True
                                         break
@@ -487,15 +515,18 @@ def run(urls: Optional[List[str]] = None):
                 if status in {"削除", "オークション", "売り切れ", "公開停止"}:
                     if ebay_item_id:
                         try:
-                            res = delete_item_from_ebay(account, ebay_item_id)
-                            ok = bool(res.get("success")) or res.get("note") in {"already_deleted", "already_ended"}
-                            if ok:
-                                delete_ebay_listing_record(conn, ebay_item_id, account, vendor_name)
-                                deleted += 1
+                            if not is_account_excluded_for_sku(conn, sku):
+                                res = delete_item_from_ebay(account, ebay_item_id)
+                                ok = bool(res.get("success")) or res.get("note") in {"already_deleted", "already_ended"}
+                                if ok:
+                                    delete_ebay_listing_record(conn, ebay_item_id, account, vendor_name)
+                                    deleted += 1
+                                else:
+                                    print(f"[WARN] eBay削除失敗 listingId={ebay_item_id} resp={res}")
                             else:
-                                print(f"[WARN] (RETRY) eBay削除失敗 listingId={ebay_item_id} resp={res}")
+                                print(f"[SKIP DELETE] excluded account sku={sku}")
                         except Exception as e:
-                            print(f"[ERR] (RETRY) eBay削除処理で例外 listingId={ebay_item_id}: {e}")
+                            print(f"[ERR] eBay削除処理で例外 listingId={ebay_item_id}: {e}")
                     else:
                         print(f"[WARN] (RETRY) eBay削除不可（listing_idなし） sku={sku}")
 
