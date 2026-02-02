@@ -79,7 +79,8 @@ def build_driver(
     opts.add_argument("--window-size=1400,1000")
 
     # 言語・通知など最低限
-    opts.add_argument("--lang=ja-JP,ja")
+    opts.add_argument("--lang=ja-JP")
+    opts.add_experimental_option('prefs', {'intl.accept_languages': 'ja,ja-JP'})
     opts.add_argument("--disable-notifications")
 
     # =========================
