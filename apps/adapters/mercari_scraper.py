@@ -136,8 +136,15 @@ def setup_mercari_currency_jp(driver) -> None:
         # 404ページ等は軽量なので負荷が低い
         driver.get("https://jp.mercari.com/404")
         
-        driver.add_cookie({'name': 'currency_code', 'value': 'JPY', 'domain': '.mercari.com', 'path': '/'})
-        driver.add_cookie({'name': 'shipped_to_country_code', 'value': 'JP', 'domain': '.mercari.com', 'path': '/'})
+        cookies = [
+            {'name': 'currency_code', 'value': 'JPY'},
+            {'name': 'shipped_to_country_code', 'value': 'JP'},
+            {'name': 'p_jp_location', 'value': 'JP'},
+            {'name': 'p_jp_currency', 'value': 'JPY'},
+        ]
+        for c in cookies:
+            c.update({'domain': '.mercari.com', 'path': '/'})
+            driver.add_cookie(c)
     except Exception:
         pass
 
