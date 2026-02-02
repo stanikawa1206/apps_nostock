@@ -110,7 +110,9 @@ SQL_MARK_DONE = """
 UPDATE trx.scrape_job
 SET
     status = 'done',
-    finished_at = ?
+    finished_at = ?,
+    fetched_pages = ?,
+    fetched_items = ?
 WHERE job_id = ?;
 """
 
@@ -521,7 +523,7 @@ def is_renderer_timeout(e: BaseException) -> bool:
 # ============================================================
 # fetch_active_ebay scrape 本体（1 preset 分）
 # ============================================================
-def run_fetch_active_ebay(payload: dict):
+def run_fetch_active_ebay(payload: dict) -> Tuple[int, int]:
     print(f"[ENV] host={socket.gethostname()} pid={os.getpid()} SIMULATE={SIMULATE}", flush=True)
 
     preset = payload["preset"]
@@ -534,6 +536,7 @@ def run_fetch_active_ebay(payload: dict):
 
     conn = None
     driver = None
+    total_items = 0
 
     try:
         conn = get_sql_server_connection()
@@ -594,6 +597,7 @@ def run_fetch_active_ebay(payload: dict):
                 items = scroll_until_stagnant_collect_items(driver, pause=0.6)
             print(f"[E] scroll done items={len(items)}", flush=True)
 
+            total_items += len(items)
             print(f"[PAGE {page_idx+1}] items={len(items)} sample={items[:2]}", flush=True)
             if not items:
                 break
@@ -668,6 +672,7 @@ def run_fetch_active_ebay(payload: dict):
                 pass
 
     print(f"[SCRAPE END] preset={preset}", flush=True)
+    return page_idx, total_items
 
 
 # =========================
@@ -733,13 +738,13 @@ def main():
                 print(f"[JOB PAYLOAD PARSED] keys={list(payload.keys())}", flush=True)
 
                 if job_kind == "fetch_active_ebay":
-                    run_fetch_active_ebay(payload)
+                    fetched_pages, fetched_items = run_fetch_active_ebay(payload)
                 else:
                     raise ValueError(f"unknown job_kind: {job_kind}")
 
                 cur2 = conn.cursor()
                 now = now_jst()
-                cur2.execute(SQL_MARK_DONE, now, job_id)
+                cur2.execute(SQL_MARK_DONE, now, fetched_pages, fetched_items, job_id)
                 conn.commit()
                 print(f"[JOB DONE] id={job_id}", flush=True)
 
