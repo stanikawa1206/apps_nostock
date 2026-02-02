@@ -217,9 +217,15 @@ def build_driver_stable() -> webdriver.Chrome:
     options.add_argument("--disable-background-timer-throttling")
     options.add_argument("--disable-renderer-backgrounding")
 
+    # 言語設定とUser-Agent (日本語環境偽装)
+    options.add_argument('--lang=ja-JP')
+    user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    options.add_argument(f'user-agent={user_agent}')
+
     # (6) 画像の“表示ロード”を止める（URL文字列はDOMに残る前提）
     prefs = {
         "profile.managed_default_content_settings.images": 2,
+        "intl.accept_languages": "ja,ja-JP",
     }
     options.add_experimental_option("prefs", prefs)
 

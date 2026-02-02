@@ -83,6 +83,10 @@ def build_driver(
     opts.add_experimental_option('prefs', {'intl.accept_languages': 'ja,ja-JP'})
     opts.add_argument("--disable-notifications")
 
+    # ユーザーエージェントを日本語環境のWindowsに偽装
+    user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    opts.add_argument(f'user-agent={user_agent}')
+
     # =========================
     # user-data-dir
     # =========================
