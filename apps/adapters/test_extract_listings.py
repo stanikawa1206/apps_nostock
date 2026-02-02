@@ -7,7 +7,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from apps.adapters.mercari_scraper import build_driver, safe_quit, extract_item_listings
+from apps.adapters.mercari_scraper import build_driver, safe_quit, extract_item_listings, setup_mercari_currency_jp, setup_mercari_currency_jp
 
 def main():
     # テスト対象URL
@@ -23,6 +23,14 @@ def main():
     driver = build_driver(headless=True)
     
     try:
+        print("Setting up JPY cookies...")
+        # ここで日本円設定を強制
+        setup_mercari_currency_jp(driver)
+
+        print("Setting up JPY cookies...")
+        # ここで日本円設定を強制
+        setup_mercari_currency_jp(driver)
+
         print("Loading page...")
         driver.get(url)
         

@@ -126,6 +126,20 @@ def safe_quit(driver) -> None:
         if tmp:
             shutil.rmtree(tmp, ignore_errors=True)
 
+def setup_mercari_currency_jp(driver) -> None:
+    """
+    強制的に日本円(JPY)・日本配送(JP)の設定Cookieを書き込む。
+    海外IPと判定されて SG$ などになるのを防ぐ。
+    """
+    try:
+        # Cookieをセットするにはドメインにいる必要があるため、一度アクセス
+        # 404ページ等は軽量なので負荷が低い
+        driver.get("https://jp.mercari.com/404")
+        
+        driver.add_cookie({'name': 'currency_code', 'value': 'JPY', 'domain': '.mercari.com', 'path': '/'})
+        driver.add_cookie({'name': 'shipped_to_country_code', 'value': 'JP', 'domain': '.mercari.com', 'path': '/'})
+    except Exception:
+        pass
 
 # =========================
 # personal（個人出品）向け：一覧抽出
@@ -177,7 +191,8 @@ def extract_item_listings(driver):
             seen.add(iid)
 
             raw_title = (a.get_attribute("aria-label") or a.text or "").strip()
-            clean_title = re.sub(r"^¥\s?[\d,]+\s*", "", raw_title).strip()
+            # ¥, SG$, $ などの通貨表記 + 数字 を削除
+            clean_title = re.sub(r"^(?:¥|SG\$|\$)\s?[\d,.]+\s*", "", raw_title).strip()
 
             price = None
             price_elem = a.find_elements(
@@ -279,7 +294,7 @@ def extract_shops_listings(driver):
             seen.add(pid)
 
             raw_title = (a.get_attribute("aria-label") or a.text or "").strip()
-            clean_title = re.sub(r"^¥\s?[\d,]+\s*", "", raw_title).strip()
+            clean_title = re.sub(r"^(?:¥|SG\$|\$)\s?[\d,.]+\s*", "", raw_title).strip()
 
             price = None
             price_elem = a.find_elements(

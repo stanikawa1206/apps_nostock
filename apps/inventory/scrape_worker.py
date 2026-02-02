@@ -43,6 +43,7 @@ from apps.adapters.mercari_scraper import (
     safe_quit,
     scroll_until_stagnant_collect_items,
     scroll_until_stagnant_collect_shops,
+    setup_mercari_currency_jp,
 )
 from apps.adapters.ebay_api import (
     delete_item_from_ebay,
@@ -550,6 +551,10 @@ def run_fetch_active_ebay(payload: dict) -> Tuple[int, int]:
         # (7) 1 job = 1 driver
         driver = build_driver_stable()
 
+        # ★ ここで日本円設定を強制（検索ページに行く前にセット）
+        print("[COOKIE] setup JPY...", flush=True)
+        setup_mercari_currency_jp(driver)
+
         base_url = make_search_url(
             vendor_name=vendor_name,
             brand_id=payload["brand_id"],
@@ -588,6 +593,10 @@ def run_fetch_active_ebay(payload: dict) -> Tuple[int, int]:
                         except Exception:
                             pass
                         driver = build_driver_stable()
+                        # 再構築時もCookieセット
+                        try:
+                            setup_mercari_currency_jp(driver)
+                        except Exception: pass
                         if attempt >= MAX_RENDER_RETRY_PER_PAGE:
                             raise
                         continue
