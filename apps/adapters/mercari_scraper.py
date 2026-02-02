@@ -108,6 +108,16 @@ def build_driver(
 
     driver = webdriver.Chrome(service=service, options=opts)
 
+    # ★ Geolocation Override (Tokyo)
+    try:
+        driver.execute_cdp_cmd("Emulation.setGeolocationOverride", {
+            "latitude": 35.6895,
+            "longitude": 139.6917,
+            "accuracy": 100
+        })
+    except Exception:
+        pass
+
     driver.set_page_load_timeout(20)
     driver.set_script_timeout(20)
 
@@ -145,6 +155,18 @@ def setup_mercari_currency_jp(driver) -> None:
         for c in cookies:
             c.update({'domain': '.mercari.com', 'path': '/'})
             driver.add_cookie(c)
+            # domain指定あり (.mercari.com)
+            c_domain = c.copy()
+            c_domain.update({'domain': '.mercari.com', 'path': '/'})
+            driver.add_cookie(c_domain)
+            
+            # domain指定なし (カレントドメイン jp.mercari.com にセット)
+            c_host = c.copy()
+            c_host.update({'path': '/'})
+            driver.add_cookie(c_host)
+
+        # LocalStorage も念のため上書き
+        driver.execute_script("try { localStorage.setItem('currency_code', 'JPY'); localStorage.setItem('shipped_to_country_code', 'JP'); } catch(e) {}")
     except Exception:
         pass
 

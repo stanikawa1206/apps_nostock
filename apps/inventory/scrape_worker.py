@@ -236,6 +236,16 @@ def build_driver_stable() -> webdriver.Chrome:
     # chromedriver は PATH 上にある想定
     driver = webdriver.Chrome(options=options)
 
+    # ★ Geolocation Override (Tokyo)
+    try:
+        driver.execute_cdp_cmd("Emulation.setGeolocationOverride", {
+            "latitude": 35.6895,
+            "longitude": 139.6917,
+            "accuracy": 100
+        })
+    except Exception:
+        pass
+
     # ページロード待ちが無限化しないように（renderer死んだら例外で落とす）
     driver.set_page_load_timeout(45)
     driver.set_script_timeout(45)
