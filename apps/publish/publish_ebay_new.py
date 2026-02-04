@@ -1310,6 +1310,7 @@ def main():
 
     conn = get_sql_server_connection()
 
+    print("[DEBUG] before build_driver", flush=True)
     conn.autocommit = False
     driver = build_driver()
 
@@ -1324,6 +1325,9 @@ def main():
 
     debug_unavailable_dump = 0
     DEBUG_UNAVAILABLE_DUMP_MAX = 5
+
+    print("[DEBUG] pc_name =", processing_by, flush=True)
+    print("[DEBUG] target_accounts =", target_accounts, flush=True)
 
     # ★ NEW: 実行PC名
     current_pc = socket.gethostname().strip()  # ★ NEW
