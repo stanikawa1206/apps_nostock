@@ -1304,7 +1304,12 @@ def take_one_from_group_presets(conn, group_presets: List[Dict[str, Any]], proce
 
     return None, None, None, None, start_idx
 
+import os
+def get_processing_by():
+    return os.environ.get("WORKER_NAME", socket.gethostname())
+
 def main():
+    processing_by = get_processing_by()
     print("### publish_ebay_new.py 起動（processing_by → preset_group → account → items） ###")
     start_time = datetime.now()
 
