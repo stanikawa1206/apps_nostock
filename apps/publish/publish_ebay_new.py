@@ -1309,6 +1309,7 @@ def get_processing_by():
     return os.environ.get("WORKER_NAME", socket.gethostname())
 
 def main():
+    target_accounts = []  
     processing_by = get_processing_by()
     print("### publish_ebay_new.py 起動（processing_by → preset_group → account → items） ###")
     start_time = datetime.now()
