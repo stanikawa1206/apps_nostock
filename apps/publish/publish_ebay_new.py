@@ -40,7 +40,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 # =========================
 # Local (project)
 # =========================
-from apps.common.utils import (x
+from apps.common.utils import (
     compute_start_price_usd,
     generate_ebay_description,
     get_sql_server_connection,
