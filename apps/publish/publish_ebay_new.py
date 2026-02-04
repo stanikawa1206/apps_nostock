@@ -40,13 +40,14 @@ if str(_PROJECT_ROOT) not in sys.path:
 # =========================
 # Local (project)
 # =========================
-from apps.common.utils import (
+from apps.common.utils import (x
     compute_start_price_usd,
     generate_ebay_description,
     get_sql_server_connection,
     send_mail,
     translate_to_english,
     contains_risky_word,
+    build_driver,
 )
 
 from apps.adapters.ebay_api import ApiHandledError, ListingLimitError, post_one_item
@@ -76,21 +77,6 @@ HEADS_FOR_7DAY_SKIP: Set[str] = {
     "古い更新",
     "計算価格が範囲外",
 }
-
-# ========= WebDriver =========
-def build_driver():
-    """Selenium ChromeDriver を headless/eager で起動。"""
-    opts = Options()
-    opts.add_argument("--headless=new")
-    opts.add_argument("--disable-notifications")
-    opts.add_argument("--lang=ja-JP,ja")
-    opts.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/119 Safari/537.36")
-    opts.page_load_strategy = "eager"
-    driver = webdriver.Chrome(service=Service(), options=opts)
-    driver.set_window_size(1400, 1000)
-    driver.set_page_load_timeout(30)
-    driver.set_script_timeout(30)
-    return driver
 
 # ========= UI 補助 =========
 def _close_any_modal(driver):

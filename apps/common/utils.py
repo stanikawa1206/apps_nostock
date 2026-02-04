@@ -425,17 +425,24 @@ def get_sql_server_connection():
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
+from webdriver_manager.chrome import ChromeDriverManager
 
 def build_driver(
     *,
     headless: bool = True,
     page_load_strategy: str = "eager",
 ):
-    """共通 Selenium ChromeDriver"""
+    """共通 Selenium ChromeDriver（VPS / Windows 両対応）"""
     opts = Options()
+
     if headless:
         opts.add_argument("--headless=new")
 
+    # VPS必須
+    opts.add_argument("--no-sandbox")
+    opts.add_argument("--disable-dev-shm-usage")
+
+    # 共通
     opts.add_argument("--disable-notifications")
     opts.add_argument("--lang=ja-JP,ja")
     opts.add_argument(
@@ -443,11 +450,14 @@ def build_driver(
     )
     opts.page_load_strategy = page_load_strategy
 
-    driver = webdriver.Chrome(service=Service(), options=opts)
+    service = Service(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=opts)
+
     driver.set_window_size(1400, 1000)
     driver.set_page_load_timeout(30)
     driver.set_script_timeout(30)
     return driver
+
 
 DEEPL_ENDPOINT = "https://api-free.deepl.com/v2/translate"
 
