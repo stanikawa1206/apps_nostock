@@ -8,14 +8,10 @@ apps/seed/keepa_jp_seed_asin.py
 - Keepa JP(Product Finder)で候補ASINを抽出
 - Keepa /product(JP)で寸法/重量/タイトル/価格(取れれば)を取得
 - Pythonで最終条件（最大長辺/三辺合計/体積/重量）を満たすASINだけをDBにUPSERT
+- 複数のカテゴリIDに対して処理を実行
 
 保存先:
 - trx.amazon_cross_market_asin
-  - asin: PK
-  - sent_at: NULLのまま（次工程用）
-  - last_seen_at: SYSDATETIME()
-  - jp_title/jp_price/jp_category_id: 記録
-  - us_title/us_price: NULL（USチェックは第二段階）
 """
 
 import os
@@ -31,7 +27,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import requests
 
-# .env 読み込み（作業ディレクトリ=D:\apps_nostock を前提）
+# .env 読み込み
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -43,16 +39,52 @@ from apps.common.utils import get_sql_server_connection
 # ============================================================
 # 実行条件（固定）
 # ============================================================
-LIMIT_ASINS: int = 60  # テストなので最初の100件だけ
+LIMIT_ASINS_PER_CATEGORY: int = 60  # 1カテゴリあたりの上限（テスト用）
 
-# テストとして「スポーツ＆アウトドア」に絞る
-JP_CATEGORY_ID: int = 14304371
+category_map = {
+    14304371: "スポーツ＆アウトドア",
+}
 
-# Finder ページング（必要に応じてここを書き換える）
+# category_map = {
+#     4788676051: "Alexaスキル",
+#     4976279051: "Amazonデバイス・アクセサリ",
+#     7471077051: "Audible オーディオブック",
+#     2016929051: "DIY・工具・ガーデン",
+#     561958: "DVD",
+#     2250738051: "Kindleストア",
+#     637392: "PCソフト",
+#     2351649051: "Prime Video",
+#     2381130051: "アプリ＆ゲーム",
+#     13299531: "おもちゃ",
+#     637394: "ゲーム",
+#     14304371: "スポーツ＆アウトドア",
+#     2128134051: "デジタルミュージック",
+#     160384011: "ドラッグストア",
+#     2127209051: "パソコン・周辺機器",
+#     52374051: "ビューティー",
+#     2320455051: "ファイナンス",
+#     2229202051: "ファッション",
+#     2127212051: "ペット用品",
+#     344845011: "ベビー＆マタニティ",
+#     3828871: "ホーム＆キッチン",
+#     2277721051: "ホビー",
+#     561956: "ミュージック",
+#     3210981: "家電＆カメラ",
+#     2123629051: "楽器・音響機器",
+#     3445393051: "産業・研究開発用品",
+#     2017304051: "車＆バイク",
+#     57239051: "食品・飲料・お酒",
+#     2277724051: "大型家電",
+#     86731051: "文房具・オフィス用品",
+#     465392: "本",
+#     52033011: "洋書"
+# }
+
+# Finder ページング
 MAX_PAGES: int = 50
 PER_PAGE: int = 50
 
-# API呼び出し間隔（必要に応じてここを書き換える）
+# API呼び出し間隔
 SLEEP_SEC: float = 0.2
 
 # ============================================================
@@ -64,7 +96,8 @@ if not KEEPA_API_KEY:
 
 KEEPA_BASE = "https://api.keepa.com"
 DOMAIN_JP = 5  # Amazon.co.jp
-LIMIT_TOKEN = 400
+DOMAIN_US = 1  # Amazon.com
+LIMIT_TOKEN = 300
 
 # ============================================================
 # フェーズ1（JP抽出条件）
@@ -76,10 +109,10 @@ SALES_RANK_MAX = 1_000_000
 MAX_EDGE_CM = 160
 SUM_EDGES_CM = 200
 MAX_WEIGHT_G = 30_000
-MAX_VOLUME_CM3 = 180_000  # ★追加：体積 < 180,000 cm3
+MAX_VOLUME_CM3 = 180_000
 
-# Finder一次フィルタ（取りすぎ抑制のため）
-MAX_EDGE_MM = MAX_EDGE_CM * 10  # cm→mm
+# Finder一次フィルタ
+MAX_EDGE_MM = MAX_EDGE_CM * 10
 MAX_WEIGHT_G_FINDER = MAX_WEIGHT_G
 
 # ============================================================
@@ -123,23 +156,15 @@ WHEN NOT MATCHED THEN
         NULL
     );
 """
+
 # ============================================================
 # Keepa API tokenチェック
 # ============================================================
-
 def check_keepa_tokens() -> dict:
-    """
-    Keepaの現在のトークン状態を確認する。
-    通信環境によりヘッダーが削除される場合でも、ボディから情報を取得するため確実に動作します。
-    
-    Returns:
-        dict: {'tokens_left': int, 'refill_in_sec': float}
-    """
     url = f"{KEEPA_BASE}/token"
     params = {"key": KEEPA_API_KEY}
     
     try:
-        # このリクエスト自体はトークンを消費しません
         r = requests.get(url, params=params, timeout=30)
         r.raise_for_status()
         
@@ -147,7 +172,8 @@ def check_keepa_tokens() -> dict:
         tokens_left = data.get("tokensLeft", 0)
         refill_in = data.get("refillIn", 0)
         
-        print(f"   [Keepa Status] 残り: {tokens_left} | 回復まで: {refill_in/1000:.1f}秒")
+        # 頻繁に出すぎるとログが汚れるのでコメントアウト、必要なら復活
+        # print(f"   [Keepa Status] 残り: {tokens_left} | 回復まで: {refill_in/1000:.1f}秒")
         
         return {
             "tokens_left": tokens_left,
@@ -159,10 +185,7 @@ def check_keepa_tokens() -> dict:
         return {"tokens_left": 0, "refill_in_sec": 0}
 
 def wait_for_tokens(wait_time):
-    """
-    トークンが指定数以下なら、回復するまで自動で待機する便利関数
-    """
-    wait_time = wait_time + 2 # 余裕を持って+2秒
+    wait_time = wait_time + 2
     print(f"   [Wait] token不足 {wait_time:.1f}秒 待機します...")
     time.sleep(wait_time)
     print("   [Resume] 再開します。")
@@ -171,18 +194,16 @@ def wait_for_tokens(wait_time):
 # Keepa API 呼び出し
 # ============================================================
 def keepa_query_jp(selection: Dict[str, Any]) -> Dict[str, Any]:
-    """Product Finder (/query) POST"""
     url = f"{KEEPA_BASE}/query"
     params = {"domain": DOMAIN_JP, "key": KEEPA_API_KEY}
     r = requests.post(url, params=params, data=json.dumps(selection), timeout=180)
     r.raise_for_status()
     tokens_data = check_keepa_tokens()
     while (tokens_data["tokens_left"] < LIMIT_TOKEN):
-        print(f"   token不足 : {tokens_data["tokens_left"]} (< {LIMIT_TOKEN})")
+        print(f"   token不足 : {tokens_data['tokens_left']} (< {LIMIT_TOKEN})")
         wait_for_tokens(tokens_data["refill_in_sec"])
         tokens_data = check_keepa_tokens()
     return r.json()
-
 
 def keepa_product_jp(asins: List[str], stats_days: int = 90) -> Dict[str, Any]:
     url = f"{KEEPA_BASE}/product"
@@ -197,55 +218,77 @@ def keepa_product_jp(asins: List[str], stats_days: int = 90) -> Dict[str, Any]:
     r.raise_for_status()
     tokens_data = check_keepa_tokens()
     while (tokens_data["tokens_left"] < LIMIT_TOKEN):
-        print(f"   token不足 : {tokens_data["tokens_left"]} (< {LIMIT_TOKEN})")
+        print(f"   token不足 : {tokens_data['tokens_left']} (< {LIMIT_TOKEN})")
         wait_for_tokens(tokens_data["refill_in_sec"])
         tokens_data = check_keepa_tokens()
     return r.json()
 
+def keepa_product_us(asins: List[str]) -> Dict[str, Any]:
+    url = f"{KEEPA_BASE}/product"
+    params = {
+        "key": KEEPA_API_KEY,
+        "domain": DOMAIN_US,
+        "asin": ",".join(asins),
+        "stats": 0,
+        "history": 0,
+    }
+    r = requests.get(url, params=params, timeout=180)
+    r.raise_for_status()
+    
+    tokens_data = check_keepa_tokens()
+    while (tokens_data["tokens_left"] < LIMIT_TOKEN):
+        print(f"   token不足 (US Check): {tokens_data['tokens_left']} (< {LIMIT_TOKEN})")
+        wait_for_tokens(tokens_data["refill_in_sec"])
+        tokens_data = check_keepa_tokens()
+        
+    return r.json()
 
 
 # ============================================================
 # Finder selection JSON（JP抽出）
 # ============================================================
-def build_finder_selection(page: int, per_page: int) -> Dict[str, Any]:
+# ★変更：category_id を引数に追加
+def build_finder_selection(page: int, per_page: int, category_id: int) -> Dict[str, Any]:
     return {
         "page": page,
         "perPage": per_page,
 
-        # カテゴリ（テスト）
-        "categories_include": [JP_CATEGORY_ID],
+        # カテゴリ（動的に指定）
+        "categories_include": [category_id],
 
         # 物理商品
         "productType": 0,
 
-        # 新品価格（90日平均）: 10,000 ～ 300,000 円
+        # 新品価格
         "avg90_NEW_gte": PRICE90_NEW_JPY_MIN,
         "avg90_NEW_lte": PRICE90_NEW_JPY_MAX,
 
-        # ランキング: 100万位以内
+        # ランキング
         "current_SALES_lte": SALES_RANK_MAX,
 
         # 新品FBA：0 / Amazonオファー無し
-        # Keepaでは「存在しない価格 = -1」扱いが一般的なので -1固定一致
         "current_NEW_FBA_gte": -1,
         "current_NEW_FBA_lte": -1,
         "current_AMAZON_gte": -1,
         "current_AMAZON_lte": -1,
 
-        # 一次サイズ・重量（mm/g）
+        # 一次サイズ・重量
         "packageLength_lte": MAX_EDGE_MM,
         "packageWidth_lte": MAX_EDGE_MM,
         "packageHeight_lte": MAX_EDGE_MM,
         "packageWeight_lte": MAX_WEIGHT_G_FINDER,
     }
 
-
-def fetch_jp_finder_asins() -> List[str]:
+# ★変更：category_id を引数に追加
+def fetch_jp_finder_asins(category_id: int) -> List[str]:
     out: List[str] = []
     seen = set()
 
+    print(f"--- Fetching Finder for Category: {category_id} ---")
+
     for page in range(MAX_PAGES):
-        sel = build_finder_selection(page=page, per_page=PER_PAGE)
+        # category_id を渡す
+        sel = build_finder_selection(page=page, per_page=PER_PAGE, category_id=category_id)
         data = keepa_query_jp(sel)
 
         asin_list = data.get("asinList") or []
@@ -258,16 +301,22 @@ def fetch_jp_finder_asins() -> List[str]:
             seen.add(a)
             out.append(a)
 
-            if len(out) >= LIMIT_ASINS:  # ← テストなので固定で100件
-                return out
+            # if len(out) >= LIMIT_ASINS_PER_CATEGORY: 
+            #     return out
 
         time.sleep(SLEEP_SEC)
+        print(f"   Page {page} done. Current count: {len(out)}")
+        tokens_data = check_keepa_tokens()
+        while (tokens_data["tokens_left"] < LIMIT_TOKEN):
+            print(f"   token不足 (US Check): {tokens_data['tokens_left']} (< {LIMIT_TOKEN})")
+            wait_for_tokens(tokens_data["refill_in_sec"])
+            tokens_data = check_keepa_tokens()
 
     return out
 
 
 # ============================================================
-# 寸法フィルタ（mm→cm, 体積cm3）
+# 寸法・価格などユーティリティ
 # ============================================================
 def pick_package_dims_mm(prod: Dict[str, Any]) -> Optional[Tuple[int, int, int]]:
     h = prod.get("packageHeight")
@@ -277,10 +326,8 @@ def pick_package_dims_mm(prod: Dict[str, Any]) -> Optional[Tuple[int, int, int]]
         return None
     return (h, l, w)
 
-
 def mm_to_cm(x_mm: int) -> float:
     return x_mm / 10.0
-
 
 def passes_size_weight_volume(prod_jp: Dict[str, Any]) -> bool:
     dims = pick_package_dims_mm(prod_jp)
@@ -309,27 +356,17 @@ def passes_size_weight_volume(prod_jp: Dict[str, Any]) -> bool:
 
     return True
 
-
-# ============================================================
-# タイトル・価格抽出（取れなければNone）
-# ============================================================
 def get_title(prod: Dict[str, Any]) -> Optional[str]:
     t = prod.get("title")
     if isinstance(t, str) and t.strip():
         return t.strip()
     return None
 
-
 def get_price_guess_jpy(prod: Dict[str, Any]) -> Optional[int]:
-    """
-    JP側価格（90日平均新品）を取れる範囲で拾う。
-    Keepa stats構造は揺れるので、取れない場合は None。
-    """
     stats = prod.get("stats")
     if not isinstance(stats, dict):
         return None
 
-    # よくある候補を最小限で
     for k in ("avg90_NEW", "avg90NEW", "avg90_new", "avg90"):
         v = stats.get(k)
         if isinstance(v, (int, float)) and v > 0:
@@ -341,17 +378,16 @@ def get_price_guess_jpy(prod: Dict[str, Any]) -> Optional[int]:
             vv = v2.get(kk)
             if isinstance(vv, (int, float)) and vv > 0:
                 return int(vv)
-
     return None
-
 
 # ============================================================
 # DB UPSERT
 # ============================================================
-def upsert_jp(conn, asin: str, jp_title: Optional[str], jp_price: Optional[int]) -> None:
+def upsert_jp(conn, asin: str, jp_title: Optional[str], jp_price: Optional[int], category_id: int) -> None:
     cur = conn.cursor()
     try:
-        cur.execute(SQL_MERGE, [asin, jp_title, jp_price, JP_CATEGORY_ID])
+        # category_id を動的に挿入
+        cur.execute(SQL_MERGE, [asin, jp_title, jp_price, category_id])
         conn.commit()
     finally:
         cur.close()
@@ -361,61 +397,77 @@ def upsert_jp(conn, asin: str, jp_title: Optional[str], jp_price: Optional[int])
 # メイン
 # ============================================================
 def main() -> None:
-    # 1) JP Finder抽出
-    asins = fetch_jp_finder_asins()
-    print(f"[JP Finder] candidates: {len(asins)} (category_id={JP_CATEGORY_ID})")
-
-    if not asins:
-        return
-
-    # 2) /product でJP詳細 → 最終条件判定 → DB UPSERT
     conn = get_sql_server_connection()
     try:
-        BATCH = 30
-        upserted = 0
-        skipped = 0
+        # ★変更：カテゴリリストをループ処理
+        for cat_id, cat_name in category_map.items():
+            print(f"\n========================================")
+            print(f"Start processing Category ID: {cat_id} Category name: {cat_name}")
+            print(f"========================================")
 
-        for i in range(0, len(asins), BATCH):
-            batch = asins[i : i + BATCH]
+            # 1) JP Finder抽出（カテゴリごと）
+            asins = fetch_jp_finder_asins(cat_id)
+            print(f"[JP Finder] Category {cat_id}: {len(asins)} candidates found.")
 
-            payload = keepa_product_jp(batch, stats_days=90)
-            products = payload.get("products") or []
+            if not asins:
+                print(f"No ASINs found for category {cat_id}. Skipping.")
+                continue
 
-            # asin→prod
-            pmap: Dict[str, Dict[str, Any]] = {}
-            for p in products:
-                a = p.get("asin")
-                if isinstance(a, str):
-                    pmap[a] = p
+            # 2) 詳細取得 → USチェック → DB UPSERT
+            BATCH = 30
+            upserted = 0
+            skipped = 0
 
-            for asin in batch:
-                p = pmap.get(asin)
-                if not p:
-                    skipped += 1
-                    continue
+            for i in range(0, len(asins), BATCH):
+                batch = asins[i : i + BATCH]
 
-                # 最終条件（最大長辺/三辺合計/体積/重量）
-                if not passes_size_weight_volume(p):
-                    skipped += 1
-                    continue
-
-                jp_title = get_title(p)
-                jp_price = get_price_guess_jpy(p)
-
-                # DBに書き込むべき情報
-                print(f"ASIN: {asin}, Title: {jp_title[:100]}, Price: {jp_price}")
+                # --- JPデータ取得 ---
+                payload = keepa_product_jp(batch, stats_days=90)
+                products = payload.get("products") or []
                 
-                # テスト用でDBには書き込まないようにする
-                # upsert_jp(conn, asin=asin, jp_title=jp_title, jp_price=jp_price)
-                upserted += 1
+                pmap: Dict[str, Dict[str, Any]] = {}
+                for p in products:
+                    a = p.get("asin")
+                    if isinstance(a, str):
+                        pmap[a] = p
 
-            time.sleep(SLEEP_SEC)
+                # --- USデータ取得 (存在確認用) ---
+                payload_us = keepa_product_us(batch)
+                products_us = payload_us.get("products") or []
+                us_existing_asins = {p.get("asin") for p in products_us if p.get("asin") and p.get("title") is not None}
 
-        print("---- summary ----")
-        print(f"JP candidates: {len(asins)}")
-        print(f"DB upserted : {upserted}")
-        print(f"skipped     : {skipped}")
+                for asin in batch:
+                    # JPデータなし
+                    p = pmap.get(asin)
+                    if not p:
+                        print(f"    [JPデータなし]: {asin}")
+                        skipped += 1
+                        continue
 
+                    # 最終条件チェック
+                    if not passes_size_weight_volume(p):
+                        skipped += 1
+                        continue
+
+                    # US存在チェック
+                    if asin not in us_existing_asins:
+                        # print(f"Skip: {asin} not found in US")
+                        skipped += 1
+                        continue
+
+                    jp_title = get_title(p)
+                    jp_price = get_price_guess_jpy(p)
+
+                    print(f"   [UPSERT] ASIN: {asin}, Price: {jp_price}")
+                    
+                    # ★変更：ループ中の current_cat_id を渡す
+                    upsert_jp(conn, asin=asin, jp_title=jp_title, jp_price=jp_price, category_id=cat_id)
+                    upserted += 1
+
+                time.sleep(SLEEP_SEC)
+
+            print(f"\n[Result] Category {cat_id} -> Upserted: {upserted}, Skipped: {skipped}")
+            
     finally:
         conn.close()
 

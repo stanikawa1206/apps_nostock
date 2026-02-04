@@ -79,13 +79,7 @@ def build_driver(
     opts.add_argument("--window-size=1400,1000")
 
     # 言語・通知など最低限
-    opts.add_argument("--lang=ja-JP")
-    opts.add_experimental_option('prefs', {'intl.accept_languages': 'ja,ja-JP'})
     opts.add_argument("--disable-notifications")
-
-    # ユーザーエージェントを日本語環境のWindowsに偽装
-    user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    opts.add_argument(f'user-agent={user_agent}')
 
     # =========================
     # user-data-dir
@@ -108,16 +102,6 @@ def build_driver(
 
     driver = webdriver.Chrome(service=service, options=opts)
 
-    # ★ Geolocation Override (Tokyo)
-    try:
-        driver.execute_cdp_cmd("Emulation.setGeolocationOverride", {
-            "latitude": 35.6895,
-            "longitude": 139.6917,
-            "accuracy": 100
-        })
-    except Exception:
-        pass
-
     driver.set_page_load_timeout(20)
     driver.set_script_timeout(20)
 
@@ -135,40 +119,6 @@ def safe_quit(driver) -> None:
         tmp = getattr(driver, "_tmp_user_data_dir", None)
         if tmp:
             shutil.rmtree(tmp, ignore_errors=True)
-
-def setup_mercari_currency_jp(driver) -> None:
-    """
-    強制的に日本円(JPY)・日本配送(JP)の設定Cookieを書き込む。
-    海外IPと判定されて SG$ などになるのを防ぐ。
-    """
-    try:
-        # Cookieをセットするにはドメインにいる必要があるため、一度アクセス
-        # 404ページ等は軽量なので負荷が低い
-        driver.get("https://jp.mercari.com/404")
-        
-        cookies = [
-            {'name': 'currency_code', 'value': 'JPY'},
-            {'name': 'shipped_to_country_code', 'value': 'JP'},
-            {'name': 'p_jp_location', 'value': 'JP'},
-            {'name': 'p_jp_currency', 'value': 'JPY'},
-        ]
-        for c in cookies:
-            c.update({'domain': '.mercari.com', 'path': '/'})
-            driver.add_cookie(c)
-            # domain指定あり (.mercari.com)
-            c_domain = c.copy()
-            c_domain.update({'domain': '.mercari.com', 'path': '/'})
-            driver.add_cookie(c_domain)
-            
-            # domain指定なし (カレントドメイン jp.mercari.com にセット)
-            c_host = c.copy()
-            c_host.update({'path': '/'})
-            driver.add_cookie(c_host)
-
-        # LocalStorage も念のため上書き
-        driver.execute_script("try { localStorage.setItem('currency_code', 'JPY'); localStorage.setItem('shipped_to_country_code', 'JP'); } catch(e) {}")
-    except Exception:
-        pass
 
 # =========================
 # personal（個人出品）向け：一覧抽出

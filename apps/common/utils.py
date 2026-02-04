@@ -416,9 +416,11 @@ def get_sql_server_connection():
         f"DATABASE={os.getenv('DB_NAME')};"
         f"UID={os.getenv('DB_USER')};"
         f"PWD={os.getenv('DB_PASS')};"
+        "Encrypt=no;"
         "TrustServerCertificate=yes;"
-    )   
+    )
     return pyodbc.connect(conn_str)
+
 
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service

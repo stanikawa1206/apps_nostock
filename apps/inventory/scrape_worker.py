@@ -43,7 +43,6 @@ from apps.adapters.mercari_scraper import (
     safe_quit,
     scroll_until_stagnant_collect_items,
     scroll_until_stagnant_collect_shops,
-    setup_mercari_currency_jp,
 )
 from apps.adapters.ebay_api import (
     delete_item_from_ebay,
@@ -218,15 +217,9 @@ def build_driver_stable() -> webdriver.Chrome:
     options.add_argument("--disable-background-timer-throttling")
     options.add_argument("--disable-renderer-backgrounding")
 
-    # 言語設定とUser-Agent (日本語環境偽装)
-    options.add_argument('--lang=ja-JP')
-    user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    options.add_argument(f'user-agent={user_agent}')
-
     # (6) 画像の“表示ロード”を止める（URL文字列はDOMに残る前提）
     prefs = {
         "profile.managed_default_content_settings.images": 2,
-        "intl.accept_languages": "ja,ja-JP",
     }
     options.add_experimental_option("prefs", prefs)
 
@@ -235,16 +228,6 @@ def build_driver_stable() -> webdriver.Chrome:
 
     # chromedriver は PATH 上にある想定
     driver = webdriver.Chrome(options=options)
-
-    # ★ Geolocation Override (Tokyo)
-    try:
-        driver.execute_cdp_cmd("Emulation.setGeolocationOverride", {
-            "latitude": 35.6895,
-            "longitude": 139.6917,
-            "accuracy": 100
-        })
-    except Exception:
-        pass
 
     # ページロード待ちが無限化しないように（renderer死んだら例外で落とす）
     driver.set_page_load_timeout(45)
@@ -561,10 +544,6 @@ def run_fetch_active_ebay(payload: dict) -> Tuple[int, int]:
         # (7) 1 job = 1 driver
         driver = build_driver_stable()
 
-        # ★ ここで日本円設定を強制（検索ページに行く前にセット）
-        print("[COOKIE] setup JPY...", flush=True)
-        setup_mercari_currency_jp(driver)
-
         base_url = make_search_url(
             vendor_name=vendor_name,
             brand_id=payload["brand_id"],
@@ -603,10 +582,6 @@ def run_fetch_active_ebay(payload: dict) -> Tuple[int, int]:
                         except Exception:
                             pass
                         driver = build_driver_stable()
-                        # 再構築時もCookieセット
-                        try:
-                            setup_mercari_currency_jp(driver)
-                        except Exception: pass
                         if attempt >= MAX_RENDER_RETRY_PER_PAGE:
                             raise
                         continue
