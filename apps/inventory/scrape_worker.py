@@ -680,6 +680,9 @@ def run_fetch_active_ebay(payload: dict) -> Tuple[int, int]:
 # =========================
 def main():
     print(f"[WORKER START] {WORKER_NAME}", flush=True)
+    print("PATH=", os.environ.get("PATH"), flush=True)
+    print("which chrome:", os.system("which google-chrome"), flush=True)
+    print("which chromium:", os.system("which chromium"), flush=True)
 
     if CHECK_SWAP:
         warn_if_no_swap()
