@@ -37,6 +37,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from apps.common.utils import (
     get_sql_server_connection,
     compute_start_price_usd,
+    build_driver,
 )
 from apps.adapters.mercari_search import make_search_url
 from apps.adapters.mercari_scraper import (
@@ -189,51 +190,6 @@ def warn_if_no_swap():
     except Exception:
         # 読めない環境もあるので黙る
         pass
-
-
-# =========================
-# 対策(5)(6): 安定driverビルド
-# =========================
-def build_driver_stable() -> webdriver.Chrome:
-    """
-    - (5) disable-gpu / no-sandbox / disable-dev-shm-usage
-    - (6) 画像の“表示ロード”をブロック（画像URL取得は想定上OK）
-    """
-    options = Options()
-
-    # headlessは環境依存があるので、ここでは固定しない（必要なら環境変数で）
-    # ENV: HEADLESS=1 なら headless=new
-    if os.environ.get("HEADLESS", "1") == "1":
-        options.add_argument("--headless=new")
-
-    # (5) renderer安定化の定番
-    options.add_argument("--disable-gpu")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-
-    # 余計な機能は抑える（保険ではなく“負荷削減”）
-    options.add_argument("--disable-notifications")
-    options.add_argument("--disable-background-networking")
-    options.add_argument("--disable-background-timer-throttling")
-    options.add_argument("--disable-renderer-backgrounding")
-
-    # (6) 画像の“表示ロード”を止める（URL文字列はDOMに残る前提）
-    prefs = {
-        "profile.managed_default_content_settings.images": 2,
-    }
-    options.add_experimental_option("prefs", prefs)
-
-    # VPSはメモリがシビアなので、ウィンドウサイズを固定（再レイアウト抑制）
-    options.add_argument("--window-size=1280,800")
-
-    # chromedriver は PATH 上にある想定
-    driver = webdriver.Chrome(options=options)
-
-    # ページロード待ちが無限化しないように（renderer死んだら例外で落とす）
-    driver.set_page_load_timeout(45)
-    driver.set_script_timeout(45)
-    return driver
-
 
 # =========================
 # listings / vendor_item helpers
@@ -542,7 +498,7 @@ def run_fetch_active_ebay(payload: dict) -> Tuple[int, int]:
         conn = get_sql_server_connection()
 
         # (7) 1 job = 1 driver
-        driver = build_driver_stable()
+        driver = build_driver()
 
         base_url = make_search_url(
             vendor_name=vendor_name,
@@ -581,7 +537,7 @@ def run_fetch_active_ebay(payload: dict) -> Tuple[int, int]:
                             safe_quit(driver)
                         except Exception:
                             pass
-                        driver = build_driver_stable()
+                        driver = build_driver()
                         if attempt >= MAX_RENDER_RETRY_PER_PAGE:
                             raise
                         continue
