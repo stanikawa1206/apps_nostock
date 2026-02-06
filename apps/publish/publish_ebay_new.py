@@ -897,10 +897,14 @@ TAKE_ONE_VENDOR_ITEM_SQL = """
             OR v.last_updated_str LIKE N'%か月前%'
             OR v.last_updated_str LIKE N'%半年以上前%'
         )
+        AND v.[出品状況] <> N'NG(危険素材)'
         AND (
             v.processing_at IS NULL
             OR v.processing_at < ?
-            OR v.processing_by = ?
+            OR (
+                v.processing_by = ?
+                AND v.processing_at < ?
+            )
         )
         AND NOT EXISTS (
             SELECT 1
@@ -938,7 +942,8 @@ def take_one_vendor_item_by_preset(conn, preset: str, processing_by: str, start_
                 preset,         # 1) v.preset = ?
                 start_time,     # 2) v.processing_at < ?
                 processing_by,  # 3) OR v.processing_by = ?
-                processing_by,  # 4) UPDATE SET processing_by = ?
+                start_time,      # AND v.processing_at < ?
+                processing_by,  # ⑤ UPDATE SET processing_by = ?
             )
         )
         row = cur.fetchone()
