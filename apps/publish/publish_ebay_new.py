@@ -554,7 +554,7 @@ WHEN MATCHED THEN
         END,
         last_ng_at = CASE
             WHEN src.listing_head = N'出品' THEN NULL
-            WHEN src.listing_head IN (N'古い更新', N'計算価格が範囲外') THEN SYSDATETIME()
+            WHEN src.listing_head IN (N'古い更新', N'計算価格が範囲外',N'NG(セラー評価)') THEN SYSDATETIME()
             ELSE NULL
         END
 WHEN NOT MATCHED THEN
@@ -603,7 +603,7 @@ WHEN NOT MATCHED THEN
         COALESCE(src.listing_head, N''),
         COALESCE(src.listing_detail, N''),
         CASE
-          WHEN src.listing_head IN (N'古い更新', N'計算価格が範囲外') THEN SYSDATETIME()
+          WHEN src.listing_head IN (N'古い更新', N'計算価格が範囲外', N'NG(セラー評価)') THEN SYSDATETIME()
           ELSE NULL
         END
     )
@@ -881,23 +881,34 @@ TAKE_ONE_VENDOR_ITEM_SQL = """
     SELECT TOP (1)
         v.vendor_item_id,
         v.vendor_name,
+        v.price,
         v.shipping_region,
         v.shipping_days,
         v.preset,
         v.processing_by,
         v.processing_at
     FROM trx.vendor_item v
+    INNER JOIN mst.seller s
+        ON s.vendor_name = v.vendor_name
+       AND s.seller_id   = v.seller_id
     WHERE
+        -- =========================
+        -- 基本条件（既存）
+        -- =========================
         v.preset = ?
         AND v.status = N'販売中'
         AND ISNULL(v.出品不可flg, 0) = 0
         AND ISNULL(v.[出品状況], N'') <> N'配送条件NG'
+        AND ISNULL(v.[出品状況], N'') <> N'NG(危険素材)'
         AND NOT (
             v.last_updated_str LIKE N'%ヶ月前%'
             OR v.last_updated_str LIKE N'%か月前%'
             OR v.last_updated_str LIKE N'%半年以上前%'
         )
-        AND v.[出品状況] <> N'NG(危険素材)'
+
+        -- =========================
+        -- processing ロック
+        -- =========================
         AND (
             v.processing_at IS NULL
             OR v.processing_at < ?
@@ -906,12 +917,88 @@ TAKE_ONE_VENDOR_ITEM_SQL = """
                 AND v.processing_at < ?
             )
         )
+
+        -- =========================
+        -- 既に出品済みは除外
+        -- =========================
         AND NOT EXISTS (
             SELECT 1
             FROM trx.listings l
             WHERE l.vendor_name = v.vendor_name
               AND l.vendor_item_id = v.vendor_item_id
         )
+
+        -- =========================
+        -- ★ 評価チェック間隔ロジック（核心）
+        -- =========================
+        AND (
+            ----------------------------------------------------------------
+            -- メルカリ個人
+            ----------------------------------------------------------------
+            (
+                v.vendor_name = N'メルカリ'
+                AND
+                (
+                    -- 評価十分 → 無条件で通す（チェック不要）
+                    s.rating_count >= 50
+
+                    OR
+
+                    -- 評価がまだ → チェック間隔が経過していれば通す
+                    (
+                        s.rating_count < 50
+                        AND (
+                            v.last_ng_at IS NULL
+                            OR DATEADD(
+                                day,
+                                CASE
+                                    WHEN s.rating_count >= 45 THEN 1
+                                    WHEN s.rating_count >= 30 THEN 7
+                                    WHEN s.rating_count >= 10 THEN 14
+                                    ELSE 30
+                                END,
+                                v.last_ng_at
+                            ) <= SYSDATETIME()
+                        )
+                    )
+                )
+            )
+
+            OR
+
+            ----------------------------------------------------------------
+            -- メルカリ shops
+            ----------------------------------------------------------------
+            (
+                v.vendor_name = N'メルカリshops'
+                AND
+                (
+                    -- 評価十分 → 無条件で通す
+                    s.rating_count >= 20
+
+                    OR
+
+                    -- 評価がまだ → チェック間隔が経過していれば通す
+                    (
+                        s.rating_count < 20
+                        AND (
+                            v.last_ng_at IS NULL
+                            OR DATEADD(
+                                day,
+                                CASE
+                                    WHEN s.rating_count >= 18 THEN 1
+                                    WHEN s.rating_count >= 12 THEN 7
+                                    WHEN s.rating_count >= 5  THEN 14
+                                    ELSE 30
+                                END,
+                                v.last_ng_at
+                            ) <= SYSDATETIME()
+                        )
+                    )
+                )
+            )
+        )
+
     ORDER BY
         CASE WHEN v.vendor_page IS NULL THEN 1 ELSE 0 END,
         v.vendor_page ASC
@@ -923,17 +1010,22 @@ SET
 OUTPUT
     inserted.vendor_item_id,
     inserted.vendor_name,
+    inserted.price,
     inserted.shipping_region,
     inserted.shipping_days,
     inserted.preset;
 """
 
 
-def take_one_vendor_item_by_preset(conn, preset: str, processing_by: str, start_time: datetime) -> Optional[Tuple[str, str, Optional[str], Optional[str], str]]:
+def take_one_vendor_item_by_preset(
+    conn,
+    preset: str,
+    processing_by: str,
+    start_time: datetime
+) -> Optional[Tuple[str, str, Optional[int], Optional[str], Optional[str], str]]:
     """
-    ★ NEW
     preset を指定して、trx.vendor_item を 1件だけ確保して返す。
-    return: (vendor_item_id, vendor_name, shipping_region, shipping_days, preset)
+    return: (vendor_item_id, vendor_name, price, shipping_region, shipping_days, preset)
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -942,8 +1034,8 @@ def take_one_vendor_item_by_preset(conn, preset: str, processing_by: str, start_
                 preset,         # 1) v.preset = ?
                 start_time,     # 2) v.processing_at < ?
                 processing_by,  # 3) OR v.processing_by = ?
-                start_time,      # AND v.processing_at < ?
-                processing_by,  # ⑤ UPDATE SET processing_by = ?
+                start_time,     # 4) AND v.processing_at < ?
+                processing_by,  # 5) UPDATE SET processing_by = ?
             )
         )
         row = cur.fetchone()
@@ -952,11 +1044,18 @@ def take_one_vendor_item_by_preset(conn, preset: str, processing_by: str, start_
 
         vendor_item_id = (row[0] or "").strip()
         vendor_name = (row[1] or "").strip()
-        ship_region = row[2]
-        ship_days = row[3]
-        preset_out = (row[4] or "").strip()
 
-        return vendor_item_id, vendor_name, ship_region, ship_days, preset_out
+        price = None
+        try:
+            price = int(row[2]) if row[2] is not None else None
+        except Exception:
+            price = None
+
+        ship_region = row[3]
+        ship_days = row[4]
+        preset_out = (row[5] or "").strip()
+
+        return vendor_item_id, vendor_name, price, ship_region, ship_days, preset_out
 
 # =========================
 # heavy_check_detail / post_to_ebay（あなたが貼った版のまま）
@@ -1045,7 +1144,7 @@ def heavy_check_detail(conn, driver, item_url, sku, preset, vendor_name,
         rec.get("price"), p["mode"], p["low_usd_target"], p["high_usd_target"]
     )
     if not start_price_usd:
-        rec["listing_head"] = "計算価格が範囲外"
+        rec["listing_head"] = "計算価格が範囲外(二次判定)"
         rec["listing_detail"] = f"{p['low_usd_target']}–{p['high_usd_target']}USD"
         upsert_vendor_item(conn, rec)
         writes_since_commit += 1
@@ -1291,11 +1390,11 @@ def take_one_from_group_presets(
 ):
     """
     group_presets を start_idx から順に試して 1件確保する。
-    return: (p, vendor_item_id, ship_region, ship_days, next_start_idx)
-      - 取れない場合は (None, None, None, None, start_idx)
+    return: (p, vendor_item_id, price, ship_region, ship_days, next_start_idx)
+      - 取れない場合は (None, None, None, None, None, start_idx)
     """
     if not group_presets:
-        return None, None, None, None, start_idx
+        return None, None, None, None, None, start_idx
 
     n = len(group_presets)
     for i in range(n):
@@ -1308,11 +1407,12 @@ def take_one_from_group_presets(
         row = take_one_vendor_item_by_preset(conn, preset, processing_by, start_time)
         if not row:
             continue
-        vendor_item_id, vendor_name, ship_region, ship_days, _preset_out = row
-        next_idx = (idx + 1) % n
-        return p, vendor_item_id, ship_region, ship_days, next_idx
 
-    return None, None, None, None, start_idx
+        vendor_item_id, vendor_name, price, ship_region, ship_days, _preset_out = row
+        next_idx = (idx + 1) % n
+        return p, vendor_item_id, price, ship_region, ship_days, next_idx
+
+    return None, None, None, None, None, start_idx
 
 import os
 def get_processing_by():
@@ -1458,7 +1558,7 @@ def main():
                     # ★ NEW: take_one は即コミットさせる
                     conn.autocommit = True
 
-                    p, vendor_item_id, ship_region, ship_days, rr_idx = take_one_from_group_presets(
+                    p, vendor_item_id, price_db, ship_region, ship_days, rr_idx = take_one_from_group_presets(
                         conn, group_presets, processing_by, rr_idx, start_time
                     )
 
@@ -1472,6 +1572,31 @@ def main():
                     vendor_name = (p["vendor_name"] or "").strip()
                     sku = vendor_item_id.strip()
                     preset = p["preset"]
+
+                    # =========================
+                    # ★ NEW: 一次判定（DB価格）
+                    # =========================
+                    start_price_usd_1st = compute_start_price_usd(
+                        price_db,
+                        p["mode"],
+                        p["low_usd_target"],
+                        p["high_usd_target"],
+                    )
+
+                    if not start_price_usd_1st:
+                        # scrapeせずに即NG
+                        rec_ng = {
+                            "vendor_name": vendor_name,
+                            "item_id": sku,
+                            "price": price_db,  # 任意（残しておくと後で見やすい）
+                            "listing_head": "計算価格が範囲外(一次判定)",
+                            "listing_detail": f"{p['low_usd_target']}–{p['high_usd_target']}USD (一次判定)",
+                        }
+                        upsert_vendor_item(conn, rec_ng)
+                        writes_since_commit += 1
+                        writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
+                        continue
+
 
                     # URL組み立て
                     if vendor_name == "メルカリshops":
