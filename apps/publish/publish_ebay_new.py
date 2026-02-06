@@ -892,6 +892,11 @@ TAKE_ONE_VENDOR_ITEM_SQL = """
         AND v.status = N'販売中'
         AND ISNULL(v.出品不可flg, 0) = 0
         AND ISNULL(v.[出品状況], N'') <> N'配送条件NG'
+        AND NOT (
+            v.last_updated_str LIKE N'%ヶ月前%'
+            OR v.last_updated_str LIKE N'%か月前%'
+            OR v.last_updated_str LIKE N'%半年以上前%'
+        )
         AND (
             v.processing_at IS NULL
             OR v.processing_at < ?
