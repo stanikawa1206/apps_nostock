@@ -64,9 +64,6 @@ from apps.adapters.mercari_item_status import (
 IMG_LIMIT     = 10
 BATCH_COMMIT  = 100
 
-# ========= processing_by lock =========
-LOCK_TIMEOUT_MIN = 60  # ★ NEW: 60分以上前のロックは回収対象（クラッシュ時に永久ロックしない）
-
 # ========= NG打刻・スキップ関連定義 =========
 NG_HEADS_FOR_TIMESTAMP: Set[str] = {
     "古い更新",
@@ -895,7 +892,11 @@ TAKE_ONE_VENDOR_ITEM_SQL = """
         AND v.status = N'販売中'
         AND ISNULL(v.出品不可flg, 0) = 0
         AND ISNULL(v.[出品状況], N'') <> N'配送条件NG'
-        AND v.processing_by IS NULL
+        AND (
+            v.processing_at IS NULL
+            OR v.processing_at < ?
+            OR v.processing_by = ?
+        )
         AND NOT EXISTS (
             SELECT 1
             FROM trx.listings l
@@ -918,12 +919,8 @@ OUTPUT
     inserted.preset;
 """
 
-RELEASE_PROCESSING_SQL = """
-UPDATE trx.vendor_item
-SET processing_by = NULL, processing_at = NULL
-WHERE vendor_name = ? AND vendor_item_id = ? AND processing_by = ?;
-"""
-def take_one_vendor_item_by_preset(conn, preset: str, processing_by: str) -> Optional[Tuple[str, str, Optional[str], Optional[str], str]]:
+
+def take_one_vendor_item_by_preset(conn, preset: str, processing_by: str, start_time: datetime) -> Optional[Tuple[str, str, Optional[str], Optional[str], str]]:
     """
     ★ NEW
     preset を指定して、trx.vendor_item を 1件だけ確保して返す。
@@ -933,8 +930,10 @@ def take_one_vendor_item_by_preset(conn, preset: str, processing_by: str) -> Opt
         cur.execute(
             TAKE_ONE_VENDOR_ITEM_SQL,
             (
-                preset,        # WHERE v.preset = ?
-                processing_by  # UPDATE SET processing_by = ?
+                preset,         # 1) v.preset = ?
+                start_time,     # 2) v.processing_at < ?
+                processing_by,  # 3) OR v.processing_by = ?
+                processing_by,  # 4) UPDATE SET processing_by = ?
             )
         )
         row = cur.fetchone()
@@ -948,11 +947,6 @@ def take_one_vendor_item_by_preset(conn, preset: str, processing_by: str) -> Opt
         preset_out = (row[4] or "").strip()
 
         return vendor_item_id, vendor_name, ship_region, ship_days, preset_out
-
-def release_processing(conn, vendor_name: str, vendor_item_id: str, processing_by: str) -> None:
-    """★ NEW: 処理後にロック解除（次回の再評価を可能にする）。"""
-    with conn.cursor() as cur:
-        cur.execute(RELEASE_PROCESSING_SQL, (vendor_name, vendor_item_id, processing_by))
 
 # =========================
 # heavy_check_detail / post_to_ebay（あなたが貼った版のまま）
@@ -1278,7 +1272,13 @@ def post_to_ebay(conn, p, target_accounts, heavy,
 # =========================
 # ★ NEW: group_presets から 1件確保（ラウンドロビン）
 # =========================
-def take_one_from_group_presets(conn, group_presets: List[Dict[str, Any]], processing_by: str, start_idx: int) -> Tuple[Optional[Dict[str, Any]], Optional[str], Optional[str], Optional[str], int]:
+def take_one_from_group_presets(
+    conn,
+    group_presets,
+    processing_by,
+    start_idx,
+    start_time
+):
     """
     group_presets を start_idx から順に試して 1件確保する。
     return: (p, vendor_item_id, ship_region, ship_days, next_start_idx)
@@ -1295,7 +1295,7 @@ def take_one_from_group_presets(conn, group_presets: List[Dict[str, Any]], proce
         if not preset:
             continue
 
-        row = take_one_vendor_item_by_preset(conn, preset, processing_by)
+        row = take_one_vendor_item_by_preset(conn, preset, processing_by, start_time)
         if not row:
             continue
         vendor_item_id, vendor_name, ship_region, ship_days, _preset_out = row
@@ -1309,35 +1309,30 @@ def get_processing_by():
     return os.environ.get("WORKER_NAME", socket.gethostname())
 
 def main():
-    target_accounts = []  
-    processing_by = get_processing_by()
+    target_accounts = []
+
     print("### publish_ebay_new.py 起動（processing_by → preset_group → account → items） ###")
     start_time = datetime.now()
 
-    conn = get_sql_server_connection()
+    # ===== 必須: ローカル変数の初期化（UnboundLocalError / NameError 回避）=====
+    stop_all = False
 
-    print("[DEBUG] before build_driver", flush=True)
-    conn.autocommit = False
-    driver = build_driver()
-
+    debug_unavailable_dump = {}   # heavy_check_detail で受け回す
     writes_since_commit = 0
+
     skip_count = 0
     skip_detail_count = 0
     fail_other = 0
 
-    MAX_LISTINGS = 10000
     total_listings = 0
-    stop_all = False
+    MAX_LISTINGS = 10**9          # 上限制御するなら適切な値に（例: 200 など）
+    # ===============================================================
 
-    debug_unavailable_dump = 0
-    DEBUG_UNAVAILABLE_DUMP_MAX = 5
+    current_pc = socket.gethostname().strip()
+    processing_by = get_processing_by()
 
-    print("[DEBUG] pc_name =", processing_by, flush=True)
-    print("[DEBUG] target_accounts =", target_accounts, flush=True)
-
-    # ★ NEW: 実行PC名
-    current_pc = socket.gethostname().strip()  # ★ NEW
-    processing_by = current_pc                 # ★ NEW（processing_byにも同じ値を入れる）
+    conn = get_sql_server_connection()
+    driver = build_driver()
 
     try:
         global TITLE_RULES
@@ -1348,7 +1343,7 @@ def main():
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT account, preset_group
-                FROM [nostock].[mst].[ebay_accounts]
+                FROM [mst].[ebay_accounts]
                 WHERE ISNULL(is_excluded, 0) = 0
                   AND LTRIM(RTRIM(execute_pc)) = LTRIM(RTRIM(?))  -- ★ NEW
             """, (current_pc,))
@@ -1402,7 +1397,7 @@ def main():
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT DISTINCT LTRIM(RTRIM(preset_group)) AS preset_group
-                FROM [nostock].[mst].[ebay_accounts]
+                FROM [mst].[ebay_accounts]
                 WHERE ISNULL(is_excluded, 0) = 0
                   AND LTRIM(RTRIM(execute_pc)) = LTRIM(RTRIM(?))  -- ★ NEW
                   AND preset_group IS NOT NULL
@@ -1450,10 +1445,15 @@ def main():
                 )
 
                 while has_quota(acct):
-                    # ★ NEW: preset群から1件確保（processing_by）
+                    # ★ NEW: take_one は即コミットさせる
+                    conn.autocommit = True
+
                     p, vendor_item_id, ship_region, ship_days, rr_idx = take_one_from_group_presets(
-                        conn, group_presets, processing_by, rr_idx
+                        conn, group_presets, processing_by, rr_idx, start_time
                     )
+
+                    conn.autocommit = False
+
                     if not p or not vendor_item_id:
                         print(f"[INFO] preset_group={preset_group} items枯渇 → group終了")
                         group_items_exhausted = True
@@ -1469,43 +1469,35 @@ def main():
                     else:
                         item_url = f"https://jp.mercari.com/item/{sku}"
 
-                    try:
-                        heavy, debug_unavailable_dump, writes_since_commit, d_skip_detail, d_fail = heavy_check_detail(
-                            conn,
-                            driver,
-                            item_url,
-                            sku,
-                            preset,
-                            vendor_name,
-                            p,
-                            debug_unavailable_dump,
-                            writes_since_commit,
-                        )
 
-                        skip_detail_count += d_skip_detail
-                        fail_other += d_fail
-                        if heavy is None:
-                            continue
+                    heavy, debug_unavailable_dump, writes_since_commit, d_skip_detail, d_fail = heavy_check_detail(
+                        conn,
+                        driver,
+                        item_url,
+                        sku,
+                        preset,
+                        vendor_name,
+                        p,
+                        debug_unavailable_dump,
+                        writes_since_commit,
+                    )
 
-                        acct_targets, acct_success, total_listings, stop_all, writes_since_commit, d_fail2 = post_to_ebay(
-                            conn, p, [acct], heavy,
-                            acct_targets, acct_success, acct_policies_map,
-                            total_listings, MAX_LISTINGS, stop_all,
-                            writes_since_commit, BATCH_COMMIT
-                        )
-                        fail_other += d_fail2
+                    skip_detail_count += d_skip_detail
+                    fail_other += d_fail
+                    if heavy is None:
+                        continue
 
-                        if stop_all:
-                            break
+                    acct_targets, acct_success, total_listings, stop_all, writes_since_commit, d_fail2 = post_to_ebay(
+                        conn, p, [acct], heavy,
+                        acct_targets, acct_success, acct_policies_map,
+                        total_listings, MAX_LISTINGS, stop_all,
+                        writes_since_commit, BATCH_COMMIT
+                    )
+                    fail_other += d_fail2
 
-                    finally:
-                        # ★ NEW: このSKUの processing_by を解除（次回の再評価を可能にする）
-                        try:
-                            release_processing(conn, vendor_name, sku, processing_by)
-                            writes_since_commit += 1
-                            writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
-                        except Exception as e:
-                            print(f"[WARN] release_processing failed sku={sku}: {e}")
+                    if stop_all:
+                        break
+
 
                 if group_items_exhausted:
                     break

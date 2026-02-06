@@ -180,6 +180,7 @@ def apply_hermes_stole_rules(title: str, jp_title: str, desc: str) -> str:
     is_hermes = "HERMES" in title.upper()
     is_carre = any(k in jp_all for k in ["カレ90", "カレ140", "カレ45"])
 
+
     stole_words = ("ストール", "ショール", "スカーフ", "マフラー")
     has_stole_word = any(w in jp_all for w in stole_words)
     has_size_cross = bool(re.search(r"\d+\s*[×x]\s*\d+", jp_all))
