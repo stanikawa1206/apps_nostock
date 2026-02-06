@@ -37,11 +37,9 @@ APPS_INV = BASE_DIR / "apps" / "inventory"
 APPS_PUB = BASE_DIR / "apps" / "publish"
 APPS_DEL = BASE_DIR / "apps" / "publish" / "delete_ebay_daily.py"
 
-SCRIPTS = [
-    APPS_INV / "fetch_active_ebay.py",
-    APPS_INV / "fetch_sold_ebay.py",
-    APPS_INV / "check_remaining_ebay.py",
-]
+FETCH_ACTIVE = APPS_INV / "fetch_active_ebay_new.py"
+FETCH_SOLD       = APPS_INV / "fetch_sold_ebay.py"
+CHECK_REMAINING  = APPS_INV / "check_remaining_ebay.py"
 
 # 在庫チェック後、削除 → 出品 の順で実行
 DELETE_SCRIPT = APPS_DEL
@@ -148,6 +146,24 @@ def send_script_mail(
 
     send_mail(subject, body)
 
+def wait_until_no_pending(conn, phase_name="active"):
+    print(f"⏳ {phase_name}: pending が 0 になるのを待機中…")
+    cur = conn.cursor()
+
+    while True:
+        cur.execute("""
+            SELECT COUNT(*)
+            FROM trx.scrape_job
+            WHERE status = 'pending'
+        """)
+        pending = cur.fetchone()[0]
+
+        if pending == 0:
+            print(f"✅ {phase_name}: pending 消滅")
+            return
+
+        print(f"… pending={pending} 件")
+        time.sleep(30)
 
 # ======================
 # メイン処理
@@ -155,183 +171,153 @@ def send_script_mail(
 def main():
     conn = get_sql_server_connection()
     try:
-        SET_N = 1  # ★この4つ（pre_sold→full1→delete→publish）を6回転
+        SET_N = 1
         print(f"=== 🧭 inventory_ebay_manager.py 開始（4工程×{SET_N}回転） ===")
 
         for set_no in range(1, SET_N + 1):
             print("\n\n==============================")
             print(f"🔁 セット {set_no} / {SET_N} 開始")
-            print(f"   事前sold → フル在庫チェック1回転 → delete → publish")
+            print("   事前sold → フル在庫チェック → delete → publish")
             print("==============================")
 
             # ------------------------------------------------
-            # ① 事前 sold チェック: fetch_sold_ebay.py を 1 回実行
+            # ① 事前 sold チェック
             # ------------------------------------------------
             #pre_sold_script = APPS_INV / "fetch_sold_ebay.py"
-            #print("\n=== ⭐ 事前 sold チェック: fetch_sold_ebay.py を実行します ===")
+            #print("\n=== ⭐ 事前 sold チェック ===")
             #pre_start = datetime.now()
-            #pre_code, pre_stdout = run_script(pre_sold_script)
+            #pre_code, _ = run_script(pre_sold_script)
             #pre_end = datetime.now()
-            #send_script_mail(pre_sold_script, pre_start, pre_end, pre_code, round_no=set_no, conn=conn)
 
-            #time.sleep(WAIT_SECONDS)
+            #send_script_mail(
+            #    pre_sold_script,
+            #    pre_start,
+            #    pre_end,
+            #    pre_code,
+            #    round_no=set_no,
+            #    conn=conn,
+            #)
+
+            time.sleep(WAIT_SECONDS)
 
             # ------------------------------------------------
-            # ② フル在庫チェック（1回転）: active → sold → remaining
+            # ② フル在庫チェック（fetch_active だけ分散）
             # ------------------------------------------------
-            print("\n=== 📦 フル在庫チェック（1回転）開始 ===")
-            for script in SCRIPTS:
-                script_start = datetime.now()
-                code, stdout = run_script(script)
-                script_end = datetime.now()
+            print("\n=== 📦 フル在庫チェック（分散版）開始 ===")
 
-                extra_body = ""
+            # ②-1 active（job投入のみ）
+            active_start = datetime.now()
+            active_code, _ = run_script(FETCH_ACTIVE)
+            active_end = datetime.now()
 
-                # check_remaining_ebay.py のときだけ UNRESOLVED= をパース
-                if script.name == "check_remaining_ebay.py" and stdout:
-                    unresolved_count = None
-                    for line in stdout.splitlines():
-                        line = line.strip()
-                        if line.startswith("UNRESOLVED="):
-                            try:
-                                unresolved_count = int(line.split("=", 1)[1])
-                            except ValueError:
-                                unresolved_count = None
-                            break
+            send_script_mail(
+                FETCH_ACTIVE,
+                active_start,
+                active_end,
+                active_code,
+                round_no=set_no,
+                conn=conn,
+            )
 
-                    if unresolved_count is not None:
-                        extra_body += (
-                            f"【check_remaining_ebay 結果】\n"
-                            f"2回目リトライ後も判定不可のまま残っている件数: {unresolved_count} 件\n"
-                        )
+            if active_code != 0:
+                print("[STOP] fetch_active_ebay_new.py エラー → 次セットへ")
+                continue
 
-                # fetch_sold_ebay.py のエラーは「警告」で続行
-                if script.name == "fetch_sold_ebay.py" and code != 0:
-                    print(f"[WARN] {script.name} はエラー(code={code}) → 在庫処理は続行します")
-                    send_script_mail(
-                        script,
-                        script_start,
-                        script_end,
-                        code,
-                        round_no=set_no,
-                        extra_body=extra_body,
-                        warn_continue=True,
-                        conn=conn,
-                    )
-                    time.sleep(WAIT_SECONDS)
-                    continue
+            # ②-2 worker 完了待ち
+            wait_until_no_pending(conn, phase_name="active")
 
-                # その他スクリプトのエラーは「このセットを中断」して次セットへ
-                if code != 0:
-                    send_script_mail(
-                        script,
-                        script_start,
-                        script_end,
-                        code,
-                        round_no=set_no,
-                        extra_body=extra_body,
-                        warn_continue=False,
-                        conn=conn,
-                    )
-                    print(f"[STOP] セット{set_no} は {script.name} のエラーで中断 → 次セットへ")
-                    break
+            # ②-3 sold（従来どおり）
+            sold_start = datetime.now()
+            sold_code, _ = run_script(FETCH_SOLD)
+            sold_end = datetime.now()
 
-                # 正常終了時
-                send_script_mail(
-                    script,
-                    script_start,
-                    script_end,
-                    code,
-                    round_no=set_no,
-                    extra_body=extra_body,
-                    conn=conn,
-                )
+            send_script_mail(
+                FETCH_SOLD,
+                sold_start,
+                sold_end,
+                sold_code,
+                round_no=set_no,
+                warn_continue=(sold_code != 0),
+                conn=conn,
+            )
 
-                time.sleep(WAIT_SECONDS)
-            else:
-                # for が break されず完走した場合のみ delete/publish へ進む
-                print(f"=== ✅ セット{set_no}: フル在庫チェック1回転 完了 ===")
+            time.sleep(WAIT_SECONDS)
 
-                # ------------------------------------------------
-                # ③ delete_ebay_daily.py を 1 回実行
-                # ------------------------------------------------
-                print("\n=== 🗑 delete_ebay_daily.py を実行します ===")
-                del_start = datetime.now()
-                del_code, del_stdout = run_script(DELETE_SCRIPT)
-                del_end = datetime.now()
-                del_elapsed = del_end - del_start
+            # ②-4 remaining（従来どおり）
+            rem_start = datetime.now()
+            rem_code, rem_stdout = run_script(CHECK_REMAINING)
+            rem_end = datetime.now()
 
-                total_deleted = None
-                if del_stdout:
-                    for line in del_stdout.splitlines():
-                        line = line.strip()
-                        if line.startswith("✅ 全体合計:"):
-                            m = re.search(r"全体合計:\s*(\d+)\s*件削除", line)
-                            if m:
-                                total_deleted = int(m.group(1))
-                            break
+            send_script_mail(
+                CHECK_REMAINING,
+                rem_start,
+                rem_end,
+                rem_code,
+                round_no=set_no,
+                conn=conn,
+            )
 
-                if del_code != 0:
-                    subject = f"❌ delete_ebay_daily.py エラー発生（セット{set_no}）"
-                    body = (
-                        f"スクリプト: {DELETE_SCRIPT.name}\n"
-                        f"セット番号: {set_no}\n"
-                        f"開始時刻: {del_start}\n"
-                        f"終了時刻: {del_end}\n"
-                        f"処理時間: {del_elapsed}\n"
-                        f"returncode: {del_code}\n"
-                    )
-                else:
-                    subject = f"✅ delete_ebay_daily.py 正常終了（セット{set_no}）"
-                    body = (
-                        f"スクリプト: {DELETE_SCRIPT.name}\n"
-                        f"セット番号: {set_no}\n"
-                        f"開始時刻: {del_start}\n"
-                        f"終了時刻: {del_end}\n"
-                        f"処理時間: {del_elapsed}\n"
-                    )
-                    if total_deleted is not None:
-                        body += f"\n全体で削除した件数: {total_deleted} 件"
+            print(f"=== ✅ セット{set_no}: フル在庫チェック完了 ===")
+            time.sleep(WAIT_SECONDS)
 
-                body += "\n\n" + format_trx_listings_count_by_account(conn)
-                send_mail(subject, body)
+            # ------------------------------------------------
+            # ③ delete_ebay_daily.py を 1 回実行
+            # ------------------------------------------------
+            print("\n=== 🗑 delete_ebay_daily.py 実行 ===")
+            del_start = datetime.now()
+            del_code, del_stdout = run_script(DELETE_SCRIPT)
+            del_end = datetime.now()
 
-                time.sleep(WAIT_SECONDS)
+            subject = (
+                f"❌ delete_ebay_daily.py エラー（セット{set_no}）"
+                if del_code != 0
+                else f"✅ delete_ebay_daily.py 正常終了（セット{set_no}）"
+            )
 
-                # ------------------------------------------------
-                # ④ publish_ebay.py を 1 回実行
-                # ------------------------------------------------
-                print("\n=== 🚀 publish_ebay.py を実行します ===")
-                pub_start = datetime.now()
-                pub_code, pub_stdout = run_script(PUBLISH_SCRIPT)
-                pub_end = datetime.now()
-                pub_elapsed = pub_end - pub_start
+            body = (
+                f"スクリプト: {DELETE_SCRIPT.name}\n"
+                f"セット番号: {set_no}\n"
+                f"開始時刻: {del_start}\n"
+                f"終了時刻: {del_end}\n"
+                f"処理時間: {del_end - del_start}\n"
+                f"returncode: {del_code}\n\n"
+                + format_trx_listings_count_by_account(conn)
+            )
 
-                if pub_code != 0:
-                    subject = f"❌ publish_ebay.py エラー発生（セット{set_no}）"
-                    body = (
-                        f"スクリプト: {PUBLISH_SCRIPT.name}\n"
-                        f"セット番号: {set_no}\n"
-                        f"開始時刻: {pub_start}\n"
-                        f"終了時刻: {pub_end}\n"
-                        f"処理時間: {pub_elapsed}\n"
-                        f"returncode: {pub_code}\n"
-                    )
-                else:
-                    subject = f"✅ publish_ebay.py 正常終了（セット{set_no}）"
-                    body = (
-                        f"スクリプト: {PUBLISH_SCRIPT.name}\n"
-                        f"セット番号: {set_no}\n"
-                        f"開始時刻: {pub_start}\n"
-                        f"終了時刻: {pub_end}\n"
-                        f"処理時間: {pub_elapsed}\n"
-                    )
+            send_mail(subject, body)
+            time.sleep(WAIT_SECONDS)
 
-                body += "\n\n" + format_trx_listings_count_by_account(conn)
-                send_mail(subject, body)
+            print("[STOP] delete までで処理終了（publish は意図的にスキップ）")
+            return
 
-                print(f"\n=== 🎊 セット {set_no} / {SET_N} 完了 ===")
-                time.sleep(WAIT_SECONDS)
+            # ------------------------------------------------
+            # ④ publish_ebay.py を 1 回実行
+            # ------------------------------------------------
+            print("\n=== 🚀 publish_ebay.py 実行 ===")
+            pub_start = datetime.now()
+            pub_code, _ = run_script(PUBLISH_SCRIPT)
+            pub_end = datetime.now()
+
+            subject = (
+                f"❌ publish_ebay.py エラー（セット{set_no}）"
+                if pub_code != 0
+                else f"✅ publish_ebay.py 正常終了（セット{set_no}）"
+            )
+
+            body = (
+                f"スクリプト: {PUBLISH_SCRIPT.name}\n"
+                f"セット番号: {set_no}\n"
+                f"開始時刻: {pub_start}\n"
+                f"終了時刻: {pub_end}\n"
+                f"処理時間: {pub_end - pub_start}\n"
+                f"returncode: {pub_code}\n\n"
+                + format_trx_listings_count_by_account(conn)
+            )
+
+            send_mail(subject, body)
+
+            print(f"\n=== 🎊 セット {set_no} / {SET_N} 完了 ===")
+            time.sleep(WAIT_SECONDS)
 
         print(f"\n=== 🎉 全セット完了（4工程×{SET_N}回転） ===")
 
