@@ -15,6 +15,7 @@ from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
+from selenium.common.exceptions import TimeoutException, WebDriverException
 
 # =========================
 # Third-party
@@ -74,6 +75,14 @@ HEADS_FOR_7DAY_SKIP: Set[str] = {
     "古い更新",
     "計算価格が範囲外",
 }
+
+def is_fatal_renderer_error(e: Exception) -> bool:
+    s = str(e).lower()
+    return (
+        "timed out receiving message from renderer" in s
+        or "unable to receive message from renderer" in s
+        or "disconnected" in s and "renderer" in s
+    )
 
 # ========= UI 補助 =========
 def _close_any_modal(driver):
@@ -1085,6 +1094,16 @@ def heavy_check_detail(conn, driver, item_url, sku, preset, vendor_name,
         return None, debug_unavailable_dump, writes_since_commit, 1, 0
 
     except Exception as e:
+        # ★ 今回の致命的エラーだけは即プロセス終了
+        if is_fatal_renderer_error(e):
+            print("[FATAL] renderer timeout detected → exit process", flush=True)
+            try:
+                driver.quit()
+            except Exception:
+                pass
+            sys.exit(100)
+
+        # ★ それ以外は今まで通り「解析失敗」
         rec_fail = {
             "vendor_name": vendor_name,
             "item_id": sku,

@@ -37,7 +37,7 @@ APPS_INV = BASE_DIR / "apps" / "inventory"
 APPS_PUB = BASE_DIR / "apps" / "publish"
 APPS_DEL = BASE_DIR / "apps" / "publish" / "delete_ebay_daily.py"
 
-FETCH_ACTIVE = APPS_INV / "fetch_active_ebay_new.py"
+FETCH_ACTIVE = APPS_INV / "fetch_active_ebay.py"
 FETCH_SOLD       = APPS_INV / "fetch_sold_ebay.py"
 CHECK_REMAINING  = APPS_INV / "check_remaining_ebay.py"
 
@@ -205,26 +205,36 @@ def main():
             # ------------------------------------------------
             print("\n=== 📦 フル在庫チェック（分散版）開始 ===")
 
-            # ②-1 active（job投入のみ）
+            # ②-1 job投入
             active_start = datetime.now()
             active_code, _ = run_script(FETCH_ACTIVE)
-            active_end = datetime.now()
 
+            if active_code != 0:
+                active_end = datetime.now()
+                send_script_mail(
+                    FETCH_ACTIVE,
+                    active_start,
+                    active_end,
+                    active_code,
+                    round_no=set_no,
+                    conn=conn,
+                )
+                print("[STOP] fetch_active job投入失敗")
+                continue
+
+            # ②-2 worker 完了待ち（ここが本体）
+            wait_until_no_pending(conn, phase_name="active")
+
+            # ★ ここで active フェーズ完了
+            active_end = datetime.now()
             send_script_mail(
                 FETCH_ACTIVE,
                 active_start,
                 active_end,
-                active_code,
+                0,
                 round_no=set_no,
                 conn=conn,
             )
-
-            if active_code != 0:
-                print("[STOP] fetch_active_ebay_new.py エラー → 次セットへ")
-                continue
-
-            # ②-2 worker 完了待ち
-            wait_until_no_pending(conn, phase_name="active")
 
             # ②-3 sold（従来どおり）
             sold_start = datetime.now()
