@@ -290,8 +290,8 @@ def process_status_and_sync(
     # 1. Mercari 状態取得
     # =====================
     status, price_jpy = get_status(driver, url)
-    print(f"[STATUS] {url} -> {status} (price_jpy={price_jpy})")
-
+    print(f"\n[STATUS] {url} -> {status} (price_jpy={price_jpy})")
+    
     # =====================
     # ★ 判定不可は即終了（確定しない）
     # =====================
@@ -417,6 +417,17 @@ def process_status_and_sync(
                    AND deleted_at IS NULL
             """, (sku,))
             rows = cur.fetchall()
+
+            # === rows の中身を確認する print ===
+            print(f"[DEBUG_DB] SKU:{sku} の検索結果 (deleted_at IS NULL):")
+            if not rows:
+                print(f"  -> ヒットなし（レコードが存在しないか、既に deleted_at に値が入っています）")
+            else:
+                for r in rows:
+                    print(f"  -> listing_id: {r[0]}, account: {r[1]}")
+            # ===============================
+
+
 
         for ebay_item_id, account in rows:
             if is_account_excluded_for_sku(conn, sku):
