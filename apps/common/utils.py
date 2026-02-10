@@ -465,7 +465,12 @@ def build_driver(
         executable_path=r"C:\Users\stani\.wdm\drivers\chromedriver\win64\144.0.7559.133\chromedriver-win32\chromedriver.exe"
     )
 
-    driver = webdriver.Chrome(service=service, options=opts)
+    if os.name == "posix":
+        # VPS (Linux)
+        service = Service("/usr/bin/chromedriver")
+    else:
+        # Windows (ローカル)
+        service = Service(ChromeDriverManager().install())
 
     driver.set_window_size(1400, 1000)
     driver.set_page_load_timeout(30)
