@@ -437,60 +437,46 @@ def build_driver(
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
     from selenium.webdriver.chrome.service import Service
-    from webdriver_manager.chrome import ChromeDriverManager
-    from webdriver_manager.core.os_manager import ChromeType
+    from webdriver_manager.chrome import ChromeDriverManager # 自動管理用
 
     opts = Options()
 
     if headless:
         opts.add_argument("--headless=new")
 
-    # 共通オプション
+    # 基本設定
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--disable-notifications")
     opts.add_argument("--lang=ja-JP,ja")
 
-    # 低負荷
+    # 低負荷・画像オフ
     opts.add_argument("--disable-renderer-backgrounding")
     opts.add_argument("--disable-backgrounding-occluded-windows")
     opts.add_argument("--blink-settings=imagesEnabled=false")
-
-    # UAは最新に近いものに更新しておくのが無難です
+    
+    # UAを最新(145系)に合わせておく
     opts.add_argument(
         "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
     )
 
     opts.page_load_strategy = page_load_strategy
 
-    # =========================
-    # ★ Chrome / Driver を自動最適化
-    # =========================
     if os.name == "posix":
-        # Linux環境: エラーメッセージに合わせてパスを修正
-        opts.binary_location = os.getenv(
-            "CHROME_BINARY", "/usr/bin/google-chrome"
-        )
+        # Linux (VPS) 設定
+        # エラーメッセージに合わせ、バイナリのパスを明示的に指定
+        opts.binary_location = "/usr/bin/google-chrome"
         
-        # ChromeDriverのパスが指定されていればそれを使用、なければ自動インストール
-        custom_driver = os.getenv("CHROMEDRIVER_BINARY")
-        if custom_driver:
-            service = Service(custom_driver)
-        else:
-            # バージョン不一致を避けるため自動管理
-            service = Service(ChromeDriverManager().install())
-            
+        # /usr/bin/chromedriver を直接指定せず、ChromeDriverManagerに管理させる
+        # これにより "chrome 145.* には 145.* の driver が必要" というエラーを自動回避します
+        service = Service(ChromeDriverManager().install())
     else:
-        # Windows環境
+        # Windows 設定
         opts.binary_location = os.getenv(
             "CHROME_BINARY",
             r"C:\Program Files\Google\Chrome\Application\chrome.exe",
         )
-        custom_driver = os.getenv("CHROMEDRIVER_BINARY")
-        if custom_driver:
-            service = Service(custom_driver)
-        else:
-            service = Service(ChromeDriverManager().install())
+        service = Service(ChromeDriverManager().install())
 
     driver = webdriver.Chrome(service=service, options=opts)
     driver.set_window_size(1400, 1000)
