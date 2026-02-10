@@ -433,6 +433,7 @@ def build_driver(
     headless: bool = True,
     page_load_strategy: str = "eager",
 ):
+    import os
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
     from selenium.webdriver.chrome.service import Service
@@ -442,40 +443,52 @@ def build_driver(
     if headless:
         opts.add_argument("--headless=new")
 
-    # 共通（※ 重複は完全排除）
+    # 共通オプション
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--disable-notifications")
     opts.add_argument("--lang=ja-JP,ja")
 
-    # 低負荷・安定化オプション
-    opts.add_argument('--disable-renderer-backgrounding')
-    opts.add_argument('--disable-backgrounding-occluded-windows')
-    opts.add_argument('--blink-settings=imagesEnabled=false')
+    # 低負荷
+    opts.add_argument("--disable-renderer-backgrounding")
+    opts.add_argument("--disable-backgrounding-occluded-windows")
+    opts.add_argument("--blink-settings=imagesEnabled=false")
 
-    # UA は Chrome 実体に合わせる（or 外す）
     opts.add_argument(
         "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/144 Safari/537.36"
     )
 
     opts.page_load_strategy = page_load_strategy
 
-    # ★ webdriver-manager は使わない（ここが超重要）
-    service = Service(
-        executable_path=r"C:\Users\stani\.wdm\drivers\chromedriver\win64\144.0.7559.133\chromedriver-win32\chromedriver.exe"
-    )
-
+    # =========================
+    # ★ Chrome 本体を固定 ★
+    # =========================
     if os.name == "posix":
         # VPS (Linux)
-        service = Service("/usr/bin/chromedriver")
+        opts.binary_location = os.getenv(
+            "CHROME_BINARY", "/usr/bin/google-chrome"
+        )
+        service = Service(
+            os.getenv("CHROMEDRIVER_BINARY", "/usr/bin/chromedriver")
+        )
     else:
-        # Windows (ローカル)
-        service = Service(ChromeDriverManager().install())
+        # Windows
+        opts.binary_location = os.getenv(
+            "CHROME_BINARY",
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        )
+        service = Service(
+            os.getenv(
+                "CHROMEDRIVER_BINARY",
+                r"C:\Users\stani\.wdm\drivers\chromedriver\win64\144.0.7559.133\chromedriver-win32\chromedriver.exe",
+            )
+        )
 
     driver = webdriver.Chrome(service=service, options=opts)
     driver.set_window_size(1400, 1000)
     driver.set_page_load_timeout(30)
     driver.set_script_timeout(30)
+
     return driver
 
 
