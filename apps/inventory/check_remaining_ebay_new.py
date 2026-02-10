@@ -247,7 +247,7 @@ def run_remaining_worker(worker_name: str):
                 print("[INFO] remaining queue empty")
                 break
 
-            print(f"[INFO] remaining processing {i+1}/{N} "
+            print(f"\n[INFO] remaining processing {i+1}/{N} "
                   f"vendor={row['vendor_name']} sku={row['vendor_item_id']}")
 
             process_status_and_sync(
@@ -290,7 +290,7 @@ def process_status_and_sync(
     # 1. Mercari 状態取得
     # =====================
     status, price_jpy = get_status(driver, url)
-    print(f"\n[STATUS] {url} -> {status} (price_jpy={price_jpy})")
+    print(f"[STATUS] {url} -> {status} (price_jpy={price_jpy})")
     
     # =====================
     # ★ 判定不可は即終了（確定しない）
