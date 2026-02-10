@@ -428,6 +428,7 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 
+
 def build_driver(
     *,
     headless: bool = True,
@@ -437,20 +438,20 @@ def build_driver(
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
     from selenium.webdriver.chrome.service import Service
-    from webdriver_manager.chrome import ChromeDriverManager # 自動管理用
+    from webdriver_manager.chrome import ChromeDriverManager # これが重要
 
     opts = Options()
 
     if headless:
         opts.add_argument("--headless=new")
 
-    # 基本設定
+    # 共通オプション
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--disable-notifications")
     opts.add_argument("--lang=ja-JP,ja")
 
-    # 低負荷・画像オフ
+    # 低負荷設定
     opts.add_argument("--disable-renderer-backgrounding")
     opts.add_argument("--disable-backgrounding-occluded-windows")
     opts.add_argument("--blink-settings=imagesEnabled=false")
@@ -463,15 +464,12 @@ def build_driver(
     opts.page_load_strategy = page_load_strategy
 
     if os.name == "posix":
-        # Linux (VPS) 設定
-        # エラーメッセージに合わせ、バイナリのパスを明示的に指定
+        # 先ほど ln -sf で作ったパスを指定
         opts.binary_location = "/usr/bin/google-chrome"
-        
-        # /usr/bin/chromedriver を直接指定せず、ChromeDriverManagerに管理させる
-        # これにより "chrome 145.* には 145.* の driver が必要" というエラーを自動回避します
+        # 消去した /usr/bin/chromedriver の代わりに、最適なものを自動取得する
         service = Service(ChromeDriverManager().install())
     else:
-        # Windows 設定
+        # Windows用
         opts.binary_location = os.getenv(
             "CHROME_BINARY",
             r"C:\Program Files\Google\Chrome\Application\chrome.exe",
@@ -484,6 +482,8 @@ def build_driver(
     driver.set_script_timeout(30)
 
     return driver
+
+
 
 DEEPL_ENDPOINT = "https://api-free.deepl.com/v2/translate"
 
