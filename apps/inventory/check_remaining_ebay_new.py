@@ -249,14 +249,20 @@ def run_remaining_worker(worker_name: str):
 
             print(f"\n[INFO] remaining processing {i+1}/{N} "
                   f"vendor={row['vendor_name']} sku={row['vendor_item_id']}")
-
-            process_status_and_sync(
-                conn,
-                driver,
-                row["vendor_name"],
-                row["vendor_item_id"],
-                worker_name,
-            )
+            
+            # ここを try-except で囲む
+            try:
+                process_status_and_sync(
+                    conn,
+                    driver,
+                    row["vendor_name"],
+                    row["vendor_item_id"],
+                    worker_name,
+                )
+            except Exception as e:
+                # タイムアウト等のエラーが出ても、ログを吐いて次へ進む
+                print(f"[ERROR] スキップします。SKU:{row['vendor_item_id']} 理由: {e}")
+                continue
 
             time.sleep(random.uniform(2.0, 5.0))
 
