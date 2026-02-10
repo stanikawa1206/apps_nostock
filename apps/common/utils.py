@@ -464,13 +464,16 @@ def build_driver(
     # ★ Chrome / Driver を固定
     # =========================
     if os.name == "posix":
-        # VPS (Linux) ― 実体を指定するのが重要
-        opts.binary_location = os.getenv(
-            "CHROME_BINARY", "/usr/bin/google-chrome-stable"
-        )
-        service = Service(
-            os.getenv("CHROMEDRIVER_BINARY", "/usr/bin/chromedriver")
-        )
+            # VPS (Linux)
+            # エラーメッセージに合わせて、まずは google-chrome を優先、
+            # なければ google-chrome-stable を見るように設定するか、
+            # あるいは環境に合わせて一方に固定します。
+            opts.binary_location = os.getenv(
+                "CHROME_BINARY", "/usr/bin/google-chrome" # ← ここをメッセージに合わせる
+            )
+            service = Service(
+                os.getenv("CHROMEDRIVER_BINARY", "/usr/bin/chromedriver")
+            )
     else:
         # Windows
         opts.binary_location = os.getenv(
