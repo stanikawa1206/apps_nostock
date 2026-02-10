@@ -437,6 +437,8 @@ def build_driver(
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
     from selenium.webdriver.chrome.service import Service
+    from webdriver_manager.chrome import ChromeDriverManager
+    from webdriver_manager.core.os_manager import ChromeType
 
     opts = Options()
 
@@ -454,38 +456,41 @@ def build_driver(
     opts.add_argument("--disable-backgrounding-occluded-windows")
     opts.add_argument("--blink-settings=imagesEnabled=false")
 
+    # UAは最新に近いものに更新しておくのが無難です
     opts.add_argument(
-        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/144 Safari/537.36"
+        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
     )
 
     opts.page_load_strategy = page_load_strategy
 
     # =========================
-    # ★ Chrome / Driver を固定
+    # ★ Chrome / Driver を自動最適化
     # =========================
     if os.name == "posix":
-            # VPS (Linux)
-            # エラーメッセージに合わせて、まずは google-chrome を優先、
-            # なければ google-chrome-stable を見るように設定するか、
-            # あるいは環境に合わせて一方に固定します。
-            opts.binary_location = os.getenv(
-                "CHROME_BINARY", "/usr/bin/google-chrome" # ← ここをメッセージに合わせる
-            )
-            service = Service(
-                os.getenv("CHROMEDRIVER_BINARY", "/usr/bin/chromedriver")
-            )
+        # Linux環境: エラーメッセージに合わせてパスを修正
+        opts.binary_location = os.getenv(
+            "CHROME_BINARY", "/usr/bin/google-chrome"
+        )
+        
+        # ChromeDriverのパスが指定されていればそれを使用、なければ自動インストール
+        custom_driver = os.getenv("CHROMEDRIVER_BINARY")
+        if custom_driver:
+            service = Service(custom_driver)
+        else:
+            # バージョン不一致を避けるため自動管理
+            service = Service(ChromeDriverManager().install())
+            
     else:
-        # Windows
+        # Windows環境
         opts.binary_location = os.getenv(
             "CHROME_BINARY",
             r"C:\Program Files\Google\Chrome\Application\chrome.exe",
         )
-        service = Service(
-            os.getenv(
-                "CHROMEDRIVER_BINARY",
-                r"C:\Users\stani\.wdm\drivers\chromedriver\win64\144.0.7559.133\chromedriver-win32\chromedriver.exe",
-            )
-        )
+        custom_driver = os.getenv("CHROMEDRIVER_BINARY")
+        if custom_driver:
+            service = Service(custom_driver)
+        else:
+            service = Service(ChromeDriverManager().install())
 
     driver = webdriver.Chrome(service=service, options=opts)
     driver.set_window_size(1400, 1000)
@@ -493,7 +498,6 @@ def build_driver(
     driver.set_script_timeout(30)
 
     return driver
-
 
 DEEPL_ENDPOINT = "https://api-free.deepl.com/v2/translate"
 
