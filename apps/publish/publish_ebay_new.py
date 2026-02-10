@@ -1709,8 +1709,6 @@ def main():
     if r2_endpoint and r2_bucket_name and r2_endpoint.endswith("/" + r2_bucket_name):
         r2_endpoint = r2_endpoint.replace("/" + r2_bucket_name, "")
 
-    print(f"[DEBUG_R2] Endpoint: {r2_endpoint} / Bucket: {r2_bucket_name}", flush=True)
-
     # ===== 画像モード state machine =====
     image_mode = "NORMAL"       # or "CDN"
     image_error_count = 0       # 画像500px未満系を数える

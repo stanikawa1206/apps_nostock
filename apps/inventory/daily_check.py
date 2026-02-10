@@ -236,20 +236,42 @@ def main():
                 conn=conn,
             )
 
-            # ②-3 sold（従来どおり）
+            # ------------------------------------------------
+            # ②-3 sold（分散版：job投入 → worker完了待ち）
+            # ------------------------------------------------
+            print("\n=== 🧾 sold チェック（分散版）開始 ===")
+
+            # ②-3-1 job投入
             sold_start = datetime.now()
             sold_code, _ = run_script(FETCH_SOLD)
-            sold_end = datetime.now()
 
+            if sold_code != 0:
+                sold_end = datetime.now()
+                send_script_mail(
+                    FETCH_SOLD,
+                    sold_start,
+                    sold_end,
+                    sold_code,
+                    round_no=set_no,
+                    conn=conn,
+                )
+                print("[STOP] fetch_sold job投入失敗")
+                continue
+
+            # ②-3-2 worker 完了待ち（ここが本体）
+            wait_until_no_pending(conn, phase_name="sold")
+
+            # ★ ここで sold フェーズ完了
+            sold_end = datetime.now()
             send_script_mail(
                 FETCH_SOLD,
                 sold_start,
                 sold_end,
-                sold_code,
+                0,
                 round_no=set_no,
-                warn_continue=(sold_code != 0),
                 conn=conn,
             )
+
 
             time.sleep(WAIT_SECONDS)
 
