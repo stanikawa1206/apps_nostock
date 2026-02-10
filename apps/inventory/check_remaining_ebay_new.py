@@ -235,7 +235,7 @@ def run_remaining_worker(worker_name: str):
     driver = None
     conn = None
 
-    N = 5  # ★ 最大処理件数
+    N = 10000  # ★ 最大処理件数
 
     try:
         driver = build_driver()
