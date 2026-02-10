@@ -8,10 +8,13 @@ import time
 import random
 import traceback
 import socket
+import pyodbc
+import urllib3
+
 from typing import Any, Dict, List, Tuple, Optional
 from urllib.parse import urlencode, urlparse, parse_qsl, urlunparse
 from datetime import datetime, timezone, timedelta
-
+from apps.adapters.mercari_item_status import handle_listing_delete
 # =========================
 # Path setup
 # =========================
@@ -84,6 +87,10 @@ MAX_RENDER_RETRY_PER_PAGE = 2
 # ★ 対策(10): swap警告を出すか（Linuxのみ）
 CHECK_SWAP = (os.environ.get("CHECK_SWAP", "1") == "1")
 
+MAX_PAGES = 3
+PAUSE = 0.6
+SIMULATE_DELETE = False
+
 
 # =========================
 # SQL
@@ -144,26 +151,6 @@ def page_url(base_url: str, idx_zero_based: int) -> str:
     return base_url if idx_zero_based == 0 else add_or_replace_query(
         base_url, page_token=f"v1:{idx_zero_based}"
     )
-
-def reset_vendor_item_status_for_active_skus(conn):
-    """listings に存在する SKU の vendor_item.status を NULL クリア（vendor_nameも一致させる）"""
-    cur = conn.cursor()
-    try:
-        cur.execute("""
-            UPDATE vi
-               SET vi.[status] = NULL
-            FROM [trx].[vendor_item] AS vi
-            INNER JOIN [trx].[listings] AS l
-                ON vi.[vendor_name] = l.[vendor_name]
-               AND vi.[vendor_item_id] = l.[vendor_item_id]
-        """)
-        conn.commit()
-    finally:
-        try:
-            cur.close()
-        except Exception:
-            pass
-    print("[INIT] status cleared on vendor_item joined with listings", flush=True)
 
 def has_no_results_banner(driver) -> bool:
     try:
@@ -475,6 +462,222 @@ def is_renderer_timeout(e: BaseException) -> bool:
         or "renderer" in s and "timeout" in s
     )
 
+# ===== URLヘルパ =====
+def add_or_replace_query(url: str, **params) -> str:
+    u = urlparse(url)
+    q = dict(parse_qsl(u.query, keep_blank_values=True))
+    for k, v in params.items():
+        if v is None:
+            q.pop(k, None)
+        else:
+            q[k] = str(v)
+    return urlunparse((u.scheme, u.netloc, u.path, u.params, urlencode(q, doseq=True), u.fragment))
+
+
+def page_url(base_url: str, idx_zero_based: int) -> str:
+    # 1ページ目＝そのまま、それ以降は page_token=v1:{n}
+    return base_url if idx_zero_based == 0 else add_or_replace_query(base_url, page_token=f"v1:{idx_zero_based}")
+
+
+def has_no_results_banner(driver) -> bool:
+    try:
+        txt = driver.execute_script("return document.body ? document.body.innerText : ''") or ""
+        return "出品された商品がありません" in txt
+    except Exception:
+        return False
+
+
+# ===== DB I/O =====
+def upsert_vendor_item(conn: pyodbc.Connection, vendor_name: str, item_id: str, title: str, page_num: int, preset: str, now_str: str):
+    with conn.cursor() as cur:
+        # 存在確認
+        cur.execute("""
+            SELECT COUNT(*)
+              FROM [trx].[vendor_item]
+             WHERE vendor_name = ? AND vendor_item_id = ?
+        """, (vendor_name, item_id))
+        exists = cur.fetchone()[0] > 0
+
+        if not exists:
+            cur.execute("""
+                INSERT INTO [trx].[vendor_item]
+                    (vendor_name, vendor_item_id, title_jp, created_at, last_checked_at,
+                     vendor_page, status, preset)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (vendor_name, item_id, title, now_str, now_str, page_num, "売り切れ", preset))
+        else:
+            cur.execute("""
+                UPDATE [trx].[vendor_item]
+                   SET last_checked_at = ?,
+                       vendor_page     = ?,
+                       status          = ?,
+                       preset          = ?
+                 WHERE vendor_name = ? AND vendor_item_id = ?
+            """, (now_str, page_num, "売り切れ", preset, vendor_name, item_id))
+    conn.commit()
+
+def is_account_excluded_for_sku(conn, vendor_item_id: str) -> bool:
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT a.is_excluded
+            FROM trx.listings l
+            JOIN mst.ebay_accounts a
+              ON l.account = a.account
+            WHERE l.vendor_item_id = ?
+        """, (vendor_item_id,))
+        rows = cur.fetchall()
+        # 紐づく listing が1つでも excluded なら true
+        return any(r[0] for r in rows)
+    finally:
+        cur.close()
+
+
+def run_fetch_sold_ebay(payload: dict) -> Tuple[int, int]:
+    """
+    メルカリ売り切れ（sold_out | trading）を取得し、
+    vendor_item を「売り切れ」に更新し、eBay 側を削除する。
+
+    戻り値:
+        (fetched_pages, fetched_items)
+    """
+    preset_name = payload["preset"]
+    vendor_name = payload["vendor_name"]      # 'メルカリ' or 'メルカリshops'
+    brand_id    = payload["brand_id"]
+    category_id = payload["category_id"]
+    mode        = payload.get("mode", "DDP")
+    low_usd_target  = payload["low_usd_target"]
+    high_usd_target = payload["high_usd_target"]
+
+    print(
+        f"[SCRAPE START][SOLD] preset='{preset_name}' "
+        f"vendor='{vendor_name}' mode='{mode}'",
+        flush=True
+    )
+
+    conn = None
+    driver = None
+    fetched_pages = 0
+    fetched_items = 0
+
+    try:
+        conn = get_sql_server_connection()
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # ★ 1 job = 1 driver
+        driver = build_driver()
+
+        # 売り切れ・取引中 URL を生成
+        base_url = make_search_url(
+            vendor_name=vendor_name,
+            brand_id=brand_id,
+            category_id=category_id,
+            status="sold_out|trading",
+            mode=mode,
+            low_usd_target=low_usd_target,
+            high_usd_target=high_usd_target,
+        )
+
+        print(f"🔍 {base_url}", flush=True)
+
+        page_idx = 0
+        seen_ids: set[str] = set()
+
+        while True:
+            if page_idx >= MAX_PAGES:
+                print(f"[STOP] reached MAX_PAGES={MAX_PAGES}", flush=True)
+                break
+
+            target_url = page_url(base_url, page_idx)
+            print(f"[PAGE {page_idx+1}] GET {target_url}", flush=True)
+
+            try:
+                driver.get(target_url)
+                WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.TAG_NAME, "body"))
+                )
+            except (urllib3.exceptions.ReadTimeoutError, TimeoutError, Exception) as e:
+                print(
+                    f"[WARN] page load failed preset='{preset_name}' "
+                    f"vendor='{vendor_name}' page={page_idx+1}: {e}",
+                    flush=True
+                )
+                # この preset 自体を打ち切る（次の job へ）
+                break
+
+            if has_no_results_banner(driver):
+                print(f"[PAGE {page_idx+1}] no-results banner -> stop", flush=True)
+                break
+
+            # --- スクレイプ ---
+            try:
+                if vendor_name == "メルカリshops":
+                    items = scroll_until_stagnant_collect_shops(driver, PAUSE)
+                else:
+                    items = scroll_until_stagnant_collect_items(driver, PAUSE)
+            except Exception:
+                import traceback
+                traceback.print_exc()
+                print(f"[SCRAPE FAILED] page={page_idx+1}", flush=True)
+                page_idx += 1
+                continue
+
+            print(f"[PAGE {page_idx+1}] scraped={len(items)}", flush=True)
+            fetched_pages += 1
+
+            # 重複排除
+            new_items: list[tuple[str, str]] = []
+            for iid, title, price in items:
+                iid = (iid or "").strip()
+                if not iid or iid in seen_ids:
+                    continue
+                seen_ids.add(iid)
+                new_items.append((iid, (title or "").strip()))
+
+            if not new_items:
+                print(f"[PAGE {page_idx+1}] all seen -> stop", flush=True)
+                break
+
+            # DB 更新 & eBay 削除
+            for iid, title in new_items:
+                fetched_items += 1
+
+                upsert_vendor_item(
+                    conn,
+                    vendor_name,
+                    iid,
+                    title,
+                    page_idx + 1,
+                    preset_name,
+                    now_str,
+                )
+
+                if not is_account_excluded_for_sku(conn, iid):
+                    handle_listing_delete(conn, iid, simulate=SIMULATE_DELETE)
+                else:
+                    print(f"[SKIP DELETE] excluded account for sku={iid}", flush=True)
+
+            page_idx += 1
+            time.sleep(1)
+
+        print(
+            f"[SCRAPE END][SOLD] preset='{preset_name}' "
+            f"pages={fetched_pages} items={fetched_items}",
+            flush=True
+        )
+        return fetched_pages, fetched_items
+
+    finally:
+        try:
+            if driver:
+                driver.quit()
+        except Exception:
+            pass
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
 
 # ============================================================
 # fetch_active_ebay scrape 本体（1 preset 分）
@@ -646,23 +849,7 @@ def main():
     # job pick用の接続（長寿命）
     conn = get_sql_server_connection()
     conn.autocommit = False
-
-    # INITは “別接続で1回だけ”
-    if os.environ.get("DO_INIT_CLEAR_STATUS", "1") == "1":
-        init_conn = None
-        try:
-            init_conn = get_sql_server_connection()
-            reset_vendor_item_status_for_active_skus(init_conn)
-        except Exception:
-            traceback.print_exc()
-            raise
-        finally:
-            try:
-                if init_conn:
-                    init_conn.close()
-            except Exception:
-                pass
-
+ 
     while True:
         cur = None
         try:
@@ -698,6 +885,8 @@ def main():
 
                 if job_kind == "fetch_active_ebay":
                     fetched_pages, fetched_items = run_fetch_active_ebay(payload)
+                elif job_kind == "fetch_sold_ebay":
+                    fetched_pages, fetched_items = run_fetch_sold_ebay(payload)                
                 else:
                     raise ValueError(f"unknown job_kind: {job_kind}")
 

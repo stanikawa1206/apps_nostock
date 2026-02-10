@@ -80,16 +80,20 @@ HEADS_FOR_7DAY_SKIP: Set[str] = {
     "計算価格が範囲外",
 }
 
+class FatalRendererError(Exception):
+    pass
+
 def is_fatal_renderer_error(e: Exception) -> bool:
+    class FatalRendererError(Exception):
+        """レンダラータイムアウトなどの致命的エラーをmainに伝えるための例外"""
+        pass
+
     s = str(e).lower()
     return (
         "timed out receiving message from renderer" in s
         or "unable to receive message from renderer" in s
         or "disconnected" in s and "renderer" in s
     )
-
-class FatalRendererError(Exception):
-    pass
 
 # ========= UI 補助 =========
 def _close_any_modal(driver):
@@ -1230,14 +1234,10 @@ def heavy_check_detail(
         return None, debug_unavailable_dump, writes_since_commit, 1, 0
 
     except Exception as e:
-        if is_fatal_renderer_error(e):
-            import traceback
-            print("!!! [FATAL RENDERER ERROR] !!!", flush=True)
-            print(f"Target URL: {item_url}", flush=True)
-            print(f"Error Detail: {e}", flush=True)
-            print(traceback.format_exc(), flush=True)
-            print("[FATAL] renderer timeout detected → raising FatalRendererError", flush=True)
-            raise FatalRendererError(str(e))
+            if is_fatal_renderer_error(e):
+                print(f"!!! [RENDERER TIMEOUT DETECTED] !!! Target URL: {item_url}")
+                # sys.exit(100) を削除し、例外を投げて main 側で再起動させる
+                raise FatalRendererError(str(e))
 
         rec_fail = {
             "vendor_name": vendor_name,
@@ -1675,12 +1675,6 @@ def get_processing_by():
 
 def upload_image_to_r2(r2, bucket, public_base, image_url, key):
     import requests
-    print("[R2 DEBUG",
-        "endpoint=", r2._endpoint.host if r2 else None,
-        "bucket=", bucket,
-        "access_key=", bool(os.getenv("R2_ACCESS_KEY_ID")),
-        "secret_key=", bool(os.getenv("R2_SECRET_ACCESS_KEY")),
-    )
 
     res = requests.get(image_url, timeout=30)
     res.raise_for_status()
@@ -1760,6 +1754,7 @@ def main():
     conn = get_sql_server_connection()
     driver = build_driver()
     processed_in_session = 0
+
     try:
         global TITLE_RULES
         TITLE_RULES = load_title_rules(conn)
@@ -1858,156 +1853,143 @@ def main():
             # ★ NEW: ラウンドロビン開始位置
             rr_idx = 0  # ★ NEW
             group_items_exhausted = False
+            processed_in_session = 0  # mainのループの直前で初期化
 
-            for acct in target_accounts:
-                if stop_all:
-                    break
-                if not has_quota(acct):
-                    continue
-
-                print(
-                    f"[DEBUG][ACCOUNT] preset_group={preset_group} "
-                    f"account={acct} post_target={acct_targets[acct]} pc={current_pc}"  # ★ NEW
-                )
-
-                while has_quota(acct):
-                    try:
-                        # --- ブラウザのリフレッシュ（20件ごと） ---
-                        if processed_in_session >= 20:
-                            print("[INFO] 20件処理したためブラウザをリフレッシュします...")
-                            try:
-                                driver.quit()
-                            except Exception:
-                                pass
-                            time.sleep(3)
-                            driver = build_driver()
-                            processed_in_session = 0
-
-                        # ===== CDN 20分解除チェック（SKUごと）=====
-                        now_dt = datetime.now()
-                        if image_mode == "CDN" and cdn_mode_until and now_dt >= cdn_mode_until:
-                            print("[IMG_MODE] CDN -> NORMAL (20min elapsed)")
-                            image_mode = "NORMAL"
-                            image_error_count = 0
-                            cdn_mode_until = None
-                            # cdn_cache は消さなくてOK（再upload防止）
-
-                        # ★ take_one は即コミット
-                        conn.autocommit = True
-                        p, vendor_item_id, price_db, ship_region, ship_days, rr_idx = take_one_from_group_presets(
-                            conn, group_presets, processing_by, rr_idx, start_time
-                        )
-                        conn.autocommit = False
-
-                        if not p or not vendor_item_id:
-                            print(f"[INFO] preset_group={preset_group} items枯渇 → group終了")
-                            group_items_exhausted = True
-                            break
-
-                        vendor_name = (p["vendor_name"] or "").strip()
-                        sku = vendor_item_id.strip()
-                        preset = p["preset"]
-
-                        # ===== 一次判定（DB価格）=====
-                        start_price_usd_1st = compute_start_price_usd(
-                            price_db,
-                            p["mode"],
-                            p["low_usd_target"],
-                            p["high_usd_target"],
-                        )
-
-                        if not start_price_usd_1st:
-                            rec_ng = {
-                                "vendor_name": vendor_name,
-                                "item_id": sku,
-                                "price": price_db,
-                                "listing_head": "計算価格が範囲外(一次判定)",
-                                "listing_detail": f"{p['low_usd_target']}–{p['high_usd_target']}USD (一次判定)",
-                            }
-                            upsert_vendor_item(conn, rec_ng)
-                            writes_since_commit += 1
-                            writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
-                            processed_in_session += 1
-                            continue
-
-                        # URL 組み立て
-                        if vendor_name == "メルカリshops":
-                            item_url = f"https://mercari-shops.com/products/{sku}"
-                        else:
-                            item_url = f"https://jp.mercari.com/item/{sku}"
-
-                        heavy, debug_unavailable_dump, writes_since_commit, d_skip_detail, d_fail = heavy_check_detail(
-                            conn,
-                            driver,
-                            item_url,
-                            sku,
-                            preset,
-                            vendor_name,
-                            p,
-                            debug_unavailable_dump,
-                            writes_since_commit,
-                        )
-
-                        skip_detail_count += d_skip_detail
-                        fail_other += d_fail
-
-                        if heavy is None:
-                            processed_in_session += 1
-                            continue
-
-                        (
-                            acct_targets,
-                            acct_success,
-                            total_listings,
-                            stop_all,
-                            writes_since_commit,
-                            d_fail2,
-                            image_mode,
-                            image_error_count,
-                            cdn_mode_until,
-                        ) = post_to_ebay(
-                            conn=conn,
-                            p=p,
-                            acct=acct,
-                            heavy=heavy,
-                            acct_targets=acct_targets,
-                            acct_success=acct_success,
-                            acct_policies_map=acct_policies_map,
-                            total_listings=total_listings,
-                            MAX_LISTINGS=MAX_LISTINGS,
-                            stop_all=stop_all,
-                            writes_since_commit=writes_since_commit,
-                            BATCH_COMMIT=BATCH_COMMIT,
-                            image_mode=image_mode,
-                            image_error_count=image_error_count,
-                            cdn_mode_until=cdn_mode_until,
-                            r2=r2,
-                            r2_bucket=R2_BUCKET,
-                            r2_public_base=R2_PUBLIC_BASE,
-                            cdn_cache=cdn_cache,
-                            now_dt=datetime.now(),
-                        )
-
-                        fail_other += d_fail2
-                        processed_in_session += 1
-
-                        if stop_all:
-                            break
-
-                    except FatalRendererError as e:
-                        print(f"!!! [RECOVERY] レンダラーエラー検知。ブラウザを再起動します: {e}")
-                        try:
-                            driver.quit()
-                        except Exception:
-                            pass
-                        time.sleep(5)
+            while has_quota(acct):
+                try:
+                    # --- [追加] 20件ごとにブラウザを完全に作り直してリフレッシュ ---
+                    if processed_in_session >= 20:
+                        print(f"[INFO] 20件処理したためブラウザをリフレッシュします... (累計成功:{total_listings}件)")
+                        driver.quit()
+                        time.sleep(3)
                         driver = build_driver()
                         processed_in_session = 0
+
+                    # ===== CDN 20分解除チェック（SKUごと）=====
+                    now_dt = datetime.now()
+                    if image_mode == "CDN" and cdn_mode_until and now_dt >= cdn_mode_until:
+                        print("[IMG_MODE] CDN -> NORMAL (20min elapsed)")
+                        image_mode = "NORMAL"
+                        image_error_count = 0
+                        cdn_mode_until = None
+                        # cdn_cache は消さなくてOK（再upload防止になる）
+
+                    # ★ NEW: take_one は即コミットさせる
+                    conn.autocommit = True
+
+                    p, vendor_item_id, price_db, ship_region, ship_days, rr_idx = take_one_from_group_presets(
+                        conn, group_presets, processing_by, rr_idx, start_time
+                    )
+
+                    conn.autocommit = False
+
+                    if not p or not vendor_item_id:
+                        print(f"[INFO] preset_group={preset_group} items枯渇 → group終了")
+                        group_items_exhausted = True
+                        break
+
+                    vendor_name = (p["vendor_name"] or "").strip()
+                    sku = vendor_item_id.strip()
+                    preset = p["preset"]
+
+                    # =========================
+                    # ★ NEW: 一次判定（DB価格）
+                    # =========================
+                    start_price_usd_1st = compute_start_price_usd(
+                        price_db,
+                        p["mode"],
+                        p["low_usd_target"],
+                        p["high_usd_target"],
+                    )
+
+                    if not start_price_usd_1st:
+                        # scrapeせずに即NG
+                        rec_ng = {
+                            "vendor_name": vendor_name,
+                            "item_id": sku,
+                            "price": price_db,  # 任意（残しておくと後で見やすい）
+                            "listing_head": "計算価格が範囲外(一次判定)",
+                            "listing_detail": f"{p['low_usd_target']}–{p['high_usd_target']}USD (一次判定)",
+                        }
+                        upsert_vendor_item(conn, rec_ng)
+                        writes_since_commit += 1
+                        writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
+                        processed_in_session += 1 # NG判定も1件としてカウント
                         continue
 
 
-                if group_items_exhausted:
-                    break
+                    # URL組み立て
+                    if vendor_name == "メルカリshops":
+                        item_url = f"https://mercari-shops.com/products/{sku}"
+                    else:
+                        item_url = f"https://jp.mercari.com/item/{sku}"
+
+
+                    heavy, debug_unavailable_dump, writes_since_commit, d_skip_detail, d_fail = heavy_check_detail(
+                        conn,
+                        driver,
+                        item_url,
+                        sku,
+                        preset,
+                        vendor_name,
+                        p,
+                        debug_unavailable_dump,
+                        writes_since_commit,
+                    )
+
+                    skip_detail_count += d_skip_detail
+                    fail_other += d_fail
+                    
+                    # 処理件数をカウントアップ（リフレッシュ用）
+                    processed_in_session += 1
+
+                    if heavy is None:
+                        continue
+
+                    (
+                        acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
+                        d_fail2, image_mode, image_error_count, cdn_mode_until
+                    ) = post_to_ebay(
+                        conn=conn,
+                        p=p,
+                        acct=acct,
+                        heavy=heavy,
+                        acct_targets=acct_targets,
+                        acct_success=acct_success,
+                        acct_policies_map=acct_policies_map,
+                        total_listings=total_listings,
+                        MAX_LISTINGS=MAX_LISTINGS,
+                        stop_all=stop_all,
+                        writes_since_commit=writes_since_commit,
+                        BATCH_COMMIT=BATCH_COMMIT,
+
+                        image_mode=image_mode,
+                        image_error_count=image_error_count,
+                        cdn_mode_until=cdn_mode_until,
+
+                        r2=r2,
+                        r2_bucket=R2_BUCKET,
+                        r2_public_base=R2_PUBLIC_BASE,
+                        cdn_cache=cdn_cache,
+                        now_dt=datetime.now(),
+                    )
+                    fail_other += d_fail2
+
+                    if stop_all:
+                        break
+
+                except FatalRendererError as e:
+                    # --- [追加] レンダラーエラー（タイムアウト）発生時の復旧ロジック ---
+                    print(f"!!! [RECOVERY] レンダラーエラーを検知しました。ブラウザを再起動して続行します: {e}")
+                    try:
+                        driver.quit()
+                    except:
+                        pass
+                    time.sleep(5)
+                    driver = build_driver()
+                    processed_in_session = 0
+                    # continue により、同じ has_quota(acct) ループの先頭に戻ります（アイテムは次に進みます）
+                    continue
 
         if writes_since_commit > 0:
             conn.commit()

@@ -31,6 +31,7 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
+from selenium.common.exceptions import TimeoutException
 
 # =========================
 # sys.path bootstrap: file-direct run safe
@@ -52,7 +53,6 @@ from apps.common.utils import (
     translate_to_english,
     contains_risky_word,
     build_driver,
-    get_openai_client,
 )
 
 from apps.adapters.ebay_api import ApiHandledError, ListingLimitError, post_one_item
@@ -87,9 +87,6 @@ def is_fatal_renderer_error(e: Exception) -> bool:
         or "unable to receive message from renderer" in s
         or "disconnected" in s and "renderer" in s
     )
-
-class FatalRendererError(Exception):
-    pass
 
 # ========= UI 補助 =========
 def _close_any_modal(driver):
@@ -1077,13 +1074,37 @@ def take_one_vendor_item_by_preset(
         return vendor_item_id, vendor_name, price, ship_region, ship_days, preset_out
 
 def is_image_too_small_error(err_msg: str) -> bool:
-    if not err_msg:
-        return False
+    """
+    eBayの「画像の最小サイズ要件」を満たしてない系のエラーをざっくり検知。
+    実際の文言は環境により揺れるので、まずは運用で見えた文言をここに足していく想定。
+    """
+    s = (err_msg or "").lower()
+    keywords = [
+        "500",                 # 500px
+        "minimum",             # minimum size
+        "image",               # image
+        "picture",             # picture
+        "too small",           # too small
+        "pixels",              # pixels
+        "resolution",          # resolution
+        "must be at least",    # must be at least ...
+    ]
+    return all(k in s for k in ["image"]) and any(k in s for k in keywords)
 
-    return (
-        "Picture Policy requirements" in err_msg
-        and "500 pixels" in err_msg
+
+def upload_image_to_r2(r2, bucket, public_base, image_url, key):
+    import requests
+    res = requests.get(image_url, timeout=30)
+    res.raise_for_status()
+
+    r2.put_object(
+        Bucket=bucket,
+        Key=key,
+        Body=res.content,
+        ContentType="image/jpeg",
     )
+    return f"{public_base}/{key}"
+
 
 def build_pic_urls(
     *,
@@ -1117,9 +1138,7 @@ def build_pic_urls(
         return cdn_cache[sku]
 
     if not r2_bucket or not r2_public_base:
-            print(f"[ERROR] CDN設定不足: Bucket={r2_bucket}, Base={r2_public_base}")
-            return src_urls  # 設定が不完全ならメルカリの直URLを返して出品を試みる
-
+        raise RuntimeError("R2_BUCKET / R2_PUBLIC_BASE が未設定です（.envを確認）")
 
     cdn_urls = []
     for idx, u in enumerate(src_urls):
@@ -1130,88 +1149,16 @@ def build_pic_urls(
     cdn_cache[sku] = cdn_urls
     return cdn_urls
 
-def has_color_touchup_or_repair(
-    jp_title: str,
-    jp_description: str,
-) -> tuple[bool, str]:
-    """
-    日本語タイトル・説明から、
-    補色・修復・リカラー・改変が示唆されているかを GPT で判定する。
-
-    戻り値:
-      (is_ng, reason)
-        - is_ng: True なら GA 的にアウト
-        - reason: NG と判断した理由（短文）。OK の場合は空文字。
-    """
-    text = ((jp_title or "") + "\n" + (jp_description or "")).strip()
-    if not text:
-        return False, ""
-
-    client = get_openai_client()
-
-    prompt = f"""
-You are checking whether an item violates eBay Authenticity Guarantee (GA) rules.
-
-Determine if the following Japanese description indicates:
-- color touch-up
-- recoloring
-- repair
-- restoration
-- modification
-
-Rules:
-- If any of the above is indicated → NOT GA safe
-- If explicitly states "no repair" / "no recolor" → GA safe
-- If unclear → treat as GA safe
-
-Return ONLY valid JSON.
-Do not include explanations, markdown, or extra text.
-
-Japanese text:
-{text}
-
-JSON format:
-{{
-  "ng": true or false,
-  "reason": "short explanation"
-}}
-""".strip()
-
-    resp = client.responses.create(
-        model="gpt-4o-mini",
-        input=prompt,
-        temperature=0,
-    )
-
-    import json
-
-    raw = (resp.output_text or "").strip()
-    if not raw:
-        # GPT が何も返さなかった → 判定不能＝GA OK 扱い
-        return False, ""
-
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        # JSON 壊れ → 判定不能＝GA OK 扱い
-        return False, ""
-
-    is_ng = bool(data.get("ng"))
-    reason = data.get("reason") or ""
-
-    return is_ng, reason
-
-
 # =========================
 # heavy_check_detail / post_to_ebay（あなたが貼った版のまま）
 # =========================
-def heavy_check_detail(
-    conn, driver, item_url, sku, preset, vendor_name,
-    p, debug_unavailable_dump, writes_since_commit,
-):
+def heavy_check_detail(conn, driver, item_url, sku, preset, vendor_name,
+                      p, debug_unavailable_dump, writes_since_commit,r2, r2_bucket, r2_public_base):
     """
-    ✅ ここでは「詳細解析」「NG判定」「翻訳生成」まで。
-    ✅ 画像URLの最終決定（NORMAL/CDN）は post_to_ebay 側でやる（重要）
+    方針:
+      - 詳細scrapeを行い、NG/失敗なら trx.vendor_item を 1回 upsert して終わる
+      - OKなら、出品に必要な情報（title_en/description_en 等）を rec に詰めて返す
+        → 最終確定（出品/出品失敗）時に post_to_ebay 側で upsert 1回
     """
     # === 1) scrape ===
     try:
@@ -1230,15 +1177,16 @@ def heavy_check_detail(
         return None, debug_unavailable_dump, writes_since_commit, 1, 0
 
     except Exception as e:
+        # ★ 今回の致命的エラーだけは即プロセス終了
         if is_fatal_renderer_error(e):
-            import traceback
-            print("!!! [FATAL RENDERER ERROR] !!!", flush=True)
-            print(f"Target URL: {item_url}", flush=True)
-            print(f"Error Detail: {e}", flush=True)
-            print(traceback.format_exc(), flush=True)
-            print("[FATAL] renderer timeout detected → raising FatalRendererError", flush=True)
-            raise FatalRendererError(str(e))
+            print("[FATAL] renderer timeout detected → exit process", flush=True)
+            try:
+                driver.quit()
+            except Exception:
+                pass
+            sys.exit(100)
 
+        # ★ それ以外は今まで通り「解析失敗」
         rec_fail = {
             "vendor_name": vendor_name,
             "item_id": sku,
@@ -1250,7 +1198,6 @@ def heavy_check_detail(
         writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
         return None, debug_unavailable_dump, writes_since_commit, 0, 1
 
-    # === 必須項目チェック ===
     if not (rec.get("description") or "").strip():
         rec["listing_head"] = "説明文なし"
         rec["listing_detail"] = "メルカリ商品説明が空"
@@ -1272,7 +1219,7 @@ def heavy_check_detail(
     writes_since_commit += 1
     writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
 
-    # === 2) 配送条件NG ===
+    # === 2) 配送条件NG（初回判定） ===
     is_ng_page, has_info_page = _check_shipping_condition_values(
         rec.get("shipping_region"),
         rec.get("shipping_days"),
@@ -1306,7 +1253,7 @@ def heavy_check_detail(
         writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
         return None, debug_unavailable_dump, writes_since_commit, 1, 0
 
-    # === 4.5) セラー判定 ===
+    # === 4.5) セラー判定（NG） ===
     rating_count = rec.get("rating_count")
     threshold = 20 if vendor_name == "メルカリshops" else 50
 
@@ -1320,7 +1267,12 @@ def heavy_check_detail(
 
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT is_ng FROM mst.seller WHERE vendor_name = ? AND seller_id = ?",
+            """
+            SELECT is_ng
+            FROM mst.seller
+            WHERE vendor_name = ?
+              AND seller_id = ?
+            """,
             (vendor_name, seller_id),
         )
         row = cur.fetchone()
@@ -1353,23 +1305,29 @@ def heavy_check_detail(
         writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
         return None, debug_unavailable_dump, writes_since_commit, 1, 0
 
-    # =========================
-    # GA 補色・修復チェック
-    # =========================
-    if p["mode"] == "GA":
-        is_ng, reason = has_color_touchup_or_repair(
-            jp_title=jp_title,
-            jp_description=desc_jp,
+    # === 5) 画像整形（★R2対応） ===
+    imgs_ok = []
+
+    for idx, u in enumerate(rec.get("images") or []):
+        if not (isinstance(u, str) and u.strip().startswith("http")):
+            continue
+
+        clean_url = u.strip().split("?")[0].split("#")[0]
+
+        key = f"{sku}/{idx+1}.jpg"
+
+        cdn_url = upload_image_to_r2(
+            r2,
+            r2_bucket,
+            r2_public_base,
+            clean_url,
+            key,
         )
-        if is_ng:
-            rec["listing_head"] = "NG(GA補色)"
-            rec["listing_detail"] = reason or "Color touch-up / repair indicated"
-            upsert_vendor_item(conn, rec)
-            writes_since_commit += 1
-            writes_since_commit = _maybe_commit(
-                conn, writes_since_commit, BATCH_COMMIT
-            )
-            return None, debug_unavailable_dump, writes_since_commit, 1, 0
+
+        imgs_ok.append(cdn_url)
+
+        if len(imgs_ok) >= 12:
+            break
 
     # === 6) 翻訳/整形（OKルート） ===
     existing_en = fetch_existing_title_en(conn, vendor_name, sku)
@@ -1400,7 +1358,7 @@ def heavy_check_detail(
         )
         rec["title_en"] = clean_for_ebay(title_en)
 
-    desc_jp = rec.get("description") or ""
+    desc_jp = (rec.get("description") or "").strip()
     desc_en = ""
     if desc_jp:
         try:
@@ -1427,64 +1385,40 @@ def heavy_check_detail(
         "sku": sku,
         "rec": rec,
         "start_price_usd": start_price_usd,
+        "imgs_ok": imgs_ok,
     }
     return heavy, debug_unavailable_dump, writes_since_commit, 0, 0
 
-def post_to_ebay(
-    *,
-    conn,
-    p,
-    acct: str,
-    heavy: dict,
-    acct_targets,
-    acct_success,
-    acct_policies_map,
-    total_listings,
-    MAX_LISTINGS,
-    stop_all,
-    writes_since_commit,
-    BATCH_COMMIT,
-    # ★ state machine inputs/outputs
-    image_mode: str,                # "NORMAL" or "CDN"
-    image_error_count: int,
-    cdn_mode_until,                 # datetime|None
-    r2,
-    r2_bucket: str,
-    r2_public_base: str,
-    cdn_cache: dict,
-    now_dt: datetime,
-):
+def post_to_ebay(conn, p, target_accounts, heavy,
+                 acct_targets, acct_success, acct_policies_map,
+                 total_listings, MAX_LISTINGS, stop_all,
+                 writes_since_commit, BATCH_COMMIT):
     """
-    - PicURLはここで組み立てる（NORMAL/CDNの分岐は main state に従う）
-    - 画像500px未満系エラーが3回出たらCDNに切替
-    - そのSKUはCDNで1回だけretry
-    - CDNは20分で解除（解除判定はmain側でやる）
+    - 出品結果（出品/出品失敗/出品停止等）を rec に入れて upsert_vendor_item で 1回確定
     """
     vendor_name = heavy["vendor_name"]
     sku = heavy["sku"]
     rec = heavy["rec"]
     start_price_usd = heavy["start_price_usd"]
+    imgs_ok = heavy["imgs_ok"]
+
+    print("[DBG_PICURL]", imgs_ok, flush=True)
 
     fail_other_delta = 0
 
-    def _attempt_post(use_mode: str) -> str:
-        pic_urls = build_pic_urls(
-            rec=rec,
-            sku=sku,
-            image_mode=use_mode,
-            r2=r2,
-            r2_bucket=r2_bucket,
-            r2_public_base=r2_public_base,
-            cdn_cache=cdn_cache,
-            limit=12,
-        )
+    for acct in target_accounts:
+        t = acct_targets[acct]
+        if t == 0:
+            continue
+        if t is not None and t <= 0:
+            continue
 
         payload = {
             "CustomLabel": sku,
             "*Title": rec["title_en"],
             "*StartPrice": start_price_usd,
             "*Quantity": 1,
-            "PicURL": "|".join(pic_urls),
+            "PicURL": "|".join(imgs_ok),
             "*Description": rec.get("description_en") or "",
             "category_id": p["category_id_ebay"],
             "C:Brand": p["default_brand_en"],
@@ -1493,145 +1427,77 @@ def post_to_ebay(
             "C:Type": p["type_ebay"],
             "C:Country of Origin": "France",
         }
-        return post_one_item(payload, acct, acct_policies_map[acct])
 
-    # 1回目（現モード）
-    try:
-        item_id_ebay = _attempt_post(image_mode)
+        try:
+            item_id_ebay = post_one_item(payload, acct, acct_policies_map[acct])
 
-        if item_id_ebay:
-            print(f"✅ 出品成功: acct={acct} SKU={sku} listing_id={item_id_ebay}")
-            record_ebay_listing(item_id_ebay, acct, sku, vendor_name)
+            if item_id_ebay:
+                print(f"✅ 出品成功: acct={acct} SKU={sku} listing_id={item_id_ebay}")
+                record_ebay_listing(item_id_ebay, acct, sku, vendor_name)
 
-            rec["listing_head"] = "出品"
-            rec["listing_detail"] = ""
+                rec["listing_head"] = "出品"
+                rec["listing_detail"] = ""
+                upsert_vendor_item(conn, rec)
+                writes_since_commit += 1
+                writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
+
+                acct_success[acct] += 1
+                if acct_targets[acct] is not None:
+                    acct_targets[acct] -= 1
+
+                total_listings += 1
+                if total_listings >= MAX_LISTINGS:
+                    stop_all = True
+
+            else:
+                print(f"❌ 出品失敗(listing_id未返却): acct={acct} SKU={sku}")
+                rec["listing_head"] = "出品失敗"
+                rec["listing_detail"] = "listing_id未返却"
+                upsert_vendor_item(conn, rec)
+                writes_since_commit += 1
+                writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
+
+                fail_other_delta += 1
+
+            break
+
+        except ListingLimitError as e:
+            print(f"🚫 出品停止(ListingLimit): acct={acct} SKU={sku} reason={e}")
+            rec["listing_head"] = "出品停止(ListingLimit)"
+            rec["listing_detail"] = str(e)
+            upsert_vendor_item(conn, rec)
+            writes_since_commit += 1
+            writes_since_commit = _maybe_commit(conn, writes_since_commit, 1)
+
+            fail_other_delta += 1
+            acct_targets[acct] = 0
+            continue
+
+        except ApiHandledError as e:
+            err_msg = str(e) or ""
+            print(f"❌ 出品失敗(API): acct={acct} SKU={sku} reason={err_msg}")
+
+            rec["listing_head"] = "出品失敗"
+            rec["listing_detail"] = err_msg
             upsert_vendor_item(conn, rec)
             writes_since_commit += 1
             writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
 
-            acct_success[acct] += 1
-            if acct_targets[acct] is not None:
-                acct_targets[acct] -= 1
+            fail_other_delta += 1
+            break
 
-            total_listings += 1
-            if total_listings >= MAX_LISTINGS:
-                stop_all = True
+        except Exception as e:
+            print(f"❌ 出品失敗(未分類): acct={acct} SKU={sku} reason={e}")
+            rec["listing_head"] = "出品失敗(未分類)"
+            rec["listing_detail"] = str(e)
+            upsert_vendor_item(conn, rec)
+            writes_since_commit += 1
+            writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
 
-            return (acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
-                    fail_other_delta, image_mode, image_error_count, cdn_mode_until)
+            fail_other_delta += 1
+            break
 
-        # listing_id未返却
-        rec["listing_head"] = "出品失敗"
-        rec["listing_detail"] = "listing_id未返却"
-        upsert_vendor_item(conn, rec)
-        writes_since_commit += 1
-        writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
-        fail_other_delta += 1
-
-        return (acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
-                fail_other_delta, image_mode, image_error_count, cdn_mode_until)
-
-    except ListingLimitError as e:
-        print(f"🚫 出品停止(ListingLimit): acct={acct} SKU={sku} reason={e}")
-        rec["listing_head"] = "出品停止(ListingLimit)"
-        rec["listing_detail"] = str(e)
-        upsert_vendor_item(conn, rec)
-        writes_since_commit += 1
-        writes_since_commit = _maybe_commit(conn, writes_since_commit, 1)
-        fail_other_delta += 1
-        acct_targets[acct] = 0
-
-        return (acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
-                fail_other_delta, image_mode, image_error_count, cdn_mode_until)
-
-    except ApiHandledError as e:
-        err_msg = str(e) or ""
-        print(f"❌ 出品失敗(API): acct={acct} SKU={sku} reason={err_msg}")
-
-        # ★ 画像エラーを数える（NORMAL時のみ）
-        switched_now = False
-        if image_mode == "NORMAL" and is_image_too_small_error(err_msg):
-            image_error_count += 1
-            print(f"[IMG_ERR] count={image_error_count}/3 sku={sku}")
-
-            if image_error_count >= 3:
-                image_mode = "CDN"
-                cdn_mode_until = now_dt + timedelta(minutes=20)
-                switched_now = True
-                print(f"[IMG_ERR] SWITCH -> CDN until {cdn_mode_until}")
-
-        # ★ 3回到達したSKUは、その場でCDN retry（1回だけ）
-        if switched_now:
-            try:
-                print(f"[IMG_ERR] retry with CDN: sku={sku}")
-                item_id_ebay = _attempt_post("CDN")
-                if item_id_ebay:
-                    print(f"✅ 出品成功(CDN retry): acct={acct} SKU={sku} listing_id={item_id_ebay}")
-                    record_ebay_listing(item_id_ebay, acct, sku, vendor_name)
-
-                    rec["listing_head"] = "出品"
-                    rec["listing_detail"] = ""
-                    upsert_vendor_item(conn, rec)
-                    writes_since_commit += 1
-                    writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
-
-                    acct_success[acct] += 1
-                    if acct_targets[acct] is not None:
-                        acct_targets[acct] -= 1
-
-                    total_listings += 1
-                    if total_listings >= MAX_LISTINGS:
-                        stop_all = True
-
-                    return (acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
-                            fail_other_delta, image_mode, image_error_count, cdn_mode_until)
-
-                # retryでもlisting_id未返却
-                rec["listing_head"] = "出品失敗"
-                rec["listing_detail"] = "CDN retry: listing_id未返却"
-                upsert_vendor_item(conn, rec)
-                writes_since_commit += 1
-                writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
-                fail_other_delta += 1
-
-                return (acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
-                        fail_other_delta, image_mode, image_error_count, cdn_mode_until)
-
-            except Exception as e2:
-                print(f"[IMG_ERR] CDN retry failed: {e2}")
-                rec["listing_head"] = "出品失敗"
-                rec["listing_detail"] = f"CDN retry failed: {e2}"
-                upsert_vendor_item(conn, rec)
-                writes_since_commit += 1
-                writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
-                fail_other_delta += 1
-
-                return (acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
-                        fail_other_delta, image_mode, image_error_count, cdn_mode_until)
-
-        # ★ 通常のAPI失敗確定
-        rec["listing_head"] = "出品失敗"
-        rec["listing_detail"] = err_msg
-        upsert_vendor_item(conn, rec)
-        writes_since_commit += 1
-        writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
-        fail_other_delta += 1
-
-        return (acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
-                fail_other_delta, image_mode, image_error_count, cdn_mode_until)
-
-    except Exception as e:
-        print(f"❌ 出品失敗(未分類): acct={acct} SKU={sku} reason={e}")
-        rec["listing_head"] = "出品失敗(未分類)"
-        rec["listing_detail"] = str(e)
-        upsert_vendor_item(conn, rec)
-        writes_since_commit += 1
-        writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
-        fail_other_delta += 1
-
-        return (acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
-                fail_other_delta, image_mode, image_error_count, cdn_mode_until)
-
+    return acct_targets, acct_success, total_listings, stop_all, writes_since_commit, fail_other_delta
 
 # =========================
 # ★ NEW: group_presets から 1件確保（ラウンドロビン）
@@ -1675,12 +1541,6 @@ def get_processing_by():
 
 def upload_image_to_r2(r2, bucket, public_base, image_url, key):
     import requests
-    print("[R2 DEBUG",
-        "endpoint=", r2._endpoint.host if r2 else None,
-        "bucket=", bucket,
-        "access_key=", bool(os.getenv("R2_ACCESS_KEY_ID")),
-        "secret_key=", bool(os.getenv("R2_SECRET_ACCESS_KEY")),
-    )
 
     res = requests.get(image_url, timeout=30)
     res.raise_for_status()
@@ -1697,48 +1557,24 @@ def upload_image_to_r2(r2, bucket, public_base, image_url, key):
 def main():
     load_dotenv()  
 
-    # --- 1. 設定の取得 ---
-    r2_endpoint    = os.getenv("R2_ENDPOINT")
-    r2_access_key  = os.getenv("R2_ACCESS_KEY_ID")
-    r2_secret_key  = os.getenv("R2_SECRET_ACCESS_KEY")
-    r2_bucket_name = os.getenv("R2_BUCKET")
-    r2_public_base = os.getenv("R2_PUBLIC_BASE")
-
-    # --- 2. エンドポイントURLの自動補正 (重要！) ---
-    # テストで確認した通り、末尾にバケット名がついていると失敗するので削除します
-    if r2_endpoint and r2_bucket_name and r2_endpoint.endswith("/" + r2_bucket_name):
-        r2_endpoint = r2_endpoint.replace("/" + r2_bucket_name, "")
-
-    print(f"[DEBUG_R2] Endpoint: {r2_endpoint} / Bucket: {r2_bucket_name}", flush=True)
-
-    # ===== 画像モード state machine =====
-    image_mode = "NORMAL"       # or "CDN"
-    image_error_count = 0       # 画像500px未満系を数える
-    cdn_mode_until = None       # datetime
-    cdn_cache = {}              # sku -> [cdn_url,...]
-
-    # --- 3. クライアントの初期化 (整形後のURLを使用) ---
     r2 = boto3.client(
         "s3",
-        endpoint_url=r2_endpoint,
-        aws_access_key_id=r2_access_key,
-        aws_secret_access_key=r2_secret_key,
+        endpoint_url=os.getenv("R2_ENDPOINT"),
+        endpoint_url=os.getenv("R2_ENDPOINT_URL"),
+        aws_access_key_id=os.getenv("R2_ACCESS_KEY_ID"),
+        aws_secret_access_key=os.getenv("R2_SECRET_ACCESS_KEY"),
         region_name="auto",
     )
 
-    # 後続の処理で使う定数を上書き
-    R2_BUCKET = r2_bucket_name
-    R2_PUBLIC_BASE = r2_public_base
-
-    # (この後、current_pc = socket.gethostname().strip() などの処理が続く...)
+    R2_BUCKET = os.getenv("R2_BUCKET")
+    R2_BUCKET = os.getenv("R2_BUCKET_NAME")
+    R2_PUBLIC_BASE = os.getenv("R2_PUBLIC_BASE")
 
 
     target_accounts = []
 
     print("### publish_ebay_new.py 起動（processing_by → preset_group → account → items） ###")
     start_time = datetime.now()
-
- 
 
     # ===== 必須: ローカル変数の初期化（UnboundLocalError / NameError 回避）=====
     stop_all = False
@@ -1759,7 +1595,7 @@ def main():
 
     conn = get_sql_server_connection()
     driver = build_driver()
-    processed_in_session = 0
+
     try:
         global TITLE_RULES
         TITLE_RULES = load_title_rules(conn)
@@ -1871,139 +1707,86 @@ def main():
                 )
 
                 while has_quota(acct):
-                    try:
-                        # --- ブラウザのリフレッシュ（20件ごと） ---
-                        if processed_in_session >= 20:
-                            print("[INFO] 20件処理したためブラウザをリフレッシュします...")
-                            try:
-                                driver.quit()
-                            except Exception:
-                                pass
-                            time.sleep(3)
-                            driver = build_driver()
-                            processed_in_session = 0
+                    # ★ NEW: take_one は即コミットさせる
+                    conn.autocommit = True
 
-                        # ===== CDN 20分解除チェック（SKUごと）=====
-                        now_dt = datetime.now()
-                        if image_mode == "CDN" and cdn_mode_until and now_dt >= cdn_mode_until:
-                            print("[IMG_MODE] CDN -> NORMAL (20min elapsed)")
-                            image_mode = "NORMAL"
-                            image_error_count = 0
-                            cdn_mode_until = None
-                            # cdn_cache は消さなくてOK（再upload防止）
+                    p, vendor_item_id, price_db, ship_region, ship_days, rr_idx = take_one_from_group_presets(
+                        conn, group_presets, processing_by, rr_idx, start_time
+                    )
 
-                        # ★ take_one は即コミット
-                        conn.autocommit = True
-                        p, vendor_item_id, price_db, ship_region, ship_days, rr_idx = take_one_from_group_presets(
-                            conn, group_presets, processing_by, rr_idx, start_time
-                        )
-                        conn.autocommit = False
+                    conn.autocommit = False
 
-                        if not p or not vendor_item_id:
-                            print(f"[INFO] preset_group={preset_group} items枯渇 → group終了")
-                            group_items_exhausted = True
-                            break
+                    if not p or not vendor_item_id:
+                        print(f"[INFO] preset_group={preset_group} items枯渇 → group終了")
+                        group_items_exhausted = True
+                        break
 
-                        vendor_name = (p["vendor_name"] or "").strip()
-                        sku = vendor_item_id.strip()
-                        preset = p["preset"]
+                    vendor_name = (p["vendor_name"] or "").strip()
+                    sku = vendor_item_id.strip()
+                    preset = p["preset"]
 
-                        # ===== 一次判定（DB価格）=====
-                        start_price_usd_1st = compute_start_price_usd(
-                            price_db,
-                            p["mode"],
-                            p["low_usd_target"],
-                            p["high_usd_target"],
-                        )
+                    # =========================
+                    # ★ NEW: 一次判定（DB価格）
+                    # =========================
+                    start_price_usd_1st = compute_start_price_usd(
+                        price_db,
+                        p["mode"],
+                        p["low_usd_target"],
+                        p["high_usd_target"],
+                    )
 
-                        if not start_price_usd_1st:
-                            rec_ng = {
-                                "vendor_name": vendor_name,
-                                "item_id": sku,
-                                "price": price_db,
-                                "listing_head": "計算価格が範囲外(一次判定)",
-                                "listing_detail": f"{p['low_usd_target']}–{p['high_usd_target']}USD (一次判定)",
-                            }
-                            upsert_vendor_item(conn, rec_ng)
-                            writes_since_commit += 1
-                            writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
-                            processed_in_session += 1
-                            continue
-
-                        # URL 組み立て
-                        if vendor_name == "メルカリshops":
-                            item_url = f"https://mercari-shops.com/products/{sku}"
-                        else:
-                            item_url = f"https://jp.mercari.com/item/{sku}"
-
-                        heavy, debug_unavailable_dump, writes_since_commit, d_skip_detail, d_fail = heavy_check_detail(
-                            conn,
-                            driver,
-                            item_url,
-                            sku,
-                            preset,
-                            vendor_name,
-                            p,
-                            debug_unavailable_dump,
-                            writes_since_commit,
-                        )
-
-                        skip_detail_count += d_skip_detail
-                        fail_other += d_fail
-
-                        if heavy is None:
-                            processed_in_session += 1
-                            continue
-
-                        (
-                            acct_targets,
-                            acct_success,
-                            total_listings,
-                            stop_all,
-                            writes_since_commit,
-                            d_fail2,
-                            image_mode,
-                            image_error_count,
-                            cdn_mode_until,
-                        ) = post_to_ebay(
-                            conn=conn,
-                            p=p,
-                            acct=acct,
-                            heavy=heavy,
-                            acct_targets=acct_targets,
-                            acct_success=acct_success,
-                            acct_policies_map=acct_policies_map,
-                            total_listings=total_listings,
-                            MAX_LISTINGS=MAX_LISTINGS,
-                            stop_all=stop_all,
-                            writes_since_commit=writes_since_commit,
-                            BATCH_COMMIT=BATCH_COMMIT,
-                            image_mode=image_mode,
-                            image_error_count=image_error_count,
-                            cdn_mode_until=cdn_mode_until,
-                            r2=r2,
-                            r2_bucket=R2_BUCKET,
-                            r2_public_base=R2_PUBLIC_BASE,
-                            cdn_cache=cdn_cache,
-                            now_dt=datetime.now(),
-                        )
-
-                        fail_other += d_fail2
-                        processed_in_session += 1
-
-                        if stop_all:
-                            break
-
-                    except FatalRendererError as e:
-                        print(f"!!! [RECOVERY] レンダラーエラー検知。ブラウザを再起動します: {e}")
-                        try:
-                            driver.quit()
-                        except Exception:
-                            pass
-                        time.sleep(5)
-                        driver = build_driver()
-                        processed_in_session = 0
+                    if not start_price_usd_1st:
+                        # scrapeせずに即NG
+                        rec_ng = {
+                            "vendor_name": vendor_name,
+                            "item_id": sku,
+                            "price": price_db,  # 任意（残しておくと後で見やすい）
+                            "listing_head": "計算価格が範囲外(一次判定)",
+                            "listing_detail": f"{p['low_usd_target']}–{p['high_usd_target']}USD (一次判定)",
+                        }
+                        upsert_vendor_item(conn, rec_ng)
+                        writes_since_commit += 1
+                        writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
                         continue
+
+
+                    # URL組み立て
+                    if vendor_name == "メルカリshops":
+                        item_url = f"https://mercari-shops.com/products/{sku}"
+                    else:
+                        item_url = f"https://jp.mercari.com/item/{sku}"
+
+
+                    heavy, debug_unavailable_dump, writes_since_commit, d_skip_detail, d_fail = heavy_check_detail(
+                        conn,
+                        driver,
+                        item_url,
+                        sku,
+                        preset,
+                        vendor_name,
+                        p,
+                        debug_unavailable_dump,
+                        writes_since_commit,
+                        r2,
+                        R2_BUCKET,
+                        R2_PUBLIC_BASE,
+                    )
+
+                    skip_detail_count += d_skip_detail
+                    fail_other += d_fail
+                    if heavy is None:
+                        continue
+
+                    acct_targets, acct_success, total_listings, stop_all, writes_since_commit, d_fail2 = post_to_ebay(
+                        conn, p, [acct], heavy,
+                        acct_targets, acct_success, acct_policies_map,
+                        total_listings, MAX_LISTINGS, stop_all,
+                        writes_since_commit, BATCH_COMMIT
+                    )
+                    fail_other += d_fail2
+
+                    if stop_all:
+                        break
 
 
                 if group_items_exhausted:

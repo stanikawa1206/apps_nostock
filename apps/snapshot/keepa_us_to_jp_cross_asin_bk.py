@@ -18,42 +18,14 @@ from apps.common.utils import get_sql_server_connection
 # ============================================================
 # 設定値
 # ============================================================
-category_map = { 14304371: "スポーツ＆アウトドア" }
 
-# category_map = {
-#     4788676051: "Alexaスキル",
-#     4976279051: "Amazonデバイス・アクセサリ",
-#     7471077051: "Audible オーディオブック",
-#     2016929051: "DIY・工具・ガーデン",
-#     561958: "DVD",
-#     2250738051: "Kindleストア",
-#     637392: "PCソフト",
-#     2351649051: "Prime Video",
-#     2381130051: "アプリ＆ゲーム",
-#     13299531: "おもちゃ",
-#     637394: "ゲーム",
-#     14304371: "スポーツ＆アウトドア",
-#     2128134051: "デジタルミュージック",
-#     160384011: "ドラッグストア",
-#     2127209051: "パソコン・周辺機器",
-#     52374051: "ビューティー",
-#     2320455051: "ファイナンス",
-#     2229202051: "ファッション",
-#     2127212051: "ペット用品",
-#     344845011: "ベビー＆マタニティ",
-#     3828871: "ホーム＆キッチン",
-#     2277721051: "ホビー",
-#     561956: "ミュージック",
-#     3210981: "家電＆カメラ",
-#     2123629051: "楽器・音響機器",
-#     3445393051: "産業・研究開発用品",
-#     2017304051: "車＆バイク",
-#     57239051: "食品・飲料・お酒",
-#     2277724051: "大型家電",
-#     86731051: "文房具・オフィス用品",
-#     465392: "本",
-#     52033011: "洋書"
-# }
+# 【変更点1】 カテゴリマップではなく、対象ブランドのリストを定義
+target_brands = [
+    "シマノ(SHIMANO)",
+    "ダイワ(DAIWA)",
+    "new balance(ニューバランス)"
+    # 必要なブランドをここに追加してください
+]
 
 PRICE90_NEW_JPY_MIN = 10_000
 PRICE90_NEW_JPY_MAX = 300_000
@@ -62,7 +34,7 @@ SALES_RANK_MAX_START = 1_000_000
 
 KEEPA_QUERY_LIMIT = 10000 
 DETAIL_BATCH_SIZE = 100    
-LIMIT_TOKEN = 150  # トークンに余裕を持って待機を開始する
+LIMIT_TOKEN = 150
 
 MAX_EDGE_CM = 160
 MAX_WEIGHT_G = 30_000
@@ -75,11 +47,10 @@ DOMAIN_JP = 5
 DOMAIN_US = 1
 
 # ============================================================
-# トークン管理・APIリクエスト
+# トークン管理・APIリクエスト (変更なし)
 # ============================================================
 
 def get_token_status() -> dict:
-    """現在のトークン状況を取得する"""
     url = f"{KEEPA_BASE}/token"
     params = {"key": KEEPA_API_KEY}
     try:
@@ -95,13 +66,11 @@ def get_token_status() -> dict:
         return {"tokens_left": 0, "refill_in_ms": 5000}
 
 def ensure_tokens():
-    """リクエスト前にトークンを確認し、不足していれば再確認を繰り返して待機する"""
     while True:
         status = get_token_status()
         tokens = status["tokens_left"]
         
         if tokens >= LIMIT_TOKEN:
-            # トークンが十分あればループを抜けてリクエストへ
             break
             
         wait_sec = (status["refill_in_ms"] / 1000.0) + 2.0
@@ -110,28 +79,20 @@ def ensure_tokens():
         print("   [Token Re-check] トークンを再確認します。")
 
 def keepa_request(endpoint: str, method: str = "GET", params: dict = None, data: dict = None):
-    """
-    Keepa APIへの共通リクエスト関数。
-    トークン事前チェック、429回避の待機、リトライ機能を備える。
-    """
-    # 1. APIを叩く前に必ずトークンを確保
     ensure_tokens()
-
-    # 2. 429(Too Many Requests)回避のため、リクエスト前に最低限のインターバルを置く
     time.sleep(0.5)
 
     url = f"{KEEPA_BASE}/{endpoint}"
     p = {"key": KEEPA_API_KEY}
     if params: p.update(params)
     
-    for attempt in range(3): # 最大3回リトライ
+    for attempt in range(3):
         try:
             if method.upper() == "POST":
                 r = requests.post(url, params=p, data=json.dumps(data), timeout=180)
             else:
                 r = requests.get(url, params=p, timeout=180)
 
-            # 429エラー(短時間のアクセス過多)が発生した場合
             if r.status_code == 429:
                 wait_time = 30 * (attempt + 1)
                 print(f"   [Alert] 429 Too Many Requests. {wait_time}秒待機してリトライします({attempt+1}/3)")
@@ -173,7 +134,8 @@ WHEN NOT MATCHED THEN
     VALUES (src.asin, SYSDATETIME(), src.jp_title, src.jp_price, src.jp_category_id);
 """
 
-def process_batch_details(asin_list: List[str], cat_id: int, conn):
+# 【変更点2】 引数から cat_id を削除し、内部で商品データから取得するように変更
+def process_batch_details(asin_list: List[str], conn):
     print(f"      -> バッチ処理中: {len(asin_list)}件")
     
     # JP詳細取得
@@ -196,6 +158,18 @@ def process_batch_details(asin_list: List[str], cat_id: int, conn):
         jp_price = stats.get("avg90_NEW") or stats.get("avg90")
         if isinstance(jp_price, list): jp_price = None
 
+        # 【追加】商品情報からカテゴリIDを取得（rootCategory または categories配列の先頭）
+        # ブランド検索だとカテゴリが混在するため、固定値ではなく動的に取得する必要があります
+        cat_id = p_jp.get("rootCategory")
+        if not cat_id:
+            cats = p_jp.get("categories")
+            if cats and isinstance(cats, list) and len(cats) > 0:
+                cat_id = cats[0]
+        
+        # もしカテゴリIDが取れない場合は 0 または NULL扱いの値をセット
+        if not cat_id:
+            cat_id = 0
+
         cursor.execute(SQL_MERGE, [asin, jp_title, jp_price, cat_id])
         success_count += 1
             
@@ -203,11 +177,14 @@ def process_batch_details(asin_list: List[str], cat_id: int, conn):
     cursor.close()
     print(f"         [DB Saved] {success_count}件")
 
-def fetch_and_process_recursive(cat_id, min_rank, max_rank, conn):
-    print(f"   [Finder Search] Rank {min_rank} - {max_rank}")
+# 【変更点3】引数を brand_name に変更し、検索条件を修正
+def fetch_and_process_recursive(brand_name: str, min_rank: int, max_rank: int, conn):
+    print(f"   [Finder Search] Brand: {brand_name} | Rank {min_rank} - {max_rank}")
     
     selection = {
-        "categories_include": [cat_id], "productType": 0,
+        # categories_include を削除し、brand を追加
+        "brand": [brand_name], 
+        "productType": 0,
         "avg90_NEW_gte": PRICE90_NEW_JPY_MIN, "avg90_NEW_lte": PRICE90_NEW_JPY_MAX,
         "current_SALES_gte": min_rank, "current_SALES_lte": max_rank,
         "packageLength_lte": MAX_EDGE_MM, "packageWeight_lte": MAX_WEIGHT_G,
@@ -218,15 +195,19 @@ def fetch_and_process_recursive(cat_id, min_rank, max_rank, conn):
     total = res.get("totalResults", 0)
     asins = res.get("asinList", [])
 
-    if total > KEEPA_QUERY_LIMIT and (max_rank - min_rank) > 1:
-        print(f"   [Split] ヒット数 {total} が上限を超えたため、ランキング範囲を分割します。")
-        mid = (min_rank + max_rank) // 2
-        fetch_and_process_recursive(cat_id, min_rank, mid, conn)
-        fetch_and_process_recursive(cat_id, mid + 1, max_rank, conn)
-    else:
-        if asins:
-            for i in range(0, len(asins), DETAIL_BATCH_SIZE):
-                process_batch_details(asins[i : i + DETAIL_BATCH_SIZE], cat_id, conn)
+    print(f"total:{total}   ASIN:{asins[:10]}")
+
+    # # ヒット数が上限(10000)を超えた場合、ランキング範囲を分割して再帰検索
+    # # (大手ブランドの場合、範囲分割が必要になる可能性が高いです)
+    # if total > KEEPA_QUERY_LIMIT and (max_rank - min_rank) > 1:
+    #     print(f"   [Split] ヒット数 {total} が上限を超えたため、ランキング範囲を分割します。")
+    #     mid = (min_rank + max_rank) // 2
+    #     fetch_and_process_recursive(brand_name, min_rank, mid, conn)
+    #     fetch_and_process_recursive(brand_name, mid + 1, max_rank, conn)
+    # else:
+    #     if asins:
+    #         for i in range(0, len(asins), DETAIL_BATCH_SIZE):
+    #             process_batch_details(asins[i : i + DETAIL_BATCH_SIZE], conn)
 
 # ============================================================
 # 実行
@@ -234,9 +215,10 @@ def fetch_and_process_recursive(cat_id, min_rank, max_rank, conn):
 def main():
     conn = get_sql_server_connection()
     try:
-        for cat_id, cat_name in category_map.items():
-            print(f"\n--- カテゴリ: {cat_name} ({cat_id}) 開始 ---")
-            fetch_and_process_recursive(cat_id, SALES_RANK_MIN_START, SALES_RANK_MAX_START, conn)
+        # ブランドリストでループ
+        for brand in target_brands:
+            print(f"\n--- ブランド: {brand} 開始 ---")
+            fetch_and_process_recursive(brand, SALES_RANK_MIN_START, SALES_RANK_MAX_START, conn)
     finally:
         conn.close()
 

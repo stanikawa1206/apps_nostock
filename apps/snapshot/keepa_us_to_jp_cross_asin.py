@@ -4,234 +4,352 @@ from __future__ import annotations
 import os
 import json
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 import sys
 import requests
-import pandas as pd
-import openpyxl
 
-# プロジェクトルート設定（既存踏襲）
+# パス設定 (環境に合わせて調整してください)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-# ★テスト用なのでDB接続は一旦不要だが、importエラー防止のため残すか、ダミーにする
-try:
-    from apps.common.utils import get_sql_server_connection
-except ImportError:
-    def get_sql_server_connection(): return None
+from apps.common.utils import get_sql_server_connection
 
 # ============================================================
-# 設定値 & テスト用パラメータ
+# 設定値
 # ============================================================
 
-TASK_FILE = r"Y:amazon_カテゴリリスト.xlsx"  # 同じフォルダにある前提
+# ★ここに検索したいブランド名を設定してください
+target_brands = [
+    "シマノ(SHIMANO)",
+    "ダイワ(DAIWA)"
+]
 
-# ランキング範囲
-RANK_MIN = 1
-RANK_MAX = 1_000_000
-OVERLAP_RANK = 1000  # 1000位のオーバーラップ
-
-# Keepa設定
 PRICE90_NEW_JPY_MIN = 10_000
 PRICE90_NEW_JPY_MAX = 300_000
+SALES_RANK_MIN_START = 1
+SALES_RANK_MAX_START = 1_000_000
+
 KEEPA_QUERY_LIMIT = 10000 
+
+# SP-APIのデータ欠損を防ぐため、1回のリクエストを10件に制限
+DETAIL_BATCH_SIZE = 10    
 LIMIT_TOKEN = 150
 
-# 物理フィルタ（API検索用）
+# サイズ・重量フィルタ
 MAX_EDGE_CM = 160
 MAX_WEIGHT_G = 30_000
+MAX_VOLUME_CM3 = 180_000
 MAX_EDGE_MM = MAX_EDGE_CM * 10
 
 KEEPA_API_KEY = os.getenv("KEEPA_API_KEY") or os.getenv("KEEPA_KEY")
 KEEPA_BASE = "https://api.keepa.com"
 DOMAIN_JP = 5
 
+# SP-API設定
+MARKETPLACE_ID_JP = "A1VC38T7YXB528"
+MARKETPLACE_ID_US = "ATVPDKIKX0DER"
+
+SPAPI_ENDPOINT_JP = "https://sellingpartnerapi-fe.amazon.com"
+SPAPI_ENDPOINT_US = "https://sellingpartnerapi-na.amazon.com"
+SPAPI_DELAY = 1.2  # リクエスト間隔(秒)
+
 # ============================================================
-# APIリクエスト関連
+# SP-API 認証
 # ============================================================
-def get_token_status() -> dict:
-    url = f"{KEEPA_BASE}/token"
+
+def get_spapi_access_token(region: str = "JP") -> str:
+    """region="JP" or "US" に応じてトークンを取得"""
+    client_id = os.getenv("LWA_CLIENT_ID")
+    client_secret = os.getenv("LWA_CLIENT_SECRET")
+    
+    if region == "US":
+        refresh_token = os.getenv("REFRESH_TOKEN_US")
+    else:
+        refresh_token = os.getenv("REFRESH_TOKEN")
+
+    if not (refresh_token and client_id and client_secret):
+        target_var = "REFRESH_TOKEN_US" if region == "US" else "REFRESH_TOKEN"
+        raise RuntimeError(f"SP-API認証情報不足: {target_var}")
+
+    url = "https://api.amazon.com/auth/o2/token"
+    headers = {"Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"}
+    data = {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": client_id,
+        "client_secret": client_secret,
+    }
+
     try:
-        r = requests.get(url, params={"key": KEEPA_API_KEY}, timeout=30)
+        resp = requests.post(url, data=data, headers=headers, timeout=30)
+        resp.raise_for_status()
+        return resp.json()["access_token"]
+    except Exception as e:
+        print(f"❌ SP-API Token Error ({region}): {e}")
+        raise
+
+# ============================================================
+# Keepa API 
+# ============================================================
+
+def get_keepa_token_status() -> dict:
+    url = f"{KEEPA_BASE}/token"
+    params = {"key": KEEPA_API_KEY}
+    try:
+        r = requests.get(url, params=params, timeout=30)
         r.raise_for_status()
         data = r.json()
         return {"tokens_left": data.get("tokensLeft", 0), "refill_in_ms": data.get("refillIn", 0)}
     except:
         return {"tokens_left": 0, "refill_in_ms": 5000}
 
-def ensure_tokens():
+def ensure_keepa_tokens():
     while True:
-        status = get_token_status()
-        tokens = status["tokens_left"]
-        if tokens >= LIMIT_TOKEN: break
-        wait_sec = (status["refill_in_ms"] / 1000.0) + 2.0
-        print(f"   [Token Wait] 残り{tokens} - {wait_sec:.1f}秒待機")
-        time.sleep(wait_sec)
+        status = get_keepa_token_status()
+        if status["tokens_left"] >= LIMIT_TOKEN: break
+        time.sleep((status["refill_in_ms"] / 1000.0) + 2.0)
 
 def keepa_request(endpoint: str, method: str = "GET", params: dict = None, data: dict = None):
-    ensure_tokens()
+    ensure_keepa_tokens()
     time.sleep(0.5)
     url = f"{KEEPA_BASE}/{endpoint}"
     p = {"key": KEEPA_API_KEY}
     if params: p.update(params)
+    try:
+        if method.upper() == "POST":
+            r = requests.post(url, params=p, data=json.dumps(data), timeout=180)
+        else:
+            r = requests.get(url, params=p, timeout=180)
+        r.raise_for_status()
+        return r.json()
+    except:
+        return {}
+
+# ============================================================
+# SP-API (詳細取得・フィルタ)
+# ============================================================
+
+def get_spapi_items_batch(asin_list: List[str], marketplace_id: str, access_token: str) -> List[Dict[str, Any]]:
+    """SP-API searchCatalogItems (10件ずつ呼び出される前提)"""
+    if not asin_list: return []
     
+    if marketplace_id == MARKETPLACE_ID_US:
+        base_url = SPAPI_ENDPOINT_US
+    else:
+        base_url = SPAPI_ENDPOINT_JP
+
+    url = f"{base_url}/catalog/2022-04-01/items"
+    params = {
+        "identifiers": ",".join(asin_list),
+        "identifiersType": "ASIN",
+        "marketplaceIds": marketplace_id,
+        "includedData": "summaries,attributes"
+    }
+    headers = {"X-Amz-Access-Token": access_token, "Content-Type": "application/json"}
+
     for attempt in range(3):
+        time.sleep(SPAPI_DELAY)
         try:
-            if method.upper() == "POST":
-                r = requests.post(url, params=p, data=json.dumps(data), timeout=180)
-            else:
-                r = requests.get(url, params=p, timeout=180)
+            r = requests.get(url, params=params, headers=headers, timeout=30)
             
+            if r.status_code == 403:
+                print(f"   [SP-API 403] 権限エラー ({base_url})")
+                return []
             if r.status_code == 429:
-                time.sleep(30 * (attempt + 1))
+                print(f"   [SP-API 429] Limit Exceeded. Waiting...")
+                time.sleep(5 * (attempt + 1))
                 continue
+            
             r.raise_for_status()
-            return r.json()
+            return r.json().get("items", [])
         except Exception as e:
-            if attempt == 2: raise e
-            time.sleep(5)
-    return {}
+            print(f"   [SP-API Error] {e}")
+            time.sleep(2)
+    return []
+
+def passes_spapi_size_filter(item: Dict[str, Any]) -> Tuple[bool, str]:
+    """サイズフィルタ"""
+    attrs = item.get("attributes", {})
+    
+    dims_list = attrs.get("package_dimensions") or attrs.get("item_package_dimensions") or attrs.get("item_dimensions")
+    dim_type = "pkg" if attrs.get("package_dimensions") else ("item_pkg" if attrs.get("item_package_dimensions") else "item")
+
+    if not dims_list:
+        return False, "寸法なし"
+    
+    d = dims_list[0]
+    try:
+        h = d.get("height", {}).get("value", 0)
+        l = d.get("length", {}).get("value", 0)
+        w = d.get("width", {}).get("value", 0)
+        weight = d.get("weight", {}).get("value", 0)
+        
+        if weight == 0:
+            w_list = attrs.get("package_weight") or attrs.get("item_package_weight") or attrs.get("item_weight")
+            if w_list: weight = w_list[0].get("value", 0)
+
+        info_str = f"[{dim_type}] {h}x{l}x{w}|{weight}"
+
+        if max(h, l, w) > MAX_EDGE_CM: return False, f"NG:辺 {info_str}"
+        if (h + l + w) > 200: return False, f"NG:3辺 {info_str}"
+        if (h * l * w) >= MAX_VOLUME_CM3: return False, f"NG:体積 {info_str}"
+        if weight > MAX_WEIGHT_G: return False, f"NG:重量 {info_str}"
+        
+        return True, f"OK {info_str}"
+    except Exception as e:
+        return False, f"Err {e}"
+
+# DB保存用SQL
+SQL_MERGE = r"""
+MERGE trx.amazon_cross_market_asin AS tgt
+USING (SELECT ? AS asin, ? AS jp_title, ? AS jp_price, ? AS jp_category_id) AS src
+ON tgt.asin = src.asin
+WHEN MATCHED THEN
+    UPDATE SET last_seen_at=SYSDATETIME(), jp_title=src.jp_title, jp_category_id=src.jp_category_id
+WHEN NOT MATCHED THEN
+    INSERT (asin, last_seen_at, jp_title, jp_price, jp_category_id)
+    VALUES (src.asin, SYSDATETIME(), src.jp_title, src.jp_price, src.jp_category_id);
+"""
 
 # ============================================================
-# ロジック（テスト用改修版）
+# バッチ処理 (10件ずつ呼ばれる)
 # ============================================================
 
-def fetch_recursive_test(cat_id, min_rank, max_rank) -> int:
+def process_batch_details_spapi(asin_list: List[str], conn, token_jp: str, token_us: str):
     """
-    再帰的に取得し、ASIN数をカウントして返す（DB保存はしない）。
+    1. SP-API(JP)詳細取得 -> 2. US存在確認 -> 3. DB保存
     """
-    print(f"      [Query] Rank {min_rank} - {max_rank} ... ", end="", flush=True)
+    if not asin_list: return
+
+    # --- 1. JP側詳細取得 ---
+    items_jp = get_spapi_items_batch(asin_list, MARKETPLACE_ID_JP, token_jp)
+    
+    fetched_map = {item.get('asin'): item for item in items_jp}
+    valid_jp_items = []
+    
+    print(f"      [SP-API JP] {len(asin_list)}件中 {len(items_jp)}件 取得成功")
+    
+    for asin in asin_list:
+        item = fetched_map.get(asin)
+        if item:
+            is_pass, debug_msg = passes_spapi_size_filter(item)
+            
+            # ログ表示 (短縮タイトル)
+            summary = item.get("summaries", [{}])[0]
+            title = summary.get("itemName", "No Title")
+            short_title = title[:15] + "..."
+            
+            mark = "OK" if is_pass else "NG"
+            # print(f"      ASIN: {asin} | {mark:4} | {short_title} | {debug_msg}")
+            
+            if is_pass:
+                valid_jp_items.append(item)
+        else:
+            print(f"      ASIN: {asin} | MISSING | データなし")
+
+    if not valid_jp_items:
+        # print("      [Info] 有効データなしのためスキップ")
+        time.sleep(SPAPI_DELAY)
+        return
+        
+    valid_asins = [it["asin"] for it in valid_jp_items]
+
+    # --- 2. US側存在確認 ---
+    time.sleep(0.5)
+    
+    items_us = get_spapi_items_batch(valid_asins, MARKETPLACE_ID_US, token_us)
+    existing_us_asins = {it["asin"] for it in items_us}
+
+    # --- 3. DB保存 ---
+    cursor = conn.cursor() 
+    success_count = 0
+    
+    for item in valid_jp_items:
+        asin = item["asin"]
+        if asin not in existing_us_asins:
+            # print(f"      [Skip] USなし: {asin}")
+            continue
+        
+        summary = item.get("summaries", [{}])[0]
+        title = summary.get("itemName", "")
+        cat_id_str = summary.get("browseClassification", {}).get("nodeId")
+        try:
+            cat_id = int(cat_id_str) if cat_id_str and cat_id_str.isdigit() else 0
+        except:
+            cat_id = 0
+
+        try:
+            cursor.execute(SQL_MERGE, [asin, title, None, cat_id])
+            success_count += 1
+        except Exception as e:
+            print(f"      [DB Error] {asin}: {e}")
+        
+    conn.commit()
+    cursor.close()
+
+    if success_count > 0:
+        print(f"         -> [DB Saved] {success_count}件")
+
+    time.sleep(SPAPI_DELAY)
+
+# ============================================================
+# 再帰検索 (ブランド起点)
+# ============================================================
+
+def fetch_and_process_recursive(brand_name: str, min_rank: int, max_rank: int, conn, token_jp: str, token_us: str):
+    print(f"   [Finder Search] Brand: {brand_name} | Rank {min_rank} - {max_rank}")
     
     selection = {
-        "categories_include": [cat_id], "productType": 0,
+        "brand": [brand_name], 
+        "productType": 0,
         "avg90_NEW_gte": PRICE90_NEW_JPY_MIN, "avg90_NEW_lte": PRICE90_NEW_JPY_MAX,
         "current_SALES_gte": min_rank, "current_SALES_lte": max_rank,
         "packageLength_lte": MAX_EDGE_MM, "packageWeight_lte": MAX_WEIGHT_G,
         "perPage": KEEPA_QUERY_LIMIT
     }
     
-    # APIリクエスト
     res = keepa_request("query", method="POST", params={"domain": DOMAIN_JP}, data=selection)
     total = res.get("totalResults", 0)
     asins = res.get("asinList", [])
-    count = len(asins)
 
-    # 上限チェック & 分割ロジック
-    if total >= KEEPA_QUERY_LIMIT and (max_rank - min_rank) > 1:
-        print(f"HIT {total} (上限到達) -> 分割再帰")
+    if total > KEEPA_QUERY_LIMIT and (max_rank - min_rank) > 1:
+        print(f"   [Split] ヒット数 {total} > 上限。分割します。")
         mid = (min_rank + max_rank) // 2
-        
-        # 分割して合計を返す
-        c1 = fetch_recursive_test(cat_id, min_rank, mid)
-        c2 = fetch_recursive_test(cat_id, mid + 1, max_rank)
-        return c1 + c2
+        fetch_and_process_recursive(brand_name, min_rank, mid, conn, token_jp, token_us)
+        fetch_and_process_recursive(brand_name, mid + 1, max_rank, conn, token_jp, token_us)
     else:
-        # 正常取得
-        print(f"HIT {count} -> OK")
-        if count > 0:
-            print(f"         Top10: {asins[:10]}")
-        return count
+        if asins:
+            print(f"      -> {len(asins)}件取得。10件ずつSP-API処理開始...")
+            
+            # ★ここで DETAIL_BATCH_SIZE (10) ずつに分割して関数を呼び出す
+            for i in range(0, len(asins), DETAIL_BATCH_SIZE):
+                batch_asins = asins[i : i + DETAIL_BATCH_SIZE]
+                process_batch_details_spapi(batch_asins, conn, token_jp, token_us)
 
 # ============================================================
-# メイン処理（Excel連携テスト）
+# 実行 (ブランドループ)
 # ============================================================
-def find_start_column_index(df):
-    for i, col in enumerate(df.columns):
-        if str(col).strip() == "1":
-            return i
-    return 12 
 
 def main():
-    print("=== Keepa Split Logic TEST START ===")
-    
-    if not os.path.exists(TASK_FILE):
-        print(f"Error: {TASK_FILE} が見つかりません。")
-        return
-
-    # Excel読み込み
+    print("=== ブランド起点 クロスASIN収集 開始 ===")
+    conn = get_sql_server_connection()
     try:
-        df = pd.read_excel(TASK_FILE)
-    except Exception as e:
-        print(f"Excel読み込みエラー: {e}")
-        return
+        # トークン取得 (1回だけ実行し、使い回す)
+        print("1. トークン取得中...")
+        token_jp = get_spapi_access_token("JP")
+        token_us = get_spapi_access_token("US")
+        print("   -> 取得完了")
 
-    start_col_idx = find_start_column_index(df)
-    
-    # 各行（カテゴリ）ループ
-    for i, row in df.iterrows():
-        cat_id = row.get("カテゴリID")
-        cat_name = row.get("カテゴリ名")
-        split_count = row.get("分割数", 0)
-        done_count = row.get("済分割", 0) # テストなのでここが0でもOK
-        rank_step = row.get("ランキング分割", 0)
-        target_asin_count = row.get("該当ASIN", 0) # 比較用の参考値
-
-        # 0分割（対象外）はスキップ
-        if split_count == 0:
-            continue
+        # 各ブランドに対して処理実行
+        for brand in target_brands:
+            print(f"\n--- Brand: {brand} Start ---")
+            fetch_and_process_recursive(brand, SALES_RANK_MIN_START, SALES_RANK_MAX_START, conn, token_jp, token_us)
             
-        # テストのため、済分割に関わらず「最初の数ブロック」だけ試すか、
-        # あるいは特定のカテゴリだけ試す制御を入れても良い
-        # ここでは「DIY・工具」など特定の巨大カテゴリだけ動かす例にするなら if cat_id != ...: continue を入れる
-        
-        if split_count - done_count <= 0:
-            print(f"SKIP: {cat_name} (完了済み)")
-            continue
-
-        print(f"\n--------------------------------------------------")
-        print(f"Category: {cat_name} ({cat_id})")
-        print(f"設定: 全{split_count}分割 / 幅{rank_step} / 済{done_count}")
-        print(f"目標総ASIN数: {target_asin_count} (目安)")
-        print(f"--------------------------------------------------")
-
-        category_total_hits = 0
-        
-        # 残りのブロックをループ
-        remaining = split_count - done_count
-        
-        # ★テスト短縮用: 全部は長いので、最初の3ブロックだけ試す設定（必要なら外してください）
-        # remaining = min(remaining, 3) 
-        
-        for j in range(remaining):
-            current_block_idx = done_count + j
-            
-            # --- ランク計算ロジック（下から上へ） ---
-            # 例: 全100万, step 1万, idx 0
-            # Base Max = 100万 - (0 * 1万) = 100万
-            # Min = 100万 - 1万 = 99万
-            
-            r_max_base = RANK_MAX - (current_block_idx * rank_step)
-            r_min = r_max_base - rank_step
-            
-            if r_max_base > RANK_MAX: r_max_base = RANK_MAX
-            if r_min < RANK_MIN: r_min = RANK_MIN
-            
-            # オーバーラップ +1000
-            r_max_query = r_max_base + OVERLAP_RANK
-            
-            # 範囲チェック
-            if r_min >= r_max_query: 
-                print("   [End] ランク範囲終了")
-                break
-
-            print(f"[{j+1}/{remaining}] Block {current_block_idx+1}: {r_min} ~ {r_max_query} (BaseMax: {r_max_base})")
-            
-            # API実行 & カウント
-            hits = fetch_recursive_test(cat_id, r_min, r_max_query)
-            category_total_hits += hits
-            
-            # Excelへの書き込みシミュレーション
-            write_col = start_col_idx + current_block_idx
-            print(f"      -> Block完了。Excel列 {write_col+1} ({df.columns[write_col]}) に書き込み予定")
-            
-            time.sleep(1) # API負荷軽減
-
-        print(f"\n>>> {cat_name} テスト結果合計: {category_total_hits} ASIN取得")
-        # 比較（全件回した場合のみ意味がある）
-        # if remaining == (split_count - done_count):
-        #     print(f"    (Excel想定: {target_asin_count} vs 実績: {category_total_hits})")
+    finally:
+        conn.close()
+        print("\n=== 全処理完了 ===")
 
 if __name__ == "__main__":
     main()

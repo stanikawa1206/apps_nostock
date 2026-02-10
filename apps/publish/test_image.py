@@ -44,7 +44,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 # ★ ここで既存関数を import
-from publish_ebay import (
+from apps.publish.publish_ebay_new_260208 import (
     collect_images_shops,
     collect_images_personal,
 )
@@ -84,7 +84,7 @@ def build_shops_url(product_id: str) -> str:
 # テスト対象（IDだけ入れる）
 # -------------------------
 PERSONAL_ITEM_IDS = [
-    "m67795518375",
+    "m62044335392",
 ]
 
 SHOPS_PRODUCT_IDS = [
