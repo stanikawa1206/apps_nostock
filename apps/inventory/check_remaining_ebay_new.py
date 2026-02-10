@@ -260,9 +260,17 @@ def run_remaining_worker(worker_name: str):
                     worker_name,
                 )
             except Exception as e:
-                # タイムアウト等のエラーが出ても、ログを吐いて次へ進む
-                print(f"[ERROR] スキップします。SKU:{row['vendor_item_id']} 理由: {e}")
-                continue
+                # ログを吐いて、プログラムを異常終了(exit code 1)させる
+                print(f"[ERROR] 実行を中断し、再起動を待機します。SKU:{row['vendor_item_id']} 理由: {e}")
+                
+                # driver が生きていれば閉じる
+                safe_quit(driver)
+                
+                # シェルスクリプトのリトライをトリガーするために 1 で終了
+                import sys
+                sys.exit(1)
+
+
 
             time.sleep(random.uniform(2.0, 5.0))
 
