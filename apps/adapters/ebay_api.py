@@ -435,6 +435,7 @@ def revise_price(*, item_id: str, new_price_usd: str | float | int,
 
 
 def delete_item_from_ebay(account: str, item_id: str) -> Dict[str, Any]:
+    print(f"delete_item_from_ebay: account={account}, item_id={item_id}")
     token = get_access_token_new(account)
     if not token:
         return {"success": False, "error_code": "no_token"}
@@ -628,4 +629,3 @@ def _incremental_scroll(driver, *, max_loops=32, pause=0.6, stagnant_loops=2):
             last_count = cur
         driver.execute_script("window.scrollBy(0, Math.max(900, Math.floor(window.innerHeight*0.9)));")
         time.sleep(pause + random.uniform(0.15, 0.35))
-

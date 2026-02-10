@@ -17,19 +17,21 @@ if str(PROJECT_ROOT) not in sys.path:
 from apps.common.utils import get_sql_server_connection
 
 # ============================================================
-# 設定値
+# 設定値 (修正)
 # ============================================================
 
-# ★ここに検索したいブランド名を設定してください
-target_brands = [
-    "シマノ(SHIMANO)",
-    "ダイワ(DAIWA)"
+# カテゴリーIDを指定
+target_category_ids = [
+    14304371,  # 例: 釣り具
 ]
+
+# ランキング設定
+SALES_RANK_MIN = 1
+SALES_RANK_MAX = 100_000
+RANK_STEP = 8_000  # 10,000位単位で分割
 
 PRICE90_NEW_JPY_MIN = 10_000
 PRICE90_NEW_JPY_MAX = 300_000
-SALES_RANK_MIN_START = 1
-SALES_RANK_MAX_START = 1_000_000
 
 KEEPA_QUERY_LIMIT = 10000 
 
@@ -295,14 +297,18 @@ def process_batch_details_spapi(asin_list: List[str], conn, token_jp: str, token
     time.sleep(SPAPI_DELAY)
 
 # ============================================================
-# 再帰検索 (ブランド起点)
+# カテゴリー・ランキング指定検索
 # ============================================================
 
-def fetch_and_process_recursive(brand_name: str, min_rank: int, max_rank: int, conn, token_jp: str, token_us: str):
-    print(f"   [Finder Search] Brand: {brand_name} | Rank {min_rank} - {max_rank}")
+def fetch_and_process_recursive_by_cat(cat_id: int, min_rank: int, max_rank: int, conn, token_jp: str, token_us: str):
+    """
+    指定されたランキング範囲で検索。
+    もし10,000件を超える場合は再帰的に分割して漏れを防ぐ。
+    """
+    print(f"   [Keepa Query] Cat: {cat_id} | Rank {min_rank} - {max_rank}")
     
     selection = {
-        "brand": [brand_name], 
+        "rootCategory": cat_id, 
         "productType": 0,
         "avg90_NEW_gte": PRICE90_NEW_JPY_MIN, "avg90_NEW_lte": PRICE90_NEW_JPY_MAX,
         "current_SALES_gte": min_rank, "current_SALES_lte": max_rank,
@@ -314,38 +320,42 @@ def fetch_and_process_recursive(brand_name: str, min_rank: int, max_rank: int, c
     total = res.get("totalResults", 0)
     asins = res.get("asinList", [])
 
+    # Keepaの1万件制限に達した場合は、さらに細かく分割
     if total > KEEPA_QUERY_LIMIT and (max_rank - min_rank) > 1:
-        print(f"   [Split] ヒット数 {total} > 上限。分割します。")
+        print(f"   [Split] ヒット数 {total} > 上限。さらに分割します。")
         mid = (min_rank + max_rank) // 2
-        fetch_and_process_recursive(brand_name, min_rank, mid, conn, token_jp, token_us)
-        fetch_and_process_recursive(brand_name, mid + 1, max_rank, conn, token_jp, token_us)
+        fetch_and_process_recursive_by_cat(cat_id, min_rank, mid, conn, token_jp, token_us)
+        fetch_and_process_recursive_by_cat(cat_id, mid + 1, max_rank, conn, token_jp, token_us)
     else:
         if asins:
-            print(f"      -> {len(asins)}件取得。10件ずつSP-API処理開始...")
-            
-            # ★ここで DETAIL_BATCH_SIZE (10) ずつに分割して関数を呼び出す
+            print(f"      -> {len(asins)}件取得。SP-API照会開始...")
             for i in range(0, len(asins), DETAIL_BATCH_SIZE):
                 batch_asins = asins[i : i + DETAIL_BATCH_SIZE]
                 process_batch_details_spapi(batch_asins, conn, token_jp, token_us)
 
 # ============================================================
-# 実行 (ブランドループ)
+# メイン実行
 # ============================================================
 
 def main():
-    print("=== ブランド起点 クロスASIN収集 開始 ===")
+    print(f"=== カテゴリー起点 ({SALES_RANK_MIN}-{SALES_RANK_MAX}位) 収集開始 ===")
     conn = get_sql_server_connection()
     try:
-        # トークン取得 (1回だけ実行し、使い回す)
         print("1. トークン取得中...")
         token_jp = get_spapi_access_token("JP")
         token_us = get_spapi_access_token("US")
-        print("   -> 取得完了")
-
-        # 各ブランドに対して処理実行
-        for brand in target_brands:
-            print(f"\n--- Brand: {brand} Start ---")
-            fetch_and_process_recursive(brand, SALES_RANK_MIN_START, SALES_RANK_MAX_START, conn, token_jp, token_us)
+        
+        for cat_id in target_category_ids:
+            print(f"\n--- CategoryID: {cat_id} ---")
+            
+            # 指定されたステップ（10,000位）ごとにループ
+            for r_start in range(SALES_RANK_MIN, SALES_RANK_MAX, RANK_STEP):
+                r_end = r_start + RANK_STEP - 1
+                # 上限を超えないように調整
+                if r_end > SALES_RANK_MAX:
+                    r_end = SALES_RANK_MAX
+                
+                fetch_and_process_recursive_by_cat(cat_id, r_start, r_end, conn, token_jp, token_us)
             
     finally:
         conn.close()
