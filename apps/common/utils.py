@@ -461,12 +461,12 @@ def build_driver(
     opts.page_load_strategy = page_load_strategy
 
     # =========================
-    # ★ Chrome 本体を固定 ★
+    # ★ Chrome / Driver を固定
     # =========================
     if os.name == "posix":
-        # VPS (Linux)
+        # VPS (Linux) ― 実体を指定するのが重要
         opts.binary_location = os.getenv(
-            "CHROME_BINARY", "/usr/bin/google-chrome"
+            "CHROME_BINARY", "/usr/bin/google-chrome-stable"
         )
         service = Service(
             os.getenv("CHROMEDRIVER_BINARY", "/usr/bin/chromedriver")
