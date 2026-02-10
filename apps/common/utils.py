@@ -472,6 +472,7 @@ def build_driver(
         # Windows (ローカル)
         service = Service(ChromeDriverManager().install())
 
+    driver = webdriver.Chrome(service=service, options=opts)
     driver.set_window_size(1400, 1000)
     driver.set_page_load_timeout(30)
     driver.set_script_timeout(30)
