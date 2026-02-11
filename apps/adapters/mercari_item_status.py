@@ -9,6 +9,7 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from datetime import datetime, timezone, timedelta
 
 # ★ eBay削除API ← 波線エラーの正体はコレ
 from apps.adapters.ebay_api import delete_item_from_ebay
@@ -207,7 +208,7 @@ def mark_vendor_item_unavailable(
 
 
 # ================================
-# eBay 側削除
+# eBay 側削除 & trx.listings 論理削除
 # ================================
 def handle_listing_delete(
     conn: pyodbc.Connection,
@@ -221,6 +222,7 @@ def handle_listing_delete(
             SELECT listing_id, account
               FROM [trx].[listings]
              WHERE vendor_item_id = ?
+               AND ISNULL(is_deleted, 0) = 0
             """,
             (vendor_item_id,),
         )
@@ -246,12 +248,15 @@ def handle_listing_delete(
         with conn.cursor() as c2:
             c2.execute(
                 """
-                DELETE FROM [trx].[listings]
-                 WHERE listing_id = ? AND account = ?
+                UPDATE [trx].[listings]
+                   SET is_deleted = 1,
+                       deleted_at = ?
+                 WHERE listing_id = ?
+                   AND account = ?
                 """,
-                (listing_id, account),
+                (datetime.now(), listing_id, account),
             )
         conn.commit()
-        print(f"[DELETE] {vendor_item_id=} {listing_id=}")
+        print(f"[LOGICAL DELETE] {vendor_item_id=} {listing_id=}")
     else:
         print(f"[WARN] eBay削除失敗 {listing_id=} resp={res}")

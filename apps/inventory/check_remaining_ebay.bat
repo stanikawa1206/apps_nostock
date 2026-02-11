@@ -11,7 +11,6 @@ echo Process exited with code %code%
 :: 正常終了 (code 0) なら終了
 if %code% == 0 (
     echo SUCCESS: All tasks completed.
-    pause
     exit /b
 )
 

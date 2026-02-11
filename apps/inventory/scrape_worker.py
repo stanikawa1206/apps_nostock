@@ -305,21 +305,18 @@ def handle_price_change_side_effects(
 
     if usd is None:
         print(
-            f"[PRICE] {sku}: {old_price} -> {new_price_jpy} JPY / 目標外(usd=None) mode={mode} {low_usd_target}-{high_usd_target}",
+            f"[PRICE] {sku}: {old_price} -> {new_price_jpy} JPY / "
+            f"目標外(usd=None) mode={mode} {low_usd_target}-{high_usd_target}",
             flush=True
         )
-        if simulate:
-            print(f"[SIMULATE DELETE] sku={sku} item_id={ebay_item_id}", flush=True)
-            return
 
-        res = delete_item_from_ebay(account, ebay_item_id)
-        ok = bool(res.get("success")) or res.get("note") in {"already_deleted", "already_ended"}
-        if ok:
-            delete_listing_by_itemid(conn, ebay_item_id, account, listing_vendor or vendor_name)
-            if EXIT_AFTER_DELETE:
-                sys.exit(0)
-        else:
-            print(f"[WARN] eBay削除失敗 itemId={ebay_item_id} resp={res}", flush=True)
+        # ★ 削除は共通関数へ統一
+        handle_listing_delete(
+            conn,
+            sku,
+            simulate=simulate,
+        )
+
         return
 
     print(
