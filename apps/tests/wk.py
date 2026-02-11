@@ -25,8 +25,17 @@ engine = create_engine(f"mssql+pyodbc:///?odbc_connect={params}")
 # 3. Excelデータの読み込み
 df = pd.read_excel(r"Y:\Amazon輸出\brands.xlsx")
 
+# 列名の整理（念のため）
+df.columns = ['brand', 'rank', 'last_seen_at']
+
+# 日付の変換（数値になってしまう場合）
+df['last_seen_at'] = pd.to_datetime(df['last_seen_at'], errors='coerce')
+
 # 4. 書き込み
 try:
+    # 念のため重複を削除
+    df = df.drop_duplicates(subset=['brand'])
+    
     df.to_sql('amazon_brand', schema='mst', con=engine, if_exists='append', index=False)
     print("書き込みが完了しました！")
 except Exception as e:
