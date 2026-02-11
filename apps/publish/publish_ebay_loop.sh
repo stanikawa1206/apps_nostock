@@ -1,8 +1,8 @@
 #!/bin/bash
 
 while true; do
-  echo "=== start publish_ebay_new ==="
-  python3 -m publish_ebay_new
+  echo "=== start publish_ebay ==="
+  python3 -m publish_ebay
   code=$?
 
   echo "=== exited with code=$code ==="

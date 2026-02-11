@@ -31,7 +31,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 # ★ ここで既存関数を import
-from publish_ebay import (
+from apps.publish.publish_ebay_260111 import (
     _find_seller_info,
     _extract_shops_seller,
 )
