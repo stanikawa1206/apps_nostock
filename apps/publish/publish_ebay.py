@@ -904,7 +904,7 @@ TAKE_ONE_VENDOR_ITEM_SQL = """
         v.processing_by,
         v.processing_at
     FROM trx.vendor_item v
-    INNER JOIN mst.seller s
+    LEFT JOIN mst.seller s
         ON s.vendor_name = v.vendor_name
        AND s.seller_id   = v.seller_id
     WHERE
@@ -947,77 +947,75 @@ TAKE_ONE_VENDOR_ITEM_SQL = """
               AND l.vendor_item_id = v.vendor_item_id
         )
 
-        -- =========================
-        -- ★ 評価チェック間隔ロジック（核心）
-        -- =========================
-        AND (
+-- =========================
+-- ★ 評価チェック間隔ロジック（核心）
+-- =========================
+AND (
+    -- seller 情報が未登録なら通す
+    s.seller_id IS NULL
+
+    OR
+    (
+        (
             ----------------------------------------------------------------
             -- メルカリ個人
             ----------------------------------------------------------------
+            v.vendor_name = N'メルカリ'
+            AND
             (
-                v.vendor_name = N'メルカリ'
-                AND
+                s.rating_count >= 50
+                OR
                 (
-                    -- 評価十分 → 無条件で通す（チェック不要）
-                    s.rating_count >= 50
-
-                    OR
-
-                    -- 評価がまだ → チェック間隔が経過していれば通す
-                    (
-                        s.rating_count < 50
-                        AND (
-                            v.last_ng_at IS NULL
-                            OR DATEADD(
-                                day,
-                                CASE
-                                    WHEN s.rating_count >= 45 THEN 1
-                                    WHEN s.rating_count >= 30 THEN 7
-                                    WHEN s.rating_count >= 10 THEN 14
-                                    ELSE 30
-                                END,
-                                v.last_ng_at
-                            ) <= SYSDATETIME()
-                        )
-                    )
-                )
-            )
-
-            OR
-
-            ----------------------------------------------------------------
-            -- メルカリ shops
-            ----------------------------------------------------------------
-            (
-                v.vendor_name = N'メルカリshops'
-                AND
-                (
-                    -- 評価十分 → 無条件で通す
-                    s.rating_count >= 20
-
-                    OR
-
-                    -- 評価がまだ → チェック間隔が経過していれば通す
-                    (
-                        s.rating_count < 20
-                        AND (
-                            v.last_ng_at IS NULL
-                            OR DATEADD(
-                                day,
-                                CASE
-                                    WHEN s.rating_count >= 18 THEN 1
-                                    WHEN s.rating_count >= 12 THEN 7
-                                    WHEN s.rating_count >= 5  THEN 14
-                                    ELSE 30
-                                END,
-                                v.last_ng_at
-                            ) <= SYSDATETIME()
-                        )
+                    s.rating_count < 50
+                    AND (
+                        v.last_ng_at IS NULL
+                        OR DATEADD(
+                            day,
+                            CASE
+                                WHEN s.rating_count >= 45 THEN 1
+                                WHEN s.rating_count >= 30 THEN 7
+                                WHEN s.rating_count >= 10 THEN 14
+                                ELSE 30
+                            END,
+                            v.last_ng_at
+                        ) <= SYSDATETIME()
                     )
                 )
             )
         )
 
+        OR
+
+        (
+            ----------------------------------------------------------------
+            -- メルカリ shops
+            ----------------------------------------------------------------
+            v.vendor_name = N'メルカリshops'
+            AND
+            (
+                s.rating_count >= 20
+                OR
+                (
+                    s.rating_count < 20
+                    AND (
+                        v.last_ng_at IS NULL
+                        OR DATEADD(
+                            day,
+                            CASE
+                                WHEN s.rating_count >= 18 THEN 1
+                                WHEN s.rating_count >= 12 THEN 7
+                                WHEN s.rating_count >= 5  THEN 14
+                                ELSE 30
+                            END,
+                            v.last_ng_at
+                        ) <= SYSDATETIME()
+                    )
+                )
+            )
+        )
+    )
+)
+ 
     ORDER BY
         CASE WHEN v.vendor_page IS NULL THEN 1 ELSE 0 END,
         v.vendor_page ASC

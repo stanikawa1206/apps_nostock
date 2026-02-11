@@ -1578,6 +1578,26 @@ def main():
             items_it = iter_group_items()
             group_items_exhausted = False
 
+            # ===== DEBUG: 抽出候補一覧だけ表示 =====
+            print("\n===== DEBUG MODE: 抽出候補一覧 =====")
+
+            count = 0
+            for p, vendor_item_id, ship_region, ship_days in iter_group_items():
+                print(
+                    f"preset_group={preset_group} "
+                    f"preset={p['preset']} "
+                    f"vendor_item_id={vendor_item_id}"
+                )
+                count += 1
+                if count >= 200:
+                    break
+
+            print("===== DEBUG END =====")
+            return  # ★ main終了
+
+
+
+
             for acct in target_accounts:
                 if stop_all:
                     break
@@ -1588,6 +1608,8 @@ def main():
                     f"[DEBUG][ACCOUNT] preset_group={preset_group} "
                     f"account={acct} post_target={acct_targets[acct]}"
                 )
+
+
 
                 while has_quota(acct):
                     try:

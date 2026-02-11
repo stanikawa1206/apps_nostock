@@ -165,6 +165,92 @@ def wait_until_no_pending(conn, phase_name="active"):
         print(f"… pending={pending} 件")
         time.sleep(30)
 
+def launch_remaining_workers():
+    """
+    ローカルPCとVPSの両方で
+    check_remaining worker を起動する
+    """
+
+    print("🟢 ローカル + VPS 両方で remaining worker 起動")
+
+    # -----------------------------
+    # ① ローカル側
+    # -----------------------------
+    local_cmd = (
+        'start "LOCAL_CHECK" '
+        '/d "D:\\apps_nostock\\apps\\inventory" '
+        'check_remaining_ebay.bat'
+    )
+
+    # -----------------------------
+    # ② VPS側
+    # -----------------------------
+    vps_cmd = (
+        'start "VPS_CHECK" '
+        'ssh -tt root@162.43.42.135 '
+        '"cd /opt/apps_nostock && '
+        'git pull && '
+        'cd /opt/apps_nostock/apps/inventory && '
+        'chmod +x check_remaining_ebay.sh && '
+        './check_remaining_ebay.sh"'
+    )
+
+    subprocess.Popen(local_cmd, shell=True)
+    subprocess.Popen(vps_cmd, shell=True)
+
+    print("🚀 remaining worker を両方起動しました")
+
+def reset_remaining_flags(conn):
+    """
+    remaining フェーズ開始前に
+    trx.vendor_item の remaining_check_by / at をクリア
+    """
+
+    print("🧹 remaining_check フラグを全クリア")
+
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE trx.vendor_item
+           SET remaining_check_by = NULL,
+               remaining_check_at = NULL
+    """)
+    conn.commit()
+
+    print("✅ remaining フラグ初期化完了")
+
+def wait_until_remaining_exhausted(conn):
+    """
+    remaining 対象（remaining_check_at IS NULL）が
+    なくなるまで待機
+    """
+
+    print("⏳ remaining 対象がなくなるのを待機中…")
+
+    cur = conn.cursor()
+
+    while True:
+        cur.execute("""
+            SELECT COUNT(*)
+            FROM trx.listings AS l
+            INNER JOIN trx.vendor_item AS v
+              ON v.vendor_name = l.vendor_name
+             AND v.vendor_item_id = l.vendor_item_id
+            WHERE l.is_deleted = 0
+              AND l.vendor_name IN (N'メルカリ', N'メルカリshops')
+              AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')
+              AND v.remaining_check_at IS NULL
+        """)
+        cnt = cur.fetchone()[0]
+
+        if cnt == 0:
+            print("✅ remaining 対象消滅")
+            return
+
+        print(f"… remaining対象={cnt} 件")
+        time.sleep(30)
+
+
+
 # ======================
 # メイン処理
 # ======================
@@ -275,16 +361,29 @@ def main():
 
             time.sleep(WAIT_SECONDS)
 
-            # ②-4 remaining（従来どおり）
+            # ------------------------------------------------
+            # ②-4 remaining（ローカル＋VPS分散版）
+            # ------------------------------------------------
+            print("\n=== 🔄 remaining チェック開始 ===")
+
             rem_start = datetime.now()
-            rem_code, rem_stdout = run_script(CHECK_REMAINING)
+
+            # ★ 1. フラグ初期化
+            reset_remaining_flags(conn)
+
+            # ★ 2. worker起動
+            launch_remaining_workers()
+
+            # ★ 3. remaining対象が枯渇するまで待つ
+            wait_until_remaining_exhausted(conn)
+
             rem_end = datetime.now()
 
             send_script_mail(
                 CHECK_REMAINING,
                 rem_start,
                 rem_end,
-                rem_code,
+                0,
                 round_no=set_no,
                 conn=conn,
             )
