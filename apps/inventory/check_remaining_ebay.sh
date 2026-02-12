@@ -2,10 +2,10 @@
 
 # 無限ループ
 while true; do
-  echo "=== [$(date '+%Y-%m-%d %H:%M:%S')] start check_remaining_ebay_new ==="
+  echo "=== [$(date '+%Y-%m-%d %H:%M:%S')] start check_remaining_ebay ==="
   
   # Pythonを実行
-  python3 -m check_remaining_ebay_new
+  python3 -m check_remaining_ebay
   code=$?
 
   echo "=== exited with code=$code ==="

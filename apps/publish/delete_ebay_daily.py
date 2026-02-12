@@ -19,6 +19,7 @@ import random
 import threading
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from apps.adapters.mercari_item_status import handle_listing_delete
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
@@ -142,16 +143,16 @@ def is_deferred(iid) -> bool:
 
 
 # ===== SQL 操作 =====
-
 SQL_SELECT_CANDIDATES_30D_ALL = f"""
 SELECT
     [account],
     [listing_id]
 FROM [trx].[listings]
-WHERE DATEDIFF(day, CONVERT(date, [start_time]), CONVERT(date, GETDATE())) >= {DAYS_THRESHOLD}
+WHERE
+    ISNULL([is_deleted], 0) = 0
+    AND DATEDIFF(day, CONVERT(date, [start_time]), CONVERT(date, GETDATE())) >= {DAYS_THRESHOLD}
 ORDER BY [account], [start_time] ASC;
 """
-
 
 def fetch_delete_candidates_30d_all():
     """
@@ -186,11 +187,17 @@ def delete_rows_from_sql(account: str, item_ids):
         cur = conn.cursor()
         for iid in item_ids:
             cur.execute("""
-                DELETE FROM [trx].[listings]
-                WHERE [account] = ? AND [listing_id] = ?
+                UPDATE [trx].[listings]
+                SET is_deleted = 1,
+                    deleted_at = SYSDATETIME()
+                WHERE [account] = ?
+                AND [listing_id] = ?
+                AND ISNULL(is_deleted, 0) = 0
             """, account, iid)
+
             if cur.rowcount:
                 deleted += cur.rowcount
+
         conn.commit()
     return deleted
 

@@ -110,12 +110,18 @@ def load_mercari_targets_from_db(limit: Optional[int] = None) -> List[Dict[str, 
         INNER JOIN [trx].[vendor_item] AS v
             ON v.vendor_name    = l.vendor_name
            AND v.vendor_item_id = l.vendor_item_id
-        WHERE l.vendor_name IN (N'メルカリshops', N'メルカリ')
-          AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')
+        WHERE
+            trx_listings.is_deleted = False
+            AND
+            (
+                trx_vendor_item.status IS NULL
+                OR TRIM(trx_vendor_item.status) = ''
+            )
         ORDER BY l.start_time DESC
     """
 
     conn = get_sql_server_connection()
+
     try:
         out: List[Dict[str, str]] = []
         with conn.cursor() as cur:
@@ -145,15 +151,25 @@ def load_mercari_targets_from_db(limit: Optional[int] = None) -> List[Dict[str, 
     finally:
         conn.close()
 
-
 def delete_ebay_listing_record(conn, ebay_item_id: str, account: str, vendor_name: str) -> None:
-    """ listings から eBay リスティングを削除（listing_idで一致） """
+    """
+    eBay 出品を論理削除する
+    - trx.listings の record は削除しない
+    - is_deleted / deleted_at を更新
+    """
     with conn.cursor() as cur:
         cur.execute("""
-            DELETE FROM [trx].[listings]
-             WHERE listing_id = ? AND account = ? AND vendor_name = ?
+            UPDATE trx.listings
+               SET is_deleted = 1,
+                   deleted_at = SYSDATETIME()
+             WHERE listing_id = ?
+               AND account = ?
+               AND vendor_name = ?
+               AND is_deleted = 0
         """, (ebay_item_id, account, vendor_name))
     conn.commit()
+
+
 
 def update_vendor_item_status(conn, vendor_name: str, sku: str, status: str) -> None:
     """ vendor_item の status を更新（sku=vendor_item_id） """
@@ -215,365 +231,310 @@ def _is_transient_inventory_error(resp: dict | None) -> bool:
     codes = {int(e.get("errorId")) for e in errors if isinstance(e, dict) and str(e.get("errorId","")).isdigit()}
     return (25001 in codes) or ("internal error" in msgs)
 
-# ===================== メイン =====================
-def run(urls: Optional[List[str]] = None):
-    log_ctx("[DRIVER] building...")
+def build_mercari_url(vendor_name: str, sku: str) -> str:
+    if vendor_name == "メルカリshops":
+        return f"https://jp.mercari.com/shops/product/{sku}"
+    return f"https://jp.mercari.com/item/{sku}"
+
+def run_remaining_worker(worker_name: str):
     driver = None
     conn = None
-    total = deleted = updated = failed = 0
-    unresolved_after_retry = 0
 
-    # ★ 1周目で「判定不可」だったものをここに溜める
-    retry_rows: List[Dict[str, str]] = []
+    N = 10000  # ★ 最大処理件数
 
     try:
         driver = build_driver()
         conn = get_sql_server_connection()
 
-        # 手動URL（TEST_MODEなど） or DB全件
-        if urls:
-            manual = []
-            for s in urls:
-                s = s.strip()
-                # URL化 + vendor_name 判定
-                if s.startswith("http"):
-                    # もしすでにURLで渡された場合にも対応
-                    url = s
-                    if "/item/" in s:
-                        m = re.search(r"/item/(m\d{8,})", s)
-                        if not m: 
-                            continue
-                        sku, vendor_name = m.group(1), "メルカリ"
-                    elif "/shops/product/" in s:
-                        m = re.search(r"/shops/product/([A-Za-z0-9]{10,})", s)
-                        if not m: 
-                            continue
-                        sku, vendor_name = m.group(1), "メルカリshops"
-                    else:
-                        continue
-                else:
-                    # 裸IDの場合
-                    if re.fullmatch(r"m\d{8,}", s):
-                        sku, vendor_name, url = s, "メルカリ", f"https://jp.mercari.com/item/{s}"
-                    elif re.fullmatch(r"[A-Za-z0-9]{10,}", s):
-                        sku, vendor_name, url = s, "メルカリshops", f"https://jp.mercari.com/shops/product/{s}"
-                    else:
-                        continue
+        for i in range(N):
+            row = pull_one_remaining_target(conn, worker_name)
+            if not row:
+                print("[INFO] remaining queue empty")
+                break
 
-                manual.append({
-                    "url": url,
-                    "sku": sku,
-                    "account": "",
-                    "ebay_item_id": "",
-                    "vendor_name": vendor_name,
-                })
-            rows = manual
-        else:
-            rows = load_mercari_targets_from_db(limit=None)
-
-        if not rows:
-            print("[WARN] 対象がありません（TEST/DB）")
-            return
-        else:
-            vendors = ",".join(sorted({r["vendor_name"] for r in rows}))
-            print(f"[INFO] 処理対象 {len(rows)} 件を検出: vendors={vendors}")
-
-        # ===== 1周目：通常処理 =====
-        for r in rows:
-            url          = r["url"]
-            sku          = r["sku"]                # MercariのmXXXX（= listings.vendor_item_id）
-            account      = r["account"]
-            ebay_item_id = r["ebay_item_id"]       # listings.listing_id
-            vendor_name  = r["vendor_name"]
-
-            status: Status = "判定不可"
-            price_jpy: Optional[int] = None
-
-            # ステータス取得（簡易リトライ）
-            for i, wait in enumerate([0.0] + RATE["retry_waits"]):
-                if i > 0:
-                    time.sleep(wait)
-                try:
-                    status, price_jpy = get_status(driver, url)
-                    if status != "判定不可":
-                        break
-                except Exception as e:
-                    if i == len(RATE["retry_waits"]):
-                        print(f"[ERR] get_status失敗: {url} ({e})")
-                        failed += 1
-
-            print(f"[STATUS] {url} -> {status} (price_jpy={price_jpy})")
-
-            # ★ 本番モード(TEST_MODE=False)で 判定不可 のものは後でまとめて再チェック
-            if (not TEST_MODE) and status == "判定不可":
-                retry_rows.append(r)
-
-            # ===== 販売中：価格差分チェック →（必要なら）eBay改定/削除 → DB反映 =====
-            if status == "販売中" and price_jpy is not None:
-                try:
-                    old_price = get_vendor_item_price(conn, vendor_name, sku)
-
-                    if (old_price is None) or (old_price != price_jpy):
-                        new_price_usd = compute_start_price_usd(price_jpy, "GA", 450, 1000)
-
-                        if new_price_usd is None:
-                            print(f"[PRICE] {sku}: {old_price} -> {price_jpy} JPY / 目標外レンジ ⇒ eBay出品を終了")
-                            if ebay_item_id:
-                                try:
-                                    if not is_account_excluded_for_sku(conn, sku):
-                                        res = delete_item_from_ebay(account, ebay_item_id)
-                                        ok = bool(res.get("success")) or res.get("note") in {"already_deleted", "already_ended"}
-                                        if ok:
-                                            delete_ebay_listing_record(conn, ebay_item_id, account, vendor_name)
-                                            deleted += 1
-                                        else:
-                                            print(f"[WARN] eBay削除失敗 listingId={ebay_item_id} resp={res}")
-                                    else:
-                                        print(f"[SKIP DELETE] excluded account sku={sku}")
-                                except Exception as e:
-                                    print(f"[ERR] eBay削除処理で例外 listingId={ebay_item_id}: {e}")
-                            else:
-                                print(f"[WARN] eBay削除不可（listing_idなし） sku={sku}")
-                            update_vendor_item_price_and_status(conn, vendor_name, sku, price_jpy, status)
-                            updated += 1
-                        else:
-                            did_update_ebay = False
-                            resp = None
-                            for wait in [0, 2, 6, 15]:
-                                if wait: 
-                                    time.sleep(wait)
-                                if not is_account_excluded_for_sku(conn, sku):
-                                    resp = update_ebay_price(account, ebay_item_id, new_price_usd, sku=sku, debug=True)
-                                else:
-                                    print(f"[SKIP UPDATE] excluded account sku={sku}")
-                                if resp and resp.get("success"):
-                                    did_update_ebay = True
-                                    break
-                                if not _is_transient_inventory_error(resp):
-                                    break
-
-                            if did_update_ebay or not ebay_item_id:
-                                update_vendor_item_price_and_status(conn, vendor_name, sku, price_jpy, status)
-                                updated += 1
-                                if did_update_ebay:
-                                    print(f"[PRICE] {sku}: {old_price} -> {price_jpy} JPY / eBay {new_price_usd} USD を更新")
-                                else:
-                                    print(f"[PRICE] {sku}: {old_price} -> {price_jpy} JPY / eBay改定なし（listing_idなし）")
-                            else:
-                                update_vendor_item_price_and_status(conn, vendor_name, sku, None, status)
-                                updated += 1
-                                print(f"[WARN] eBay価格更新失敗 listingId={ebay_item_id} resp={resp}")
-                                print(f"[PRICE] {sku}: {old_price} -> {price_jpy} JPY / eBay {new_price_usd} USD （未更新・DB価格は据え置き）")
-                    else:
-                        update_vendor_item_price_and_status(conn, vendor_name, sku, None, status)
-                        updated += 1
-
-                except Exception as e:
-                    print(f"[WARN] 価格差分反映で例外 sku={sku}: {e}")
-
-            else:
-                # 販売中ではない：status のみ更新
-                try:
-                    update_vendor_item_price_and_status(conn, vendor_name, sku, None, status)
-                    updated += 1
-                except Exception as e:
-                    print(f"[WARN] vendor_item更新失敗 sku={sku}: {e}")
-
-            # ===== 終了系は eBay 出品も終了 & listings から削除 =====
-            if status in {"削除", "オークション", "売り切れ", "公開停止"}:
-                if ebay_item_id:
-                    try:
-                        if not is_account_excluded_for_sku(conn, sku):
-                            res = delete_item_from_ebay(account, ebay_item_id)
-                            ok = bool(res.get("success")) or res.get("note") in {"already_deleted", "already_ended"}
-                            if ok:
-                                delete_ebay_listing_record(conn, ebay_item_id, account, vendor_name)
-                                deleted += 1
-                            else:
-                                print(f"[WARN] eBay削除失敗 listingId={ebay_item_id} resp={res}")
-                        else:
-                            print(f"[SKIP DELETE] excluded account sku={sku}")
-                    except Exception as e:
-                        print(f"[ERR] eBay削除処理で例外 listingId={ebay_item_id}: {e}")
-                else:
-                    print(f"[WARN] eBay削除不可（listing_idなし） sku={sku}")
-
-            total += 1
-            human_sleep(*RATE["detail"])
-            if total % RATE["cooldown_every"] == 0:
-                human_sleep(*RATE["cooldown_sleep"])
-
-        # ===== 2周目：本番時のみ、判定不可をまとめて再チェック =====
-        if (not TEST_MODE) and retry_rows:
-            log_ctx(f"[RETRY] 判定不可だった {len(retry_rows)} 件を再チェックします…")
-
-            for r in retry_rows:
-                url          = r["url"]
-                sku          = r["sku"]
-                account      = r["account"]
-                ebay_item_id = r["ebay_item_id"]
-                vendor_name  = r["vendor_name"]
-
-                status: Status = "判定不可"
-                price_jpy: Optional[int] = None
-
-                # 2周目用リトライ（少し待ちを長めにしてもOK）
-                for i, wait in enumerate([0.0, 3.0, 8.0]):
-                    if i > 0:
-                        time.sleep(wait)
-                    try:
-                        status, price_jpy = get_status(driver, url)
-                        if status != "判定不可":
-                            break
-                    except Exception as e:
-                        if i == 2:
-                            print(f"[ERR][RETRY] get_status失敗: {url} ({e})")
-                            failed += 1
-
-                print(f"[RETRY-STATUS] {url} -> {status} (price_jpy={price_jpy})")
-
-                if status == "判定不可":
-                    # 2周目でも判定不可 → ひとまず status だけ残して終了
-                    try:
-                        update_vendor_item_price_and_status(conn, vendor_name, sku, None, status)
-                        updated += 1
-                    except Exception as e:
-                        print(f"[WARN] (RETRY) vendor_item更新失敗 sku={sku}: {e}")
-                        unresolved_after_retry += 1
-                    continue
-
-                # ===== ここから先は 1周目と同じロジックで処理 =====
-                if status == "販売中" and price_jpy is not None:
-                    try:
-                        old_price = get_vendor_item_price(conn, vendor_name, sku)
-
-                        if (old_price is None) or (old_price != price_jpy):
-                            new_price_usd = compute_start_price_usd(price_jpy, "GA", 450, 1000)
-
-                            if new_price_usd is None:
-                                print(f"[PRICE-RETRY] {sku}: {old_price} -> {price_jpy} JPY / 目標外レンジ ⇒ eBay出品を終了")
-                                if ebay_item_id:
-                                    try:
-                                        if not is_account_excluded_for_sku(conn, sku):
-                                            res = delete_item_from_ebay(account, ebay_item_id)
-                                            ok = bool(res.get("success")) or res.get("note") in {"already_deleted", "already_ended"}
-                                            if ok:
-                                                delete_ebay_listing_record(conn, ebay_item_id, account, vendor_name)
-                                                deleted += 1
-                                            else:
-                                                print(f"[WARN] (RETRY) eBay削除失敗 listingId={ebay_item_id} resp={res}")
-                                        else:
-                                                print(f"[SKIP DELETE] excluded account sku={sku}")
-                                    except Exception as e:
-                                        print(f"[ERR] (RETRY) eBay削除処理で例外 listingId={ebay_item_id}: {e}")
-                                else:
-                                    print(f"[WARN] (RETRY) eBay削除不可（listing_idなし） sku={sku}")
-
-                                update_vendor_item_price_and_status(conn, vendor_name, sku, price_jpy, status)
-                                updated += 1
-                            else:
-                                did_update_ebay = False
-                                resp = None
-                                for wait in [0, 2, 6, 15]:
-                                    if wait:
-                                        time.sleep(wait)
-                                    if not is_account_excluded_for_sku(conn, sku):
-                                        resp = update_ebay_price(account, ebay_item_id, new_price_usd, sku=sku, debug=True)
-                                    else:
-                                        print(f"[SKIP UPDATE] excluded account sku={sku}")
-                                    if resp and resp.get("success"):
-                                        did_update_ebay = True
-                                        break
-                                    if not _is_transient_inventory_error(resp):
-                                        break
-
-                                if did_update_ebay or not ebay_item_id:
-                                    update_vendor_item_price_and_status(conn, vendor_name, sku, price_jpy, status)
-                                    updated += 1
-                                    if did_update_ebay:
-                                        print(f"[PRICE-RETRY] {sku}: {old_price} -> {price_jpy} JPY / eBay {new_price_usd} USD を更新")
-                                    else:
-                                        print(f"[PRICE-RETRY] {sku}: {old_price} -> {price_jpy} JPY / eBay改定なし（listing_idなし）")
-                                else:
-                                    update_vendor_item_price_and_status(conn, vendor_name, sku, None, status)
-                                    updated += 1
-                                    print(f"[WARN] (RETRY) eBay価格更新失敗 listingId={ebay_item_id} resp={resp}")
-                                    print(f"[PRICE-RETRY] {sku}: {old_price} -> {price_jpy} JPY / eBay {new_price_usd} USD （未更新・DB価格は据え置き）")
-                        else:
-                            update_vendor_item_price_and_status(conn, vendor_name, sku, None, status)
-                            updated += 1
-
-                    except Exception as e:
-                        print(f"[WARN] (RETRY) 価格差分反映で例外 sku={sku}: {e}")
-
-                else:
-                    # 販売中ではない：status のみ更新
-                    try:
-                        update_vendor_item_price_and_status(conn, vendor_name, sku, None, status)
-                        updated += 1
-                    except Exception as e:
-                        print(f"[WARN] (RETRY) vendor_item更新失敗 sku={sku}: {e}")
-
-                if status in {"削除", "オークション", "売り切れ", "公開停止"}:
-                    if ebay_item_id:
-                        try:
-                            if not is_account_excluded_for_sku(conn, sku):
-                                res = delete_item_from_ebay(account, ebay_item_id)
-                                ok = bool(res.get("success")) or res.get("note") in {"already_deleted", "already_ended"}
-                                if ok:
-                                    delete_ebay_listing_record(conn, ebay_item_id, account, vendor_name)
-                                    deleted += 1
-                                else:
-                                    print(f"[WARN] eBay削除失敗 listingId={ebay_item_id} resp={res}")
-                            else:
-                                print(f"[SKIP DELETE] excluded account sku={sku}")
-                        except Exception as e:
-                            print(f"[ERR] eBay削除処理で例外 listingId={ebay_item_id}: {e}")
-                    else:
-                        print(f"[WARN] (RETRY) eBay削除不可（listing_idなし） sku={sku}")
-
-        print(f"\n✅ 完了: 対象{total}件 / vendor_item更新{updated}件 / eBay削除{deleted}件 / 失敗{failed}件")
-        # ★ 2回目リトライ後も判定不可のまま残っている件数を出力（親がパース用）
-        if not TEST_MODE:
-            print(f"UNRESOLVED={unresolved_after_retry}")
+            print(f"\n[INFO] remaining processing {i+1}/{N} "
+                  f"vendor={row['vendor_name']} sku={row['vendor_item_id']}")
+            
+            # ここを try-except で囲む
+            try:
+                process_status_and_sync(
+                    conn,
+                    driver,
+                    row["vendor_name"],
+                    row["vendor_item_id"],
+                    worker_name,
+                )
+            except Exception as e:
+                # ログを吐いて、プログラムを異常終了(exit code 1)させる
+                print(f"[ERROR] 実行を中断し、再起動を待機します。SKU:{row['vendor_item_id']} 理由: {e}")
+                
+                # driver が生きていれば閉じる
+                safe_quit(driver)
+                
+                # シェルスクリプトのリトライをトリガーするために 1 で終了
+                import sys
+                sys.exit(1)
 
 
-    except Exception:
-        traceback.print_exc()
-        raise
+
+            time.sleep(random.uniform(2.0, 5.0))
+
+        print("[INFO] remaining worker finished")
+
     finally:
         safe_quit(driver)
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
+        if conn:
+            conn.close()
 
+
+def process_status_and_sync(
+    conn,
+    driver,
+    vendor_name: str,
+    sku: str,
+    worker_name: str,
+):
+    """
+    remaining チェック 1件分の実処理（確定版）
+
+    方針:
+    - 判定不可は一切確定しない（次回再処理）
+    - 判定できた場合のみ vendor_item / eBay / listings を同期
+    - 最後に remaining_check_at を確定
+    """
+
+    url = build_mercari_url(vendor_name, sku)
+
+    # =====================
+    # 1. Mercari 状態取得
+    # =====================
+    status, price_jpy = get_status(driver, url)
+    print(f"[STATUS] {url} -> {status} (price_jpy={price_jpy})")
+    
+    # =====================
+    # ★ 判定不可は即終了（確定しない）
+    # =====================
+    if status == "判定不可":
+        print(f"[INFO] 判定不可のためスキップ sku={sku}")
+        return  # remaining_check_at を入れない
+
+    # =====================
+    # 2. vendor_item 現在価格取得
+    # =====================
+    old_price = get_vendor_item_price(conn, vendor_name, sku)
+
+    # =====================
+    # 3. 販売中 & 価格取得成功
+    # =====================
+    if status == "販売中" and price_jpy is not None:
+
+        # ---- 価格変更あり ----
+        if old_price is None or old_price != price_jpy:
+            new_price_usd = compute_start_price_usd(
+                price_jpy,
+                "GA",
+                450,
+                1000,
+            )
+
+            # =====================
+            # 3-A. レンジ外 → eBay削除
+            # =====================
+            if new_price_usd is None:
+                print(f"[PRICE] {sku}: {old_price} -> {price_jpy} JPY / レンジ外 → eBay終了")
+
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT listing_id, account
+                          FROM trx.listings
+                         WHERE vendor_item_id = ?
+                           AND deleted_at IS NULL
+                    """, (sku,))
+                    rows = cur.fetchall()
+
+                for ebay_item_id, account in rows:
+                    if is_account_excluded_for_sku(conn, sku):
+                        print(f"[SKIP DELETE] excluded account sku={sku}")
+                        continue
+
+                    print(f"[DEBUG][DELETE] account={account} listing_id={ebay_item_id}")
+                    res = delete_item_from_ebay(account, ebay_item_id)
+
+                    ok = bool(res.get("success")) or res.get("note") in {
+                        "already_deleted",
+                        "already_ended",
+                    }
+
+                    if ok:
+                        delete_ebay_listing_record(conn, ebay_item_id, account, vendor_name)
+
+                    else:
+                        print(f"[WARN] eBay削除失敗 listingId={ebay_item_id} resp={res}")
+
+            # =====================
+            # 3-B. レンジ内 → eBay価格改定
+            # =====================
+            else:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT listing_id, account
+                          FROM trx.listings
+                         WHERE vendor_item_id = ?
+                           AND deleted_at IS NULL
+                    """, (sku,))
+                    rows = cur.fetchall()
+
+                for ebay_item_id, account in rows:
+                    if is_account_excluded_for_sku(conn, sku):
+                        print(f"[SKIP UPDATE] excluded account sku={sku}")
+                        continue
+
+                    print(f"[DEBUG][UPDATE] account={account} listing_id={ebay_item_id}")
+                    resp = update_ebay_price(
+                        account,
+                        ebay_item_id,
+                        new_price_usd,
+                        sku=sku,
+                        debug=True,
+                    )
+
+                    if not resp or not resp.get("success"):
+                        print(f"[WARN] eBay価格更新失敗 listingId={ebay_item_id} resp={resp}")
+
+        # ---- vendor_item 更新（価格あり）----
+        update_vendor_item_price_and_status(
+            conn,
+            vendor_name,
+            sku,
+            price_jpy,
+            status,
+        )
+
+    # =====================
+    # 4. 販売中でない
+    # =====================
+    else:
+        update_vendor_item_price_and_status(
+            conn,
+            vendor_name,
+            sku,
+            None,
+            status,
+        )
+
+    # =====================
+    # 5. 終了系ステータス → eBay削除
+    # =====================
+    if status in {"削除", "オークション", "売り切れ", "公開停止"}:
+        print(f"[DEBUG][FINAL_DELETE_CHECK] sku={sku} status={status}")
+
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT listing_id, account
+                  FROM trx.listings
+                 WHERE vendor_item_id = ?
+                   AND deleted_at IS NULL
+            """, (sku,))
+            rows = cur.fetchall()
+
+            # === rows の中身を確認する print ===
+            print(f"[DEBUG_DB] SKU:{sku} の検索結果 (deleted_at IS NULL):")
+            if not rows:
+                print(f"  -> ヒットなし（レコードが存在しないか、既に deleted_at に値が入っています）")
+            else:
+                for r in rows:
+                    print(f"  -> listing_id: {r[0]}, account: {r[1]}")
+            # ===============================
+
+
+
+        for ebay_item_id, account in rows:
+            if is_account_excluded_for_sku(conn, sku):
+                print(f"[SKIP DELETE] excluded account sku={sku}")
+                continue
+
+            print(f"[DEBUG][CALL delete_item_from_ebay] account={account} listing_id={ebay_item_id}")
+            res = delete_item_from_ebay(account, ebay_item_id)
+
+            ok = bool(res.get("success")) or res.get("note") in {
+                "already_deleted",
+                "already_ended",
+            }
+
+            if ok:
+                delete_ebay_listing_record(conn, ebay_item_id, account, vendor_name)
+            else:
+                print(f"[WARN] eBay削除失敗 listingId={ebay_item_id} resp={res}")
+
+    # =====================
+    # ★ 6. remaining 確定
+    # =====================
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE trx.vendor_item
+               SET remaining_check_at = SYSDATETIME(),
+                   remaining_check_by = ?
+             WHERE vendor_item_id = ?
+        """, (worker_name,  sku))
+
+    conn.commit()
+
+def pull_one_remaining_target(conn, worker_name: str):
+    """
+    出品中（is_deleted=false）かつ
+    vendor_item.status 未確定 のものを 1件だけ確保
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            ;WITH cte AS (
+                SELECT TOP (1)
+                    l.listing_id,
+                    l.account,
+                    l.vendor_name,
+                    l.vendor_item_id
+                FROM trx.listings AS l WITH (UPDLOCK, READPAST, ROWLOCK)
+                INNER JOIN trx.vendor_item AS v
+                    ON v.vendor_name    = l.vendor_name
+                   AND v.vendor_item_id = l.vendor_item_id
+                WHERE l.is_deleted = 0
+                  AND l.vendor_name IN (N'メルカリ', N'メルカリshops')
+                  AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')
+                  AND v.remaining_check_at IS NULL
+                ORDER BY l.start_time DESC
+            )
+            UPDATE v
+               SET remaining_check_by = ?,
+                   remaining_check_at = SYSDATETIME()
+            OUTPUT
+                inserted.vendor_name,
+                inserted.vendor_item_id,
+                cte.account,
+                cte.listing_id
+            FROM trx.vendor_item AS v
+            INNER JOIN cte
+              ON v.vendor_name    = cte.vendor_name
+             AND v.vendor_item_id = cte.vendor_item_id;
+        """, (worker_name,))
+
+        row = cur.fetchone()
+
+    if not row:
+        return None
+
+    return {
+        "vendor_name": row[0],
+        "vendor_item_id": row[1],
+        "account": row[2],
+        "listing_id": row[3],
+    }
+
+
+
+import socket
+
+def get_processing_by():
+    return os.environ.get("WORKER_NAME", socket.gethostname())
 
 if __name__ == "__main__":
-
-    # ====== ★ TEST_MODE の危険警告メール送信（処理は続行） ======
-    if TEST_MODE:
-        print(f"[TEST] TEST_MODE=True / TEST_URLS={TEST_URLS}")
-
-        # ===== ⚠️ TEST_MODE 警告メール（処理は続行） =====
-        try:
-            subject = "【⚠️警告】stock_checker.py が TEST_MODE=True で起動されました！"
-            body = (
-                "⚠️⚠️⚠️【重大警告】⚠️⚠️⚠️\n\n"
-                "stock_checker.py が TEST_MODE=True のまま起動しました。\n"
-                "本番環境で実行している場合、データが更新されず\n"
-                "正しい同期・在庫判定が行われない可能性があります。\n\n"
-                "➡️ TEST_MODE=False に戻して本番運用を行ってください。\n"
-                "（この警告メールは safety check のため自動送信されました）"
-            )
-            send_mail(subject=subject, body=body)
-        except Exception as e:
-            print(f"[WARN] TEST_MODE 警告メール送信に失敗: {e}")
-
-    if TEST_MODE:
-        # TEST_URLS は裸IDのまま run に渡す
-        print(f"[TEST] TEST_MODE=True / TEST_URLS={TEST_URLS}")
-        run(urls=TEST_URLS)
-    else:
-        run(urls=None)   # DB全件
+    worker_name = get_processing_by()
+    run_remaining_worker(worker_name)

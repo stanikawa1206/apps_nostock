@@ -1,9 +1,9 @@
 @echo off
 :loop
-echo [%date% %time%] Starting check_remaining_ebay_new...
+echo [%date% %time%] Starting check_remaining_ebay...
 
 :: Pythonを実行
-python -m check_remaining_ebay_new
+python -m check_remaining_ebay
 set code=%errorlevel%
 
 echo Process exited with code %code%
