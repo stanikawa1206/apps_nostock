@@ -158,25 +158,20 @@ def detect_status_from_mercari_shops(
 
     price = int(m.group(1).replace(",", ""))
 
-    out_of_stock = main.select_one('[data-testid="out-of-stock"]')
-    if out_of_stock and "売り切れ" in out_of_stock.get_text(strip=True):
+    # ===== 売り切れ（disabledボタン）判定 =====
+    try:
+        btn = driver.find_element(By.XPATH, "//button[normalize-space()='購入手続きへ']")
+
+        # disabled 属性が付いていれば売り切れ
+        if btn.get_attribute("disabled") is not None:
+            return "売り切れ", None
+
+        # disabled が無ければ販売中
+        return "販売中", price
+
+    except Exception:
+        # ボタンが存在しない場合は販売不可
         return "売り切れ", None
-
-    for el in main.select('button, a, [role="button"]'):
-        txt = el.get_text(" ", strip=True)
-        if txt == "購入手続きへ":
-            classes = " ".join(el.get("class", [])).lower()
-            if (
-                el.has_attr("disabled")
-                or el.get("aria-disabled") == "true"
-                or "disabled" in classes
-                or "isdisabled" in classes
-            ):
-                continue
-            return "販売中", price
-
-    return "判定不可", price
-
 
 # ================================
 # vendor_item 更新
