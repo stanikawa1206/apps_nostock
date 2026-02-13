@@ -46,6 +46,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 # =========================
 from apps.common.utils import (
     compute_start_price_usd,
+    compute_cost_range_jpy_from_usd_range,
     generate_ebay_description,
     get_sql_server_connection,
     send_mail,
@@ -916,6 +917,8 @@ TAKE_ONE_VENDOR_ITEM_SQL = """
         AND ISNULL(v.出品不可flg, 0) = 0
         AND ISNULL(v.[出品状況], N'') <> N'配送条件NG'
         AND ISNULL(v.[出品状況], N'') <> N'NG(危険素材)'
+        AND ISNULL(v.[出品状況], N'') <> N'NG(GA補色)'
+
         AND (
             v.last_updated_str IS NULL
             OR NOT (
@@ -924,7 +927,7 @@ TAKE_ONE_VENDOR_ITEM_SQL = """
                 OR v.last_updated_str LIKE N'%半年以上前%'
             )
         )
-
+        AND v.price BETWEEN ? AND ?
         -- =========================
         -- processing ロック
         -- =========================
@@ -1033,12 +1036,13 @@ OUTPUT
     inserted.preset;
 """
 
-
 def take_one_vendor_item_by_preset(
     conn,
     preset: str,
     processing_by: str,
-    start_time: datetime
+    start_time: datetime,
+    low_cost: int,
+    high_cost: int,
 ) -> Optional[Tuple[str, str, Optional[int], Optional[str], Optional[str], str]]:
     """
     preset を指定して、trx.vendor_item を 1件だけ確保して返す。
@@ -1048,11 +1052,13 @@ def take_one_vendor_item_by_preset(
         cur.execute(
             TAKE_ONE_VENDOR_ITEM_SQL,
             (
-                preset,         # 1) v.preset = ?
-                start_time,     # 2) v.processing_at < ?
-                processing_by,  # 3) OR v.processing_by = ?
-                start_time,     # 4) AND v.processing_at < ?
-                processing_by,  # 5) UPDATE SET processing_by = ?
+                preset,
+                low_cost,
+                high_cost,
+                start_time,
+                processing_by,
+                start_time,
+                processing_by,
             )
         )
         row = cur.fetchone()
@@ -1297,7 +1303,7 @@ def heavy_check_detail(
         rec.get("price"), p["mode"], p["low_usd_target"], p["high_usd_target"]
     )
     if not start_price_usd:
-        rec["listing_head"] = "計算価格が範囲外(二次判定)"
+        rec["listing_head"] = "計算価格が範囲外"
         rec["listing_detail"] = f"{p['low_usd_target']}–{p['high_usd_target']}USD"
         upsert_vendor_item(conn, rec)
         writes_since_commit += 1
@@ -1657,7 +1663,22 @@ def take_one_from_group_presets(
         if not preset:
             continue
 
-        row = take_one_vendor_item_by_preset(conn, preset, processing_by, start_time)
+        # ★ ここで逆算
+        low_cost, high_cost = compute_cost_range_jpy_from_usd_range(
+            p["mode"],
+            p["low_usd_target"],
+            p["high_usd_target"],
+        )
+
+        row = take_one_vendor_item_by_preset(
+            conn,
+            preset,
+            processing_by,
+            start_time,
+            low_cost,
+            high_cost,
+        )
+
         if not row:
             continue
 
@@ -1890,6 +1911,7 @@ def main():
 
                         # ★ take_one は即コミット
                         conn.autocommit = True
+ 
                         p, vendor_item_id, price_db, ship_region, ship_days, rr_idx = take_one_from_group_presets(
                             conn, group_presets, processing_by, rr_idx, start_time
                         )
@@ -1903,28 +1925,6 @@ def main():
                         vendor_name = (p["vendor_name"] or "").strip()
                         sku = vendor_item_id.strip()
                         preset = p["preset"]
-
-                        # ===== 一次判定（DB価格）=====
-                        start_price_usd_1st = compute_start_price_usd(
-                            price_db,
-                            p["mode"],
-                            p["low_usd_target"],
-                            p["high_usd_target"],
-                        )
-
-                        if not start_price_usd_1st:
-                            rec_ng = {
-                                "vendor_name": vendor_name,
-                                "item_id": sku,
-                                "price": price_db,
-                                "listing_head": "計算価格が範囲外(一次判定)",
-                                "listing_detail": f"{p['low_usd_target']}–{p['high_usd_target']}USD (一次判定)",
-                            }
-                            upsert_vendor_item(conn, rec_ng)
-                            writes_since_commit += 1
-                            writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
-                            processed_in_session += 1
-                            continue
 
                         # URL 組み立て
                         if vendor_name == "メルカリshops":

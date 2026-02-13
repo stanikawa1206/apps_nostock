@@ -7,9 +7,11 @@ from pathlib import Path
 # .envファイルを読み込む（apps/common/.env を明示的に指定）
 current_file = Path(__file__).resolve()
 project_root = current_file.parents[2]  # .../apps_nostock
-env_path = project_root / "apps" / "common" / ".env"
+env_path = project_root / "apps" / ".env"
 
-load_dotenv()
+load_dotenv(dotenv_path=env_path, override=True)
+
+print(f"Using .env at: {env_path}")
 
 def test_upload():
     # --- 設定情報の取得 (画像94bcdeと完全に一致させる) ---

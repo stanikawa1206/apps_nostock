@@ -52,6 +52,62 @@ INTL_SHIPPING_JPY = 3300      # 国際送料
 DUTY_RATE = 0.15              # 関税
 
 
+def compute_cost_range_jpy_from_usd_range(
+    mode: str,
+    low_usd_target: float,
+    high_usd_target: float
+) -> Optional[Tuple[int, int]]:
+    """
+    compute_start_price_usd の逆算。
+
+    与えられた USD の範囲から、
+    許容される cost_jpy の範囲 (min_cost, max_cost) を返す。
+
+    戻り値:
+        (min_cost_jpy, max_cost_jpy)
+        ※ int（円単位）
+
+    mode:
+        GA  or  DDP
+    """
+
+    mode_up = mode.upper()
+
+    if mode_up == "GA":
+        ship = Decimal(DOMESTIC_SHIPPING_JPY)
+        duty = Decimal("0")
+    elif mode_up == "DDP":
+        ship = Decimal(INTL_SHIPPING_JPY)
+        duty = Decimal(str(DUTY_RATE))
+    else:
+        raise ValueError(f"未知のmodeです: {mode}")
+
+    rate = Decimal(str(USD_JPY_RATE))
+    p = Decimal(str(PROFIT_RATE))
+    f = Decimal(str(EBAY_FEE_RATE))
+
+    denom = Decimal("1") - p - f - duty
+    if denom <= 0:
+        raise ValueError("利益率＋手数料率＋関税率の合計が1.0以上です。")
+
+    low = Decimal(str(low_usd_target))
+    high = Decimal(str(high_usd_target))
+
+    # 逆算式
+    # cost = usd * rate * denom - ship
+    min_cost = (low * rate * denom - ship)
+    max_cost = (high * rate * denom - ship)
+
+    # 円単位に丸め（安全側に広げる）
+    min_cost_jpy = int(min_cost.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    max_cost_jpy = int(max_cost.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+    # 安全のためマイナスは0に
+    if min_cost_jpy < 0:
+        min_cost_jpy = 0
+
+    return min_cost_jpy, max_cost_jpy
+
 def compute_start_price_usd(
     cost_jpy: int,
     mode: str,
@@ -432,7 +488,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 def build_driver(
     *,
     headless: bool = True,
-    page_load_strategy: str = "eager",
+    page_load_strategy: str = "none",
 ):
     import os
     from selenium import webdriver
@@ -478,7 +534,7 @@ def build_driver(
 
     driver = webdriver.Chrome(service=service, options=opts)
     driver.set_window_size(1400, 1000)
-    driver.set_page_load_timeout(30)
+    # driver.set_page_load_timeout(30)
     driver.set_script_timeout(30)
 
     return driver
