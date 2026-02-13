@@ -354,21 +354,13 @@ def post_one_item(payload: Dict[str, Any], account_name: str, acct_policies: Dic
     token = get_access_token_new(account_name)
     if not token:
         raise RuntimeError("access_token 取得失敗")
-    
-    # ====== ここから追加 ======
-    print("==== TOKEN DEBUG START ====")
-    print("account_name:", account_name)
-
-    resp = requests.get(
+ 
+   resp = requests.get(
         "https://api.ebay.com/sell/account/v1/privilege",
         headers=_ebay_json_headers(token),
         timeout=20
     )
 
-    print("privilege status:", resp.status_code)
-    print("privilege body:", resp.text[:300])
-    print("==== TOKEN DEBUG END ======")
-    # ====== ここまで追加 ======
 
     register_inventory_item(payload, token)
     offer_id = create_offer(payload, token, acct_policies)
