@@ -355,12 +355,11 @@ def post_one_item(payload: Dict[str, Any], account_name: str, acct_policies: Dic
     if not token:
         raise RuntimeError("access_token 取得失敗")
  
-   resp = requests.get(
+    resp = requests.get(
         "https://api.ebay.com/sell/account/v1/privilege",
         headers=_ebay_json_headers(token),
         timeout=20
     )
-
 
     register_inventory_item(payload, token)
     offer_id = create_offer(payload, token, acct_policies)

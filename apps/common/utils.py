@@ -536,6 +536,7 @@ def build_driver(
     driver.set_window_size(1400, 1000)
     # driver.set_page_load_timeout(30)
     driver.set_script_timeout(30)
+    print("新ver")
 
     return driver
 
