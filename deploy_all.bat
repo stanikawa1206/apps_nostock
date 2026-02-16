@@ -1,7 +1,7 @@
 @echo off
 cd /d D:\apps_nostock
 
-echo === AUTO COMMIT & PUSH ===
+echo === AUTO COMMIT ^& PUSH ===
 git add .
 git commit -m "auto deploy"
 git push
