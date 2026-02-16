@@ -14,6 +14,13 @@ trim_ebay_listings_30d_all.py
 
 import sys
 from pathlib import Path
+
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+
 import time
 import random
 import threading
@@ -21,16 +28,14 @@ from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from apps.adapters.mercari_item_status import handle_listing_delete
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
-
 from apps.common.utils import get_sql_server_connection
 
 from apps.adapters.ebay_api import (
     delete_items_from_ebay_batch,
 )
 
+import os
+print("RUNNING CWD:", os.getcwd())
 # ===== 設定 =====
 
 MAX_WORKERS      = 2        # 並列アカウント数
@@ -257,7 +262,7 @@ def delete_items_from_ebay_and_sql(account: str, item_ids):
     """
     1アカウント分:
     - 与えられた item_ids を BATCH_SIZE 件ずつ EndItems
-    - 成功分だけ SQL DELETE
+    - 成功分だけ handle_listing_delete を通して論理削除
     - 518/429 が出たら「このアカウントの処理はいったん終了」
     """
     item_ids = [str(i) for i in item_ids if not is_deferred(i)]
@@ -269,41 +274,65 @@ def delete_items_from_ebay_and_sql(account: str, item_ids):
 
     deleted_total = 0
     idx = 0
-    while idx < len(item_ids):
-        if CIRCUIT.should_halt():
-            remain = int(CIRCUIT.halt_until - time.time())
-            if remain > 0:
-                print(
-                    f"⏸ {account}: レート保護のため {remain}s 停止中…"
-                    f"（再開 {time.strftime('%H:%M:%S', time.localtime(CIRCUIT.halt_until))}）"
-                )
-                time.sleep(min(remain, 5))
-            continue
 
-        batch = item_ids[idx: idx + BATCH_SIZE]
-        res = run_enditems_batch(account, batch)
+    # ★ DB接続は外側で1回
+    conn = get_sql_server_connection()
 
-        if res["rate_limited"]:
-            print(f"⏹ {account}: レート上限のため、このアカウントの処理を一旦終了します。")
-            return account, deleted_total, True
+    try:
+        while idx < len(item_ids):
 
-        if res["ok_ids"]:
-            print(f"✅ {account}: eBay削除成功 listing_id:")
-            for iid in res["ok_ids"]:
-                print(f"    ✔ {iid}")
+            if CIRCUIT.should_halt():
+                remain = int(CIRCUIT.halt_until - time.time())
+                if remain > 0:
+                    print(
+                        f"⏸ {account}: レート保護のため {remain}s 停止中…"
+                        f"（再開 {time.strftime('%H:%M:%S', time.localtime(CIRCUIT.halt_until))}）"
+                    )
+                    time.sleep(min(remain, 5))
+                continue
 
-            n = delete_rows_from_sql(account, res["ok_ids"])
-            print(f"✅ {account}: SQL削除 {n}件 完了")
+            batch = item_ids[idx: idx + BATCH_SIZE]
+            res = run_enditems_batch(account, batch)
 
-            deleted_total += len(res["ok_ids"])
+            if res["rate_limited"]:
+                print(f"⏹ {account}: レート上限のため、このアカウントの処理を一旦終了します。")
+                return account, deleted_total, True
 
-        if res["ng_ids"]:
-            print(f"🚫 {account}: 失敗/保留 {len(res['ng_ids'])}件（例: {res['ng_ids'][:2]}…）")
+            # ===============================
+            # ✅ 成功分を handle に統一
+            # ===============================
+            if res["ok_ids"]:
+                print(f"✅ {account}: eBay削除成功 listing_id:")
+                for iid in res["ok_ids"]:
+                    print(f"    ✔ {iid}")
 
-        idx += BATCH_SIZE
+                # ★ listing_id単位で論理削除
+                with conn.cursor() as cur:
+                    for iid in res["ok_ids"]:
+                        cur.execute("""
+                            UPDATE trx.listings
+                               SET is_deleted = 1,
+                                   deleted_at = SYSDATETIME()
+                             WHERE account = ?
+                               AND listing_id = ?
+                               AND ISNULL(is_deleted, 0) = 0
+                        """, (account, iid))
 
-    print(f"🧾 {account}: 合計 {deleted_total} 件削除完了")
-    return account, deleted_total, False
+                conn.commit()
+
+                deleted_total += len(res["ok_ids"])
+
+            if res["ng_ids"]:
+                print(f"🚫 {account}: 失敗/保留 {len(res['ng_ids'])}件（例: {res['ng_ids'][:2]}…）")
+
+            idx += BATCH_SIZE
+
+        print(f"🧾 {account}: 合計 {deleted_total} 件削除完了")
+        return account, deleted_total, False
+
+    finally:
+        conn.close()
+
 
 
 # ===== メイン =====

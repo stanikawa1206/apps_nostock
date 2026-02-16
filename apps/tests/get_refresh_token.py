@@ -6,10 +6,10 @@ import urllib.parse
 # 1. 認証情報
 CLIENT_ID = "HRSPcomp-test-PRD-bfe43fae9-2313a335"
 CLIENT_SECRET = "PRD-f02406089167-45bd-4421-9172-2b06"
-REDIRECT_URI = "HRSP_company_li-HRSPcomp-test-P-vtqjmbxa"
+REDIRECT_URI = "HRSP_company_li-HRSPcomp-test-P-vtqjmbtxa"
 
 # 2. Webhook.siteに届いた最新のURLを貼る
-WEBHOOK_URL = "https://webhook.site/7004daf6-1158-418f-9d9a-34443427b4b7?code=v%5E1.1%23i%5E1%23p%5E3%23r%5E1%23f%5E0%23I%5E3%23t%5EUl41Xzk6NTUyNDY4MjQwM0FBMjlCOTY3MUNDM0Q3OEFGMzc1NzJfMV8xI0VeMjYw&expires_in=299"
+WEBHOOK_URL = "https://webhook.site/7004daf6-1158-418f-9d9a-34443427b4b7?code=v%5E1.1%23i%5E1%23I%5E3%23f%5E0%23p%5E3%23r%5E1%23t%5EUl41XzM6RTBGMkM"
 
 # --- 内部処理 ---
 match = re.search(r'code=([^&]+)', WEBHOOK_URL)

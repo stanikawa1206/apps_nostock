@@ -57,7 +57,7 @@ def write_execution_log(rank_range, cat_id, count):
 # SQL定義
 # ==========================================
 SQL_UPSERT = """
-MERGE trx.amazon_cross_market_asin AS tgt
+MERGE trx.amazon_cross_market_asin WITH (ROWLOCK) AS tgt
 USING (SELECT ? AS asin, ? AS jp_category_id) AS src
 ON tgt.asin = src.asin
 WHEN MATCHED THEN
@@ -69,8 +69,9 @@ WHEN NOT MATCHED THEN
     VALUES (src.asin, SYSDATETIME(), src.jp_category_id, NULL);
 """
 
+# step1_keepa_jp_to_asin.py 内の修正
+
 def save_asins_to_db(cursor, asin_list, cat_id):
-    """リストを受け取ってDBに保存する"""
     if not asin_list:
         return 0
     
@@ -78,9 +79,12 @@ def save_asins_to_db(cursor, asin_list, cat_id):
     for asin in asin_list:
         try:
             cursor.execute(SQL_UPSERT, [asin, cat_id])
+            # ★ 1件ごとに確定させてロックを即座に解放する
+            cursor.connection.commit() 
             count += 1
         except Exception as e:
             print(f"Error {asin}: {e}")
+            cursor.connection.rollback()
     return count
 
 def fetch_and_save_recursive(cat_id, min_rank, max_rank, cursor):

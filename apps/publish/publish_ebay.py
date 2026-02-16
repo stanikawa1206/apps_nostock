@@ -690,26 +690,21 @@ def upsert_vendor_item(conn, rec: Dict[str, Any]):
 def record_ebay_listing(listing_id: str, account_name: str, vendor_item_id: str, vendor_name: str):
     if not listing_id:
         return
+
     conn = get_sql_server_connection()
     try:
         with conn.cursor() as cur:
             cur.execute("""
-MERGE INTO [trx].[listings] AS tgt
-USING (SELECT ? AS listing_id, ? AS account, ? AS vendor_item_id, ? AS vendor_name) AS src
-ON (tgt.listing_id = src.listing_id OR (tgt.vendor_item_id = src.vendor_item_id AND src.vendor_item_id <> ''))
-WHEN MATCHED THEN
-    UPDATE SET
-        tgt.account        = src.account,
-        tgt.vendor_item_id = src.vendor_item_id,
-        tgt.vendor_name    = src.vendor_name,
-        tgt.start_time     = SYSDATETIME()
-WHEN NOT MATCHED THEN
-    INSERT ([listing_id], [start_time], [account], [vendor_item_id], [vendor_name])
-    VALUES (src.listing_id, SYSDATETIME(), src.account, src.vendor_item_id, src.vendor_name);
+INSERT INTO [trx].[listings]
+    ([listing_id], [start_time], [account], [vendor_item_id], [vendor_name], [is_deleted])
+VALUES
+    (?, SYSDATETIME(), ?, ?, ?, 0);
 """, (listing_id, account_name, vendor_item_id, vendor_name))
+
         conn.commit()
     finally:
         conn.close()
+
 
 def _truncate_for_db(s: str, limit: int) -> str:
     s = (s or "").strip()
@@ -812,7 +807,7 @@ def _check_shipping_condition_values(region: Optional[str], days: Optional[str])
     if not region and not days:
         return False, False
 
-    bad_days = {"8〜14日で発送", "4〜7日で発送", "4~7日で発送"}
+    bad_days = {"8〜14日で発送", "4〜7日で発送", "4~7日で発送","90日以内で発送"}
 
     if region == "海外":
         return True, True
@@ -904,30 +899,14 @@ TAKE_ONE_VENDOR_ITEM_SQL = """
         v.preset,
         v.processing_by,
         v.processing_at
-    FROM trx.vendor_item v
-    LEFT JOIN mst.seller s
-        ON s.vendor_name = v.vendor_name
-       AND s.seller_id   = v.seller_id
+    FROM vw_vendor_item_ready v
     WHERE
         -- =========================
-        -- 基本条件（既存）
+        -- 動的条件
         -- =========================
         v.preset = ?
-        AND v.status = N'販売中'
-        AND ISNULL(v.出品不可flg, 0) = 0
-        AND ISNULL(v.[出品状況], N'') <> N'配送条件NG'
-        AND ISNULL(v.[出品状況], N'') <> N'NG(危険素材)'
-        AND ISNULL(v.[出品状況], N'') <> N'NG(GA補色)'
-
-        AND (
-            v.last_updated_str IS NULL
-            OR NOT (
-                v.last_updated_str LIKE N'%ヶ月前%'
-                OR v.last_updated_str LIKE N'%か月前%'
-                OR v.last_updated_str LIKE N'%半年以上前%'
-            )
-        )
         AND v.price BETWEEN ? AND ?
+
         -- =========================
         -- processing ロック
         -- =========================
@@ -940,85 +919,6 @@ TAKE_ONE_VENDOR_ITEM_SQL = """
             )
         )
 
-        -- =========================
-        -- 既に出品済みは除外
-        -- =========================
-        AND NOT EXISTS (
-            SELECT 1
-            FROM trx.listings l
-            WHERE l.vendor_name = v.vendor_name
-              AND l.vendor_item_id = v.vendor_item_id
-        )
-
--- =========================
--- ★ 評価チェック間隔ロジック（核心）
--- =========================
-AND (
-    -- seller 情報が未登録なら通す
-    s.seller_id IS NULL
-
-    OR
-    (
-        (
-            ----------------------------------------------------------------
-            -- メルカリ個人
-            ----------------------------------------------------------------
-            v.vendor_name = N'メルカリ'
-            AND
-            (
-                s.rating_count >= 50
-                OR
-                (
-                    s.rating_count < 50
-                    AND (
-                        v.last_ng_at IS NULL
-                        OR DATEADD(
-                            day,
-                            CASE
-                                WHEN s.rating_count >= 45 THEN 1
-                                WHEN s.rating_count >= 30 THEN 7
-                                WHEN s.rating_count >= 10 THEN 14
-                                ELSE 30
-                            END,
-                            v.last_ng_at
-                        ) <= SYSDATETIME()
-                    )
-                )
-            )
-        )
-
-        OR
-
-        (
-            ----------------------------------------------------------------
-            -- メルカリ shops
-            ----------------------------------------------------------------
-            v.vendor_name = N'メルカリshops'
-            AND
-            (
-                s.rating_count >= 20
-                OR
-                (
-                    s.rating_count < 20
-                    AND (
-                        v.last_ng_at IS NULL
-                        OR DATEADD(
-                            day,
-                            CASE
-                                WHEN s.rating_count >= 18 THEN 1
-                                WHEN s.rating_count >= 12 THEN 7
-                                WHEN s.rating_count >= 5  THEN 14
-                                ELSE 30
-                            END,
-                            v.last_ng_at
-                        ) <= SYSDATETIME()
-                    )
-                )
-            )
-        )
-    )
-)
- 
     ORDER BY
         CASE WHEN v.vendor_page IS NULL THEN 1 ELSE 0 END,
         v.vendor_page ASC
@@ -1035,6 +935,7 @@ OUTPUT
     inserted.shipping_days,
     inserted.preset;
 """
+
 
 def take_one_vendor_item_by_preset(
     conn,
@@ -1226,12 +1127,13 @@ def heavy_check_detail(
         )
     except MercariItemUnavailableError as e:
         status = e.state
+
         mark_vendor_item_unavailable(conn, vendor_name, sku, status)
         writes_since_commit += 1
-
-        handle_listing_delete(conn, sku)
         writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
+
         return None, debug_unavailable_dump, writes_since_commit, 1, 0
+
 
     except Exception as e:
         if is_fatal_renderer_error(e):
@@ -2027,13 +1929,101 @@ def main():
 
     finally:
         try:
-            driver.quit()
-        except Exception:
-            pass
+            if driver:
+                driver.quit()
+        except Exception as e:
+            print(f"[WARN] driver.quit() failed: {e}")
         try:
-            conn.close()
+            if conn:
+                conn.close()
         except Exception:
             pass
 
+
+def main_test():
+    print("=== TAKE_ONE_VENDOR_ITEM_SQL テスト開始 ===")
+
+    preset = "ヴィトン長財布MS"
+    worker_name = "TEST_WORKER"
+
+    from datetime import datetime, timedelta
+    lock_timeout = datetime.now() - timedelta(minutes=10)
+
+    conn = get_sql_server_connection()
+    cur = conn.cursor()
+
+    # --------------------------------------
+    # ① preset情報取得
+    # --------------------------------------
+    cur.execute("""
+        SELECT mode, low_usd_target, high_usd_target
+        FROM mst.v_presets
+        WHERE preset = ?
+    """, preset)
+
+    row = cur.fetchone()
+    if not row:
+        print("presetが見つかりません")
+        return
+
+    p = {
+        "mode": row[0],
+        "low_usd_target": row[1],
+        "high_usd_target": row[2],
+    }
+
+    # --------------------------------------
+    # ② 本番と同じ価格レンジ算出
+    # --------------------------------------
+    low_cost, high_cost = compute_cost_range_jpy_from_usd_range(
+        p["mode"],
+        p["low_usd_target"],
+        p["high_usd_target"],
+    )
+
+    print(f"価格レンジ: {low_cost} ～ {high_cost}")
+
+    # --------------------------------------
+    # ③ ready view 件数確認
+    # --------------------------------------
+    TEST_SQL = """
+    SELECT COUNT(*)
+    FROM vw_vendor_item_ready v
+    WHERE
+        v.preset = ?
+        AND v.price BETWEEN ? AND ?
+        AND (
+            v.processing_at IS NULL
+            OR v.processing_at < ?
+            OR (
+                v.processing_by = ?
+                AND v.processing_at < ?
+            )
+        )
+    """
+
+    cur.execute(
+        TEST_SQL,
+        preset,
+        low_cost,
+        high_cost,
+        lock_timeout,
+        worker_name,
+        lock_timeout,
+    )
+
+    count = cur.fetchone()[0]
+
+    print(f"取得可能件数 = {count}")
+
+    cur.close()
+    conn.close()
+
+    print("=== テスト終了 ===")
+
+
+
+
 if __name__ == "__main__":
     main()
+    #main_test()

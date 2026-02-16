@@ -14,7 +14,7 @@ import urllib3
 from typing import Any, Dict, List, Tuple, Optional
 from urllib.parse import urlencode, urlparse, parse_qsl, urlunparse
 from datetime import datetime, timezone, timedelta
-from apps.adapters.mercari_item_status import handle_listing_delete
+from apps.adapters.mercari_item_status import handle_listing_delete,handle_listing_price_update
 # =========================
 # Path setup
 # =========================
@@ -25,9 +25,6 @@ if BASE_DIR not in sys.path:
 # =========================
 # Third-party
 # =========================
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
 from selenium.common.exceptions import TimeoutException, WebDriverException
 
 from selenium.webdriver.common.by import By
@@ -48,10 +45,7 @@ from apps.adapters.mercari_scraper import (
     scroll_until_stagnant_collect_items,
     scroll_until_stagnant_collect_shops,
 )
-from apps.adapters.ebay_api import (
-    delete_item_from_ebay,
-    update_ebay_price,
-)
+from apps.adapters.ebay_api import update_ebay_price
 
 # =========================
 # 設定
@@ -133,33 +127,6 @@ SET
 WHERE job_id = ?;
 """
 
-
-# =========================
-# util
-# =========================
-def add_or_replace_query(url: str, **params) -> str:
-    u = urlparse(url)
-    q = dict(parse_qsl(u.query, keep_blank_values=True))
-    for k, v in params.items():
-        if v is None:
-            q.pop(k, None)
-        else:
-            q[k] = str(v)
-    return urlunparse((u.scheme, u.netloc, u.path, u.params, urlencode(q, doseq=True), u.fragment))
-
-def page_url(base_url: str, idx_zero_based: int) -> str:
-    return base_url if idx_zero_based == 0 else add_or_replace_query(
-        base_url, page_token=f"v1:{idx_zero_based}"
-    )
-
-def has_no_results_banner(driver) -> bool:
-    try:
-        txt = driver.execute_script("return document.body ? document.body.innerText : ''") or ""
-        return NO_RESULT_TEXT in txt
-    except Exception:
-        return False
-
-
 # =========================
 # 対策(10): swapチェック（Linuxのみ）
 # =========================
@@ -178,52 +145,6 @@ def warn_if_no_swap():
         # 読めない環境もあるので黙る
         pass
 
-# =========================
-# listings / vendor_item helpers
-# =========================
-def get_listing_core_by_sku(
-    conn,
-    vendor_item_id: str,
-    vendor_name: Optional[str] = None,
-) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-    cur = conn.cursor()
-    try:
-        if vendor_name:
-            cur.execute("""
-                SELECT listing_id, account, vendor_name
-                  FROM [trx].[listings]
-                 WHERE vendor_item_id = ?
-                   AND vendor_name = ?
-            """, (vendor_item_id, vendor_name))
-        else:
-            cur.execute("""
-                SELECT listing_id, account, vendor_name
-                  FROM [trx].[listings]
-                 WHERE vendor_item_id = ?
-            """, (vendor_item_id,))
-        row = cur.fetchone()
-        if row:
-            return tuple(str(r).strip() if r is not None else None for r in row)  # type: ignore
-        return (None, None, None)
-    finally:
-        try:
-            cur.close()
-        except Exception:
-            pass
-
-def delete_listing_by_itemid(conn, ebay_item_id: str, account: str, vendor_name: str):
-    cur = conn.cursor()
-    try:
-        cur.execute("""
-            DELETE FROM [trx].[listings]
-             WHERE listing_id = ? AND account = ? AND vendor_name = ?
-        """, (ebay_item_id, account, vendor_name))
-        conn.commit()
-    finally:
-        try:
-            cur.close()
-        except Exception:
-            pass
 
 def get_vendor_item_prices_batch(conn, vendor_name: str, vendor_item_ids: List[str]) -> Dict[str, Optional[int]]:
     if not vendor_item_ids:
@@ -257,28 +178,6 @@ def get_vendor_item_prices_batch(conn, vendor_name: str, vendor_item_ids: List[s
 # =========================
 # eBay side-effects
 # =========================
-def _is_transient_inventory_error(resp: Dict[str, Any]) -> bool:
-    if not resp or resp.get("success"):
-        return False
-    raw = resp.get("raw") or {}
-    errors = ((raw.get("putOffer") or {}).get("errors") or []) or raw.get("errors") or []
-    msgs = " ".join(str(e.get("message","")) for e in errors if isinstance(e, dict)).lower()
-    codes = {int(e.get("errorId")) for e in errors if isinstance(e, dict) and str(e.get("errorId","")).isdigit()}
-    return (25001 in codes) or ("internal error" in msgs)
-
-def is_account_excluded(conn, account: str) -> bool:
-    cur = conn.cursor()
-    try:
-        cur.execute("""
-            SELECT is_excluded
-            FROM mst.ebay_accounts
-            WHERE account = ?
-        """, (account,))
-        row = cur.fetchone()
-        return bool(row and row[0])
-    finally:
-        cur.close()
-
 
 def handle_price_change_side_effects(
     conn,
@@ -290,58 +189,57 @@ def handle_price_change_side_effects(
     mode: str,
     low_usd_target: float,
     high_usd_target: float,
-    simulate: bool,
-):
-    ebay_item_id, account, listing_vendor = get_listing_core_by_sku(conn, sku, vendor_name=vendor_name)
+) -> None:
+    """
+    vendor_item の価格変動に対する副作用処理。
 
-    if not ebay_item_id:
-        return
-    
-    if is_account_excluded(conn, account):
-        print(f"[SKIP] account excluded: {account} sku={sku}", flush=True)
-        return
-    
-    usd = compute_start_price_usd(new_price_jpy, mode, low_usd_target, high_usd_target)
+    ・USDレンジ外 → handle_listing_delete
+    ・USDレンジ内 → handle_listing_price_update
+    """
 
+    # ─────────────────────────────
+    # ① USDレンジ計算
+    # ─────────────────────────────
+    usd = compute_start_price_usd(
+        new_price_jpy,
+        mode,
+        low_usd_target,
+        high_usd_target,
+    )
+
+    # ─────────────────────────────
+    # ② 範囲外 → 削除
+    # ─────────────────────────────
     if usd is None:
         print(
             f"[PRICE] {sku}: {old_price} -> {new_price_jpy} JPY / "
             f"目標外(usd=None) mode={mode} {low_usd_target}-{high_usd_target}",
-            flush=True
+            flush=True,
         )
 
-        # ★ 削除は共通関数へ統一
         handle_listing_delete(
             conn,
             sku,
-            simulate=simulate,
+            vendor_name,
         )
 
         return
 
+    # ─────────────────────────────
+    # ③ 範囲内 → 価格更新
+    # ─────────────────────────────
     print(
-        f"【価格変更】 {sku}: {old_price} -> {new_price_jpy} JPY / USD {usd}  mode={mode} {low_usd_target}-{high_usd_target}",
-        flush=True
+        f"【価格変更】 {sku}: {old_price} -> {new_price_jpy} JPY / "
+        f"USD {usd} mode={mode} {low_usd_target}-{high_usd_target}",
+        flush=True,
     )
 
-    if simulate:
-        print(f"[SIMULATE UPDATE] sku={sku} item_id={ebay_item_id} USD={usd}", flush=True)
-        return
-
-    did_update_ebay = False
-    resp: Optional[Dict[str, Any]] = None
-    for wait in [0, 2, 6, 15]:
-        if wait:
-            time.sleep(wait)
-        resp = update_ebay_price(account, ebay_item_id, usd, sku=sku, debug=True)
-        if resp and resp.get("success"):
-            did_update_ebay = True
-            break
-        if not _is_transient_inventory_error(resp or {}):
-            break
-
-    if not did_update_ebay:
-        print(f"[WARN] eBay価格更新失敗 resp={resp}", flush=True)
+    handle_listing_price_update(
+        conn,
+        sku,
+        vendor_name,
+        usd,
+    )
 
     if EXIT_AFTER_PRICE_UPDATE:
         sys.exit(0)
@@ -513,19 +411,16 @@ def upsert_vendor_item(conn: pyodbc.Connection, vendor_name: str, item_id: str, 
             """, (now_str, page_num, "売り切れ", preset, vendor_name, item_id))
     conn.commit()
 
-def is_account_excluded_for_sku(conn, vendor_item_id: str) -> bool:
+def is_account_excluded(conn, account: str) -> bool:
     cur = conn.cursor()
     try:
         cur.execute("""
-            SELECT a.is_excluded
-            FROM trx.listings l
-            JOIN mst.ebay_accounts a
-              ON l.account = a.account
-            WHERE l.vendor_item_id = ?
-        """, (vendor_item_id,))
-        rows = cur.fetchall()
-        # 紐づく listing が1つでも excluded なら true
-        return any(r[0] for r in rows)
+            SELECT is_excluded
+              FROM mst.ebay_accounts
+             WHERE account = ?
+        """, (account,))
+        row = cur.fetchone()
+        return bool(row and row[0])
     finally:
         cur.close()
 
@@ -636,6 +531,7 @@ def run_fetch_sold_ebay(payload: dict) -> Tuple[int, int]:
                 break
 
             # DB 更新 & eBay 削除
+
             for iid, title in new_items:
                 fetched_items += 1
 
@@ -649,10 +545,12 @@ def run_fetch_sold_ebay(payload: dict) -> Tuple[int, int]:
                     now_str,
                 )
 
-                if not is_account_excluded_for_sku(conn, iid):
-                    handle_listing_delete(conn, iid, simulate=SIMULATE_DELETE)
-                else:
-                    print(f"[SKIP DELETE] excluded account for sku={iid}", flush=True)
+                # ★ 削除は共通関数へ統一（sku主語）
+                handle_listing_delete(
+                    conn,
+                    iid,
+                    vendor_name,
+                )
 
             page_idx += 1
             time.sleep(1)
@@ -781,7 +679,6 @@ def run_fetch_active_ebay(payload: dict) -> Tuple[int, int]:
                         mode=mode,
                         low_usd_target=low_usd_target,
                         high_usd_target=high_usd_target,
-                        simulate=SIMULATE,
                     )
                 else:
                     cnt_unchanged += 1

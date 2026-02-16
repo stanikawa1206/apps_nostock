@@ -410,6 +410,10 @@ def main():
                 else f"✅ delete_ebay_daily.py 正常終了（セット{set_no}）"
             )
 
+            print("BASE_DIR =", BASE_DIR)
+            print("DELETE_SCRIPT =", DELETE_SCRIPT)
+            print("cwd =", str(BASE_DIR))
+
             body = (
                 f"スクリプト: {DELETE_SCRIPT.name}\n"
                 f"セット番号: {set_no}\n"

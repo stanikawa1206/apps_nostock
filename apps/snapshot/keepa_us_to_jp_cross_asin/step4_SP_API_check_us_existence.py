@@ -15,23 +15,17 @@ ST_NOT_EXIST = 2 # なし
 
 # 対象: ランクが D, - (仕入れ対象) で、US確認がまだ(0)のもの
 SQL_SELECT = """
-SELECT asin FROM trx.amazon_cross_market_asin 
+SELECT asin FROM trx.amazon_cross_market_asin WITH (NOLOCK)
 WHERE (wakarunda IN ('D', '-')) 
   AND us_existence = 0
 """
 
-# US情報更新 (存在あり: 1) ※価格は更新対象から除外
 SQL_UPDATE_EXIST = """
-UPDATE trx.amazon_cross_market_asin 
-SET us_existence = 1, last_seen_at = SYSDATETIME()
-WHERE asin = ?
+UPDATE trx.amazon_cross_market_asin WITH (ROWLOCK) SET us_existence = 1, last_seen_at = SYSDATETIME() WHERE asin = ?
 """
 
-# US情報更新 (存在なし: 2)
 SQL_UPDATE_NOT_EXIST = """
-UPDATE trx.amazon_cross_market_asin 
-SET us_existence = 2, last_seen_at = SYSDATETIME()
-WHERE asin = ?
+UPDATE trx.amazon_cross_market_asin WITH (ROWLOCK) SET us_existence = 2, last_seen_at = SYSDATETIME() WHERE asin = ?
 """
 
 def main():

@@ -9,7 +9,7 @@ import wakarunda_utils
 # 処理対象：ブランドがあり、wakarunda判定が未実施、または 'E' のもの
 SQL_SELECT_TARGET = """
 SELECT asin, jp_brand 
-FROM trx.amazon_cross_market_asin 
+FROM trx.amazon_cross_market_asin WITH (NOLOCK) 
 WHERE jp_brand IS NOT NULL 
   AND (wakarunda IS NULL OR wakarunda = '' OR wakarunda = 'E')
 """
@@ -31,7 +31,7 @@ WHEN NOT MATCHED THEN
 
 # メインテーブル更新
 SQL_UPDATE_MAIN = """
-UPDATE trx.amazon_cross_market_asin 
+UPDATE trx.amazon_cross_market_asin WITH (ROWLOCK)
 SET wakarunda = ?, last_seen_at = SYSDATETIME() 
 WHERE asin = ?
 """

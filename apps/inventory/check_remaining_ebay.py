@@ -21,6 +21,7 @@ from apps.adapters.mercari_item_status import (
     detect_status_from_mercari,
     detect_status_from_mercari_shops,
 )
+from apps.adapters.mercari_item_status import handle_listing_delete,handle_listing_price_update
 
 # ===== ここで send_mail を import（重要） =====
 from apps.common.utils import send_mail
@@ -56,7 +57,6 @@ def safe_quit(driver: Optional[webdriver.Chrome]) -> None:
 
 # ===== パス設定 & インポート =====
 from apps.common.utils import get_sql_server_connection, compute_start_price_usd
-from apps.adapters.ebay_api import delete_item_from_ebay, update_ebay_price
 from apps.adapters.mercari_scraper import build_driver
 
 # ===================== 設定 =====================
@@ -77,22 +77,6 @@ def human_sleep(a: float, b: float):
     time.sleep(random.uniform(a, b))
 
 # ===================== DB I/O =====================
-def is_account_excluded_for_sku(conn, vendor_item_id: str) -> bool:
-    cur = conn.cursor()
-    try:
-        cur.execute("""
-            SELECT a.is_excluded
-            FROM trx.listings l
-            JOIN mst.ebay_accounts a
-              ON l.account = a.account
-            WHERE l.vendor_item_id = ?
-        """, (vendor_item_id,))
-        rows = cur.fetchall()
-        return any(r[0] for r in rows)
-    finally:
-        cur.close()
-
-
 def load_mercari_targets_from_db(limit: Optional[int] = None) -> List[Dict[str, str]]:
     """
     listings と vendor_item を (vendor_name, vendor_item_id) でJOIN。
@@ -111,11 +95,11 @@ def load_mercari_targets_from_db(limit: Optional[int] = None) -> List[Dict[str, 
             ON v.vendor_name    = l.vendor_name
            AND v.vendor_item_id = l.vendor_item_id
         WHERE
-            trx_listings.is_deleted = False
+            l.is_deleted = 0
             AND
             (
-                trx_vendor_item.status IS NULL
-                OR TRIM(trx_vendor_item.status) = ''
+                v.status IS NULL
+                OR LTRIM(RTRIM(v.status)) = N''
             )
         ORDER BY l.start_time DESC
     """
@@ -150,26 +134,6 @@ def load_mercari_targets_from_db(limit: Optional[int] = None) -> List[Dict[str, 
         return out
     finally:
         conn.close()
-
-def delete_ebay_listing_record(conn, ebay_item_id: str, account: str, vendor_name: str) -> None:
-    """
-    eBay 出品を論理削除する
-    - trx.listings の record は削除しない
-    - is_deleted / deleted_at を更新
-    """
-    with conn.cursor() as cur:
-        cur.execute("""
-            UPDATE trx.listings
-               SET is_deleted = 1,
-                   deleted_at = SYSDATETIME()
-             WHERE listing_id = ?
-               AND account = ?
-               AND vendor_name = ?
-               AND is_deleted = 0
-        """, (ebay_item_id, account, vendor_name))
-    conn.commit()
-
-
 
 def update_vendor_item_status(conn, vendor_name: str, sku: str, status: str) -> None:
     """ vendor_item の status を更新（sku=vendor_item_id） """
@@ -341,65 +305,28 @@ def process_status_and_sync(
             # 3-A. レンジ外 → eBay削除
             # =====================
             if new_price_usd is None:
-                print(f"[PRICE] {sku}: {old_price} -> {price_jpy} JPY / レンジ外 → eBay終了")
+                print(
+                    f"[PRICE] {sku}: {old_price} -> {price_jpy} JPY / レンジ外 → eBay終了",
+                    flush=True,
+                )
 
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        SELECT listing_id, account
-                          FROM trx.listings
-                         WHERE vendor_item_id = ?
-                           AND deleted_at IS NULL
-                    """, (sku,))
-                    rows = cur.fetchall()
-
-                for ebay_item_id, account in rows:
-                    if is_account_excluded_for_sku(conn, sku):
-                        print(f"[SKIP DELETE] excluded account sku={sku}")
-                        continue
-
-                    print(f"[DEBUG][DELETE] account={account} listing_id={ebay_item_id}")
-                    res = delete_item_from_ebay(account, ebay_item_id)
-
-                    ok = bool(res.get("success")) or res.get("note") in {
-                        "already_deleted",
-                        "already_ended",
-                    }
-
-                    if ok:
-                        delete_ebay_listing_record(conn, ebay_item_id, account, vendor_name)
-
-                    else:
-                        print(f"[WARN] eBay削除失敗 listingId={ebay_item_id} resp={res}")
+                handle_listing_delete(
+                    conn,
+                    sku,
+                    vendor_name,
+                )
 
             # =====================
             # 3-B. レンジ内 → eBay価格改定
             # =====================
             else:
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        SELECT listing_id, account
-                          FROM trx.listings
-                         WHERE vendor_item_id = ?
-                           AND deleted_at IS NULL
-                    """, (sku,))
-                    rows = cur.fetchall()
+                handle_listing_price_update(
+                    conn,
+                    sku,
+                    vendor_name,
+                    new_price_usd,
+                )
 
-                for ebay_item_id, account in rows:
-                    if is_account_excluded_for_sku(conn, sku):
-                        print(f"[SKIP UPDATE] excluded account sku={sku}")
-                        continue
-
-                    print(f"[DEBUG][UPDATE] account={account} listing_id={ebay_item_id}")
-                    resp = update_ebay_price(
-                        account,
-                        ebay_item_id,
-                        new_price_usd,
-                        sku=sku,
-                        debug=True,
-                    )
-
-                    if not resp or not resp.get("success"):
-                        print(f"[WARN] eBay価格更新失敗 listingId={ebay_item_id} resp={resp}")
 
         # ---- vendor_item 更新（価格あり）----
         update_vendor_item_price_and_status(
@@ -422,49 +349,18 @@ def process_status_and_sync(
             status,
         )
 
+
     # =====================
     # 5. 終了系ステータス → eBay削除
     # =====================
     if status in {"削除", "オークション", "売り切れ", "公開停止"}:
-        print(f"[DEBUG][FINAL_DELETE_CHECK] sku={sku} status={status}")
+        print(f"[FINAL_DELETE] sku={sku} status={status}", flush=True)
 
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT listing_id, account
-                  FROM trx.listings
-                 WHERE vendor_item_id = ?
-                   AND deleted_at IS NULL
-            """, (sku,))
-            rows = cur.fetchall()
-
-            # === rows の中身を確認する print ===
-            print(f"[DEBUG_DB] SKU:{sku} の検索結果 (deleted_at IS NULL):")
-            if not rows:
-                print(f"  -> ヒットなし（レコードが存在しないか、既に deleted_at に値が入っています）")
-            else:
-                for r in rows:
-                    print(f"  -> listing_id: {r[0]}, account: {r[1]}")
-            # ===============================
-
-
-
-        for ebay_item_id, account in rows:
-            if is_account_excluded_for_sku(conn, sku):
-                print(f"[SKIP DELETE] excluded account sku={sku}")
-                continue
-
-            print(f"[DEBUG][CALL delete_item_from_ebay] account={account} listing_id={ebay_item_id}")
-            res = delete_item_from_ebay(account, ebay_item_id)
-
-            ok = bool(res.get("success")) or res.get("note") in {
-                "already_deleted",
-                "already_ended",
-            }
-
-            if ok:
-                delete_ebay_listing_record(conn, ebay_item_id, account, vendor_name)
-            else:
-                print(f"[WARN] eBay削除失敗 listingId={ebay_item_id} resp={res}")
+        handle_listing_delete(
+            conn,
+            sku,
+            vendor_name,
+        )
 
     # =====================
     # ★ 6. remaining 確定
@@ -483,6 +379,9 @@ def pull_one_remaining_target(conn, worker_name: str):
     """
     出品中（is_deleted=false）かつ
     vendor_item.status 未確定 のものを 1件だけ確保
+
+    ・remaining_check_at は「処理完了時刻」なのでここでは触らない
+    ・remaining_check_by だけをロック用途でセットする
     """
     with conn.cursor() as cur:
         cur.execute("""
@@ -500,11 +399,11 @@ def pull_one_remaining_target(conn, worker_name: str):
                   AND l.vendor_name IN (N'メルカリ', N'メルカリshops')
                   AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')
                   AND v.remaining_check_at IS NULL
+                  AND v.remaining_check_by IS NULL
                 ORDER BY l.start_time DESC
             )
             UPDATE v
-               SET remaining_check_by = ?,
-                   remaining_check_at = SYSDATETIME()
+               SET remaining_check_by = ?
             OUTPUT
                 inserted.vendor_name,
                 inserted.vendor_item_id,

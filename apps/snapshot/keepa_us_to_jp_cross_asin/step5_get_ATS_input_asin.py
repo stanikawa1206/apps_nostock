@@ -42,7 +42,7 @@ def main():
         # pandasの警告を避けるため、cursorでexecuteしてからfetch
         select_query = """
             SELECT TOP 10000 asin 
-            FROM trx.amazon_cross_market_asin 
+            FROM trx.amazon_cross_market_asin WITH (NOLOCK)
             WHERE us_existence = 1 AND ATS IS NULL;
         """
         cur.execute(select_query)
@@ -60,11 +60,11 @@ def main():
         # エラー回避のため、IN句を使わず一時テーブルや分割更新をするのが理想ですが、
         # ここではシンプルかつ確実な「抽出条件を再利用した一括更新」を行います。
         update_query = f"""
-            UPDATE trx.amazon_cross_market_asin 
+            UPDATE trx.amazon_cross_market_asin WITH (ROWLOCK)
             SET ATS = '{TODAY_STR}' 
             WHERE asin IN (
                 SELECT TOP 10000 asin 
-                FROM trx.amazon_cross_market_asin 
+                FROM trx.amazon_cross_market_asin WITH (NOLOCK)
                 WHERE us_existence = 1 AND ATS IS NULL
             );
         """
