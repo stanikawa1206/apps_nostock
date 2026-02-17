@@ -531,7 +531,6 @@ def build_driver(
     # ───────── OS別 ─────────
     if os.name == "posix":
         # VPS (Ubuntu)
-        opts.binary_location = "/usr/bin/google-chrome"
         service = Service("/usr/bin/chromedriver")
     else:
         # Windows
