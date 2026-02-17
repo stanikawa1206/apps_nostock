@@ -526,7 +526,7 @@ def build_driver(
 
     if os.name == "posix":
         # 先ほど ln -sf で作ったパスを指定
-        opts.binary_location = "/usr/bin/google-chrome"
+        opts.binary_location = "/usr/bin/chromium-browser"
         # 消去した /usr/bin/chromedriver の代わりに、最適なものを自動取得する
         service = Service("/usr/bin/chromedriver")
     else:
