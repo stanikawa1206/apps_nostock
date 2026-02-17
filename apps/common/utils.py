@@ -494,20 +494,23 @@ def build_driver(
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
     from selenium.webdriver.chrome.service import Service
-    from webdriver_manager.chrome import ChromeDriverManager # これが重要
+    from webdriver_manager.chrome import ChromeDriverManager
 
     opts = Options()
 
+    # ───────── headless ─────────
     if headless:
         opts.add_argument("--headless=new")
 
-    # 共通オプション
+    # ───────── VPS必須 ─────────
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
+
+    # ───────── 共通 ─────────
     opts.add_argument("--disable-notifications")
     opts.add_argument("--lang=ja-JP,ja")
 
-    # 低負荷設定
+    # 軽量化
     opts.add_argument("--disable-renderer-backgrounding")
     opts.add_argument("--disable-backgrounding-occluded-windows")
     opts.add_argument("--blink-settings=imagesEnabled=false")
@@ -516,21 +519,22 @@ def build_driver(
     opts.add_argument("--disable-software-rasterizer")
     opts.add_argument("--disable-blink-features=AutomationControlled")
 
-    
-    # UAを最新(145系)に合わせておく
+    # UA固定（145系）
     opts.add_argument(
-        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
+        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/145.0.0.0 Safari/537.36"
     )
 
     opts.page_load_strategy = page_load_strategy
 
+    # ───────── OS別 ─────────
     if os.name == "posix":
-        # 先ほど ln -sf で作ったパスを指定
-        opts.binary_location = "/usr/bin/chromium-browser"
-        # 消去した /usr/bin/chromedriver の代わりに、最適なものを自動取得する
+        # VPS (Ubuntu)
+        opts.binary_location = "/usr/bin/google-chrome"
         service = Service("/usr/bin/chromedriver")
     else:
-        # Windows用
+        # Windows
         opts.binary_location = os.getenv(
             "CHROME_BINARY",
             r"C:\Program Files\Google\Chrome\Application\chrome.exe",
@@ -538,12 +542,15 @@ def build_driver(
         service = Service(ChromeDriverManager().install())
 
     driver = webdriver.Chrome(service=service, options=opts)
+
     driver.set_window_size(1400, 1000)
     driver.set_page_load_timeout(30)
     driver.set_script_timeout(30)
-    print("新ver")
+
+    print("build_driver OK")
 
     return driver
+
 
 
 
