@@ -190,15 +190,55 @@ def handle_price_change_side_effects(
     low_usd_target: float,
     high_usd_target: float,
 ) -> None:
-    """
-    vendor_item の価格変動に対する副作用処理。
 
-    ・USDレンジ外 → handle_listing_delete
-    ・USDレンジ内 → handle_listing_price_update
-    """
+    cursor = conn.cursor()
 
     # ─────────────────────────────
-    # ① USDレンジ計算
+    # ① クリア前の状態取得
+    # ─────────────────────────────
+    select_sql = """
+    SELECT 出品状況, 出品状況詳細, last_updated_str, last_ng_at
+    FROM trx.vendor_item
+    WHERE vendor_name = ?
+      AND vendor_item_id = ?
+    """
+    cursor.execute(select_sql, vendor_name, sku)
+    row = cursor.fetchone()
+
+    if row is None:
+        raise RuntimeError(f"vendor_item not found: {vendor_name} / {sku}")
+
+    before_status, before_detail, before_updated, before_ng = row
+
+    print(
+        f"[CLEAR BEFORE] sku={sku} "
+        f"出品状況={before_status} "
+        f"出品状況詳細={before_detail} "
+        f"last_updated_str={before_updated} "
+        f"last_ng_at={before_ng}",
+        flush=True,
+    )
+
+    # ─────────────────────────────
+    # ② 状態クリア
+    # ─────────────────────────────
+    update_sql = """
+    UPDATE trx.vendor_item
+    SET
+        出品状況 = NULL,
+        出品状況詳細 = NULL,
+        last_updated_str = NULL,
+        last_ng_at = NULL
+    WHERE vendor_name = ?
+      AND vendor_item_id = ?
+    """
+    cursor.execute(update_sql, vendor_name, sku)
+    conn.commit()
+
+    print(f"[CLEAR DONE] sku={sku}", flush=True)
+
+    # ─────────────────────────────
+    # ③ USDレンジ計算
     # ─────────────────────────────
     usd = compute_start_price_usd(
         new_price_jpy,
@@ -208,41 +248,30 @@ def handle_price_change_side_effects(
     )
 
     # ─────────────────────────────
-    # ② 範囲外 → 削除
+    # ④ 範囲外 → 削除
     # ─────────────────────────────
     if usd is None:
         print(
-            f"[PRICE] {sku}: {old_price} -> {new_price_jpy} JPY / "
-            f"目標外(usd=None) mode={mode} {low_usd_target}-{high_usd_target}",
+            f"[PRICE OUT] {sku}: {old_price} -> {new_price_jpy} JPY",
             flush=True,
         )
-
-        handle_listing_delete(
-            conn,
-            sku,
-            vendor_name,
-        )
-
+        handle_listing_delete(conn, sku, vendor_name)
         return
 
     # ─────────────────────────────
-    # ③ 範囲内 → 価格更新
+    # ⑤ 範囲内 → 価格更新
     # ─────────────────────────────
     print(
-        f"【価格変更】 {sku}: {old_price} -> {new_price_jpy} JPY / "
-        f"USD {usd} mode={mode} {low_usd_target}-{high_usd_target}",
+        f"[PRICE CHANGE] {sku}: {old_price} -> {new_price_jpy} JPY / USD={usd}",
         flush=True,
     )
 
-    handle_listing_price_update(
-        conn,
-        sku,
-        vendor_name,
-        usd,
-    )
+    handle_listing_price_update(conn, sku, vendor_name, usd)
 
     if EXIT_AFTER_PRICE_UPDATE:
         sys.exit(0)
+
+
 
 
 # =========================
@@ -257,6 +286,7 @@ def upsert_vendor_items(conn, rows: List[Dict[str, Any]], now) -> int:
 MERGE [trx].[vendor_item] AS T
 USING (SELECT ? AS vendor_name, ? AS vendor_item_id) AS S
 ON (T.[vendor_name] = S.vendor_name AND T.[vendor_item_id] = S.vendor_item_id)
+
 WHEN MATCHED THEN
   UPDATE SET
     T.[status]          = ?,
@@ -265,38 +295,26 @@ WHEN MATCHED THEN
     T.[vendor_page]     = ?,
     T.[last_checked_at] = ?,
     T.[prev_price] = CASE
-                       WHEN (T.[price] <> ? OR (T.[price] IS NULL AND ? IS NOT NULL)
-                             OR (T.[price] IS NOT NULL AND ? IS NULL))
+                       WHEN (T.[price] <> ? OR
+                            (T.[price] IS NULL AND ? IS NOT NULL) OR
+                            (T.[price] IS NOT NULL AND ? IS NULL))
                          THEN T.[price]
                        ELSE T.[prev_price]
                      END,
-    T.[price] = COALESCE(?, T.[price]),
-    T.[出品状況] = CASE
-                     WHEN ISNULL(T.[出品状況], N'') = N'古い更新'
-                      AND (T.[price] <> ? OR (T.[price] IS NULL AND ? IS NOT NULL)
-                           OR (T.[price] IS NOT NULL AND ? IS NULL))
-                       THEN NULL
-                     ELSE T.[出品状況]
-                   END,
-    T.[出品状況詳細] = CASE
-                         WHEN ISNULL(T.[出品状況], N'') = N'古い更新'
-                          AND (T.[price] <> ? OR (T.[price] IS NULL AND ? IS NOT NULL)
-                               OR (T.[price] IS NOT NULL AND ? IS NULL))
-                           THEN NULL
-                         ELSE T.[出品状況詳細]
-                       END,
-    T.[last_ng_at] = CASE
-                       WHEN ISNULL(T.[出品状況], N'') = N'古い更新'
-                        AND (T.[price] <> ? OR (T.[price] IS NULL AND ? IS NOT NULL)
-                             OR (T.[price] IS NOT NULL AND ? IS NULL))
-                         THEN NULL
-                       ELSE T.[last_ng_at]
-                     END
+    T.[price] = COALESCE(?, T.[price])
+
 WHEN NOT MATCHED THEN
   INSERT (
-      [vendor_name], [vendor_item_id], [status], [preset], [title_jp],
-      [vendor_page], [created_at], [last_checked_at],
-      [price], [prev_price]
+      [vendor_name],
+      [vendor_item_id],
+      [status],
+      [preset],
+      [title_jp],
+      [vendor_page],
+      [created_at],
+      [last_checked_at],
+      [price],
+      [prev_price]
   )
   VALUES (
       ?, ?, ?, ?, ?,
@@ -304,46 +322,38 @@ WHEN NOT MATCHED THEN
       ?, NULL
   );
 """
+    cursor = conn.cursor()
 
-    cur = conn.cursor()
-    try:
-        for r in rows:
-            params = (
-                # USING
-                r["vendor_name"], r["vendor_item_id"],
+    for r in rows:
+        params = (
+            r["vendor_name"],
+            r["vendor_item_id"],
 
-                # UPDATE
-                r["status"], r["preset"], r["title_jp"], r["vendor_page"],
-                now,  # last_checked_at
+            r["status"],
+            r["preset"],
+            r["title_jp"],
+            r["vendor_page"],
+            now,
+            r["price"], r["price"], r["price"],
+            r["price"],
 
-                # prev_price 判定
-                r["price"], r["price"], r["price"],
-                r["price"],
+            # insert
+            r["vendor_name"],
+            r["vendor_item_id"],
+            r["status"],
+            r["preset"],
+            r["title_jp"],
+            r["vendor_page"],
+            now,
+            now,
+            r["price"],
+        )
 
-                # 出品状況クリア
-                r["price"], r["price"], r["price"],
-                r["price"], r["price"], r["price"],
-                r["price"], r["price"], r["price"],
+        cursor.execute(sql, params)
 
-                # INSERT
-                r["vendor_name"], r["vendor_item_id"],
-                r["status"], r["preset"], r["title_jp"],
-                r["vendor_page"],
-                now,  # created_at
-                now,  # last_checked_at
-                r["price"],
-            )
-            cur.execute(sql, params)
-
-        print("[UPSERT] executed all MERGE, committing...", flush=True)
-        conn.commit()
-        print("[UPSERT] commit done", flush=True)
-        return len(rows)
-    finally:
-        try:
-            cur.close()
-        except Exception:
-            pass
+    conn.commit()
+    print(f"[UPSERT] done rows={len(rows)}", flush=True)
+    return len(rows)
 
 
 # =========================

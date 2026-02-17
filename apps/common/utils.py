@@ -511,6 +511,11 @@ def build_driver(
     opts.add_argument("--disable-renderer-backgrounding")
     opts.add_argument("--disable-backgrounding-occluded-windows")
     opts.add_argument("--blink-settings=imagesEnabled=false")
+
+    opts.add_argument("--disable-gpu")
+    opts.add_argument("--disable-software-rasterizer")
+    opts.add_argument("--disable-blink-features=AutomationControlled")
+
     
     # UAを最新(145系)に合わせておく
     opts.add_argument(
@@ -523,7 +528,7 @@ def build_driver(
         # 先ほど ln -sf で作ったパスを指定
         opts.binary_location = "/usr/bin/google-chrome"
         # 消去した /usr/bin/chromedriver の代わりに、最適なものを自動取得する
-        service = Service(ChromeDriverManager().install())
+        service = Service("/usr/bin/chromedriver")
     else:
         # Windows用
         opts.binary_location = os.getenv(
@@ -534,7 +539,7 @@ def build_driver(
 
     driver = webdriver.Chrome(service=service, options=opts)
     driver.set_window_size(1400, 1000)
-    # driver.set_page_load_timeout(30)
+    driver.set_page_load_timeout(30)
     driver.set_script_timeout(30)
     print("新ver")
 

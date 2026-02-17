@@ -83,10 +83,14 @@ HEADS_FOR_7DAY_SKIP: Set[str] = {
 
 def is_fatal_renderer_error(e: Exception) -> bool:
     s = str(e).lower()
+
     return (
         "timed out receiving message from renderer" in s
         or "unable to receive message from renderer" in s
-        or "disconnected" in s and "renderer" in s
+        or ("disconnected" in s and "renderer" in s)
+        or "chrome not reachable" in s
+        or "httpconnectionpool(host='localhost'" in s
+        or "read timed out" in s
     )
 
 class FatalRendererError(Exception):
