@@ -1,7 +1,8 @@
 from __future__ import annotations
 import re
 import time
-from typing import Literal, Optional
+from typing import Literal, Optional, Tuple, Dict, Any
+
 
 import pyodbc
 from bs4 import BeautifulSoup
@@ -13,6 +14,7 @@ from datetime import datetime, timezone, timedelta
 
 # ★ eBay削除API ← 波線エラーの正体はコレ
 from apps.adapters.ebay_api import delete_item_from_ebay
+from apps.adapters.ebay_api import update_ebay_price
 
 # ================================
 # 例外定義  
@@ -205,31 +207,56 @@ def mark_vendor_item_unavailable(
 # ================================
 # eBay 側削除 & trx.listings 論理削除
 # ================================
-def handle_listing_delete(
-    conn: pyodbc.Connection,
+def get_active_listing_for_action(
+    conn,
     vendor_item_id: str,
-    simulate: bool = False,
-) -> None:
+    vendor_name: str,
+) -> Tuple[Optional[str], Optional[str]]:
+    """
+    削除・価格変更共通。
+    active listing を取得し、
+    account が excluded なら None を返す。
+    """
 
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT listing_id, account
-              FROM [trx].[listings]
-             WHERE vendor_item_id = ?
-               AND ISNULL(is_deleted, 0) = 0
-            """,
-            (vendor_item_id,),
-        )
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT l.listing_id, l.account
+            FROM trx.listings l
+            JOIN mst.ebay_accounts a
+              ON l.account = a.account
+            WHERE l.vendor_item_id = ?
+              AND l.vendor_name = ?
+              AND ISNULL(l.is_deleted, 0) = 0
+              AND ISNULL(a.is_excluded, 0) = 0
+        """, (vendor_item_id, vendor_name))
+
         row = cur.fetchone()
+        if not row:
+            return (None, None)
 
-    if not row:
+        return str(row[0]), str(row[1])
+
+    finally:
+        cur.close()
+
+def handle_listing_delete(
+    conn,
+    vendor_item_id: str,
+    vendor_name: str,
+    simulate: bool = False,
+):
+    listing_id, account = get_active_listing_for_action(
+        conn,
+        vendor_item_id,
+        vendor_name,
+    )
+
+    if not listing_id:
         return
 
-    listing_id, account = row[0], row[1]
-
     if simulate:
-        print(f"[SIMULATE DELETE] {vendor_item_id=}")
+        print(f"[SIMULATE DELETE] {listing_id=}")
         return
 
     res = delete_item_from_ebay(account, listing_id)
@@ -240,18 +267,75 @@ def handle_listing_delete(
     }
 
     if ok:
-        with conn.cursor() as c2:
-            c2.execute(
-                """
-                UPDATE [trx].[listings]
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE trx.listings
                    SET is_deleted = 1,
                        deleted_at = ?
                  WHERE listing_id = ?
                    AND account = ?
-                """,
-                (datetime.now(), listing_id, account),
-            )
+            """, (datetime.now(), listing_id, account))
         conn.commit()
-        print(f"[LOGICAL DELETE] {vendor_item_id=} {listing_id=}")
-    else:
-        print(f"[WARN] eBay削除失敗 {listing_id=} resp={res}")
+
+        print(f"[LOGICAL DELETE] {listing_id=}")
+
+
+def _is_transient_inventory_error(resp: Dict[str, Any]) -> bool:
+    if not resp or resp.get("success"):
+        return False
+    raw = resp.get("raw") or {}
+    errors = ((raw.get("putOffer") or {}).get("errors") or []) or raw.get("errors") or []
+    msgs = " ".join(str(e.get("message","")) for e in errors if isinstance(e, dict)).lower()
+    codes = {int(e.get("errorId")) for e in errors if isinstance(e, dict) and str(e.get("errorId","")).isdigit()}
+    return (25001 in codes) or ("internal error" in msgs)
+
+def handle_listing_price_update(
+    conn,
+    vendor_item_id: str,
+    vendor_name: str,
+    usd: float,
+) -> None:
+    """
+    価格更新（listing_id 主語）
+    - active listing を取得（excluded は get_active_listing_for_action 内で除外済み）
+    - 取れなければ何もしない
+    - 取れたら update_ebay_price を実行
+    """
+
+    listing_id, account = get_active_listing_for_action(
+        conn,
+        vendor_item_id,
+        vendor_name,
+    )
+
+    if not listing_id:
+        # そもそも出品していない / is_deleted=1 / excluded など
+        return
+
+    did_update = False
+    resp: Optional[Dict[str, Any]] = None
+
+    for wait in [0, 2, 6, 15]:
+        if wait:
+            time.sleep(wait)
+
+        resp = update_ebay_price(
+            account,
+            listing_id,
+            usd,
+            sku=vendor_item_id,
+            debug=True,
+        )
+
+        if resp and resp.get("success"):
+            did_update = True
+            break
+
+        if not _is_transient_inventory_error(resp or {}):
+            break
+
+    if not did_update:
+        print(
+            f"[WARN] eBay価格更新失敗 sku={vendor_item_id} listing_id={listing_id} account={account} resp={resp}",
+            flush=True
+        )

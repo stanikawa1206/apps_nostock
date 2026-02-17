@@ -1,33 +1,63 @@
 # step1_keepa_jp_to_asin.py
 # -*- coding: utf-8 -*-
 import sys
+import os
+from datetime import datetime
 from my_utils import get_sql_server_connection, keepa_request
 
 # ==========================================
-# 設定: 検索条件
+# 設定: 検索条件 & ログ設定
 # ==========================================
-TARGET_CATEGORY_ID = 14304371 # 例: 釣り具
+TARGET_CATEGORY_ID = 2229202051
 QUERY_LIMIT = 10000           # Keepaの1回あたりの取得上限
+
+# --- ログ出力設定 ---
+LOG_DIR = r"X:\apps\snapshot\keepa_us_to_jp_cross_asin\logs"
+# ------------------
 
 # 1. ランキング範囲 (180日平均)
 RANK_MIN = 1
 RANK_MAX = 50000
 
 # 2. 価格フィルタ (新品価格 90日平均)
-#    10,000円 〜 300,000円
 PRICE_MIN_JPY = 10000
 PRICE_MAX_JPY = 300000
 
-# 3. サイズ・重量フィルタ (Keepa指定用: mm単位, g単位)
-#    160cm (1600mm) 以下、30kg (30000g) 以下
+# 3. サイズ・重量フィルタ
 MAX_EDGE_MM = 1600
 MAX_WEIGHT_G = 30000
+
+# ==========================================
+# ログ出力用関数
+# ==========================================
+def write_execution_log(rank_range, cat_id, count):
+    """
+    指定のフォルダに実行ログを出力する
+    内容: ランキング区間、カテゴリーID、書き込み数、書き込み日時
+    """
+    # フォルダが存在しない場合は作成
+    if not os.path.exists(LOG_DIR):
+        os.makedirs(LOG_DIR)
+    
+    # ファイル名は日付（例: 2026-02-12.log）
+    today = datetime.now().strftime("%Y-%m-%d")
+    log_file = os.path.join(LOG_DIR, f"{today}.log")
+    
+    # 書き込み日時の取得
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # ログ行の作成
+    log_line = f"[{now_str}] Rank: {rank_range} | CatID: {cat_id} | Saved: {count} items\n"
+    
+    # 追記モード("a")で保存
+    with open(log_file, mode="a", encoding="utf-8") as f:
+        f.write(log_line)
 
 # ==========================================
 # SQL定義
 # ==========================================
 SQL_UPSERT = """
-MERGE trx.amazon_cross_market_asin AS tgt
+MERGE trx.amazon_cross_market_asin WITH (ROWLOCK) AS tgt
 USING (SELECT ? AS asin, ? AS jp_category_id) AS src
 ON tgt.asin = src.asin
 WHEN MATCHED THEN
@@ -39,8 +69,9 @@ WHEN NOT MATCHED THEN
     VALUES (src.asin, SYSDATETIME(), src.jp_category_id, NULL);
 """
 
+# step1_keepa_jp_to_asin.py 内の修正
+
 def save_asins_to_db(cursor, asin_list, cat_id):
-    """リストを受け取ってDBに保存する"""
     if not asin_list:
         return 0
     
@@ -48,9 +79,12 @@ def save_asins_to_db(cursor, asin_list, cat_id):
     for asin in asin_list:
         try:
             cursor.execute(SQL_UPSERT, [asin, cat_id])
+            # ★ 1件ごとに確定させてロックを即座に解放する
+            cursor.connection.commit() 
             count += 1
         except Exception as e:
             print(f"Error {asin}: {e}")
+            cursor.connection.rollback()
     return count
 
 def fetch_and_save_recursive(cat_id, min_rank, max_rank, cursor):
@@ -61,49 +95,38 @@ def fetch_and_save_recursive(cat_id, min_rank, max_rank, cursor):
     
     selection = {
         "rootCategory": cat_id,
-        
-        # 4. 物理的な商品に限定 (0=Physical, 1=Digital)
         "productType": 0,
-        
-        # ランキング (180日平均)
         "avg180_SALES_gte": min_rank,
         "avg180_SALES_lte": max_rank,
-        
-        # 価格帯 (90日平均: 1万〜30万円)
         "avg90_NEW_gte": PRICE_MIN_JPY,
         "avg90_NEW_lte": PRICE_MAX_JPY,
-        
-        # サイズ・重量制限 (160cm, 30kg以下)
         "packageLength_lte": MAX_EDGE_MM,
         "packageWeight_lte": MAX_WEIGHT_G,
-        
-        # 新品在庫があるものに限定するなら以下も有効ですが、
-        # "avg90_NEW" がある時点で価格履歴がある(=在庫があった)商品に絞られます。
-        
         "perPage": QUERY_LIMIT
     }
     
-    # APIリクエスト (my_utils内でトークン管理されます)
     res = keepa_request("query", params={"domain": 5}, data=selection)
     
     total = res.get("totalResults", 0)
     asin_list = res.get("asinList", [])
     
-    # ヒット数が上限(10000)を超えており、かつ分割可能(幅が1より大きい)な場合
     if total > QUERY_LIMIT and (max_rank - min_rank) > 1:
         print(f"   [Split] Hit {total} > Limit. Splitting range...")
-        
         mid = (min_rank + max_rank) // 2
         
-        # 前半・後半に分けて再帰呼び出し
         count_1 = fetch_and_save_recursive(cat_id, min_rank, mid, cursor)
         count_2 = fetch_and_save_recursive(cat_id, mid + 1, max_rank, cursor)
         
         return count_1 + count_2
     else:
-        # 上限以下なら保存実行
         print(f"   -> Got {len(asin_list)} items. Saving...")
         saved_count = save_asins_to_db(cursor, asin_list, cat_id)
+        
+        # --- ログ出力の実行 ---
+        rank_range_str = f"{min_rank}-{max_rank}"
+        write_execution_log(rank_range_str, cat_id, saved_count)
+        # --------------------
+        
         return saved_count
 
 def main():
@@ -111,9 +134,7 @@ def main():
     cursor = conn.cursor()
     
     try:
-        # 再帰処理の開始
         total_saved = fetch_and_save_recursive(TARGET_CATEGORY_ID, RANK_MIN, RANK_MAX, cursor)
-        
         conn.commit()
         print(f"=== DB保存完了: 合計 {total_saved}件 ===")
         

@@ -166,12 +166,8 @@ def wait_until_no_pending(conn, phase_name="active"):
         time.sleep(30)
 
 def launch_remaining_workers():
-    """
-    ローカルPCとVPSの両方で
-    check_remaining worker を起動する
-    """
 
-    print("🟢 ローカル + VPS 両方で remaining worker 起動")
+    print("🟢 ローカル + VPS 複数で remaining worker 起動")
 
     # -----------------------------
     # ① ローカル側
@@ -181,24 +177,33 @@ def launch_remaining_workers():
         '/d "D:\\apps_nostock\\apps\\inventory" '
         'check_remaining_ebay.bat'
     )
-
-    # -----------------------------
-    # ② VPS側
-    # -----------------------------
-    vps_cmd = (
-        'start "VPS_CHECK" '
-        'ssh -tt root@162.43.42.135 '
-        '"cd /opt/apps_nostock && '
-        'git pull && '
-        'cd /opt/apps_nostock/apps/inventory && '
-        'chmod +x check_remaining_ebay.sh && '
-        './check_remaining_ebay.sh"'
-    )
-
     subprocess.Popen(local_cmd, shell=True)
-    subprocess.Popen(vps_cmd, shell=True)
 
-    print("🚀 remaining worker を両方起動しました")
+    # -----------------------------
+    # ② VPS側（複数）
+    # -----------------------------
+    VPS_LIST = [
+        "162.43.42.135",
+        "162.43.15.160",
+        "162.43.29.154",
+    ]
+
+    for idx, ip in enumerate(VPS_LIST, start=1):
+
+        vps_cmd = (
+            f'start "VPS_CHECK_{idx}" '
+            f'ssh -tt root@{ip} '
+            '"cd /opt/apps_nostock && '
+            'git pull && '
+            'cd /opt/apps_nostock/apps/inventory && '
+            'chmod +x check_remaining_ebay.sh && '
+            './check_remaining_ebay.sh"'
+        )
+
+        subprocess.Popen(vps_cmd, shell=True)
+
+    print("🚀 remaining worker を全VPSで起動しました")
+
 
 def reset_remaining_flags(conn):
     """
@@ -404,6 +409,10 @@ def main():
                 if del_code != 0
                 else f"✅ delete_ebay_daily.py 正常終了（セット{set_no}）"
             )
+
+            print("BASE_DIR =", BASE_DIR)
+            print("DELETE_SCRIPT =", DELETE_SCRIPT)
+            print("cwd =", str(BASE_DIR))
 
             body = (
                 f"スクリプト: {DELETE_SCRIPT.name}\n"

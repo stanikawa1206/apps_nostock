@@ -158,68 +158,54 @@ def get_spapi_items_batch(asin_list: List[str], region: str, access_token: str) 
 # 4. SP-API 価格取得 (Pricing API) - my_utils.pyの末尾に追加
 # ============================================================
 def get_spapi_prices_batch(asin_list: List[str], region: str, access_token: str) -> Dict[str, float]:
-    """
-    getPricing API を使用して、ASINリストの価格情報を取得する。
-    戻り値: { 'ASIN': 価格(float), ... } の辞書
-    """
     if not asin_list: return {}
 
-    if region == "US":
-        base_url = SPAPI_ENDPOINT_US
-        mp_id = MARKETPLACE_ID_US
-    else:
-        base_url = SPAPI_ENDPOINT_JP
-        mp_id = MARKETPLACE_ID_JP
+    base_url = SPAPI_ENDPOINT_US if region == "US" else SPAPI_ENDPOINT_JP
+    mp_id = MARKETPLACE_ID_US if region == "US" else MARKETPLACE_ID_JP
 
-    # getPricing API endpoint
     url = f"{base_url}/products/pricing/v0/price"
-    
-    params = {
-        "Asins": ",".join(asin_list),
-        "ItemType": "Asin",
-        "MarketplaceId": mp_id
-    }
-    headers = {
-        "X-Amz-Access-Token": access_token, 
-        "Content-Type": "application/json"
-    }
+    params = {"Asins": ",".join(asin_list), "ItemType": "Asin", "MarketplaceId": mp_id}
+    headers = {"X-Amz-Access-Token": access_token, "Content-Type": "application/json"}
 
-    # レートリミット対策
     time.sleep(1.0)
-    
     price_map = {}
     
     try:
         r = requests.get(url, params=params, headers=headers, timeout=30)
-        
-        # Pricing APIは404を返さず、空の結果などを返すことが多いが念のため
-        if r.status_code == 404:
-            return {}
-            
         r.raise_for_status()
-        data = r.json()
+        payload = r.json().get("payload", [])
         
-        # ペイロードの解析
-        payload = data.get("payload", [])
         for item in payload:
             asin = item.get("ASIN")
             product = item.get("Product", {})
-            offers = product.get("Offers", [])
             
-            # 最安値を探す (BuyingPrice > ListingPrice)
             price = None
-            if offers:
-                # Offersがある場合（新品最安値など）
-                price_info = offers[0].get("BuyingPrice", {})
-                price = price_info.get("ListingPrice", {}).get("Amount")
             
-            # Offersがない場合、Attributeの参考価格等はここには含まれないことが多い
+            # 1. カート価格 (CompetitivePricing) の中から "New" を探す
+            comp_pricing = product.get("CompetitivePricing", {})
+            comp_prices = comp_pricing.get("CompetitivePrices", [])
+            for cp in comp_prices:
+                # conditionが 'New' であることを確認
+                if cp.get("condition") == "New":
+                    amt = cp.get("Price", {}).get("ListingPrice", {}).get("Amount")
+                    if amt:
+                        price = amt
+                        break
+            
+            # 2. カート価格に新品がない場合、一般出品 (Offers) から "New" を探す
+            if price is None:
+                offers = product.get("Offers", [])
+                for offer in offers:
+                    # condition が 'New' または 'New' の派生（subcondition）を確認
+                    cond = offer.get("SubCondition") # Offers内は SubCondition 表記の場合が多い
+                    if cond == "new":
+                        amt = offer.get("BuyingPrice", {}).get("ListingPrice", {}).get("Amount")
+                        if amt:
+                            price = amt
+                            break
             
             if asin and price:
-                try:
-                    price_map[asin] = float(price)
-                except:
-                    pass
+                price_map[asin] = float(price)
                     
         return price_map
         

@@ -140,6 +140,15 @@ def get_access_token_new(account: str) -> Optional[str]:
         return c["token"]
 
     rt = _get_refresh_token(account)
+
+    # 🔥 ここから追加
+    print("DEBUG CLIENT_ID:", CLIENT_ID)
+    print("DEBUG CLIENT_SECRET head:", CLIENT_SECRET[:8])
+    print("DEBUG TOKEN_URL:", TOKEN_URL)
+    print("DEBUG refresh_token len:", len(rt) if rt else None)
+    print("DEBUG refresh_token head:", rt[:30] if rt else None)
+    # 🔥 ここまで追加
+
     if not rt:
         print(f"❌ refresh_token が DB にありません: {account}")
         return None
@@ -345,6 +354,13 @@ def post_one_item(payload: Dict[str, Any], account_name: str, acct_policies: Dic
     token = get_access_token_new(account_name)
     if not token:
         raise RuntimeError("access_token 取得失敗")
+ 
+    resp = requests.get(
+        "https://api.ebay.com/sell/account/v1/privilege",
+        headers=_ebay_json_headers(token),
+        timeout=20
+    )
+
     register_inventory_item(payload, token)
     offer_id = create_offer(payload, token, acct_policies)
     update_offer(offer_id, payload, token, acct_policies)
