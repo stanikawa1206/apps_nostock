@@ -200,7 +200,7 @@ def handle_price_change_side_effects(
     SELECT 出品状況, 出品状況詳細, last_updated_str, last_ng_at
     FROM trx.vendor_item
     WHERE vendor_name = ?
-      AND vendor_item_id = ?
+    AND vendor_item_id = ?
     """
     cursor.execute(select_sql, vendor_name, sku)
     row = cursor.fetchone()
@@ -210,32 +210,39 @@ def handle_price_change_side_effects(
 
     before_status, before_detail, before_updated, before_ng = row
 
-    print(
-        f"[CLEAR BEFORE] sku={sku} "
-        f"出品状況={before_status} "
-        f"出品状況詳細={before_detail} "
-        f"last_updated_str={before_updated} "
-        f"last_ng_at={before_ng}",
-        flush=True,
-    )
-
     # ─────────────────────────────
-    # ② 状態クリア
+    # ② 「○ヶ月前 / ○か月前 / 半年以上前」のときだけクリア
     # ─────────────────────────────
-    update_sql = """
-    UPDATE trx.vendor_item
-    SET
-        出品状況 = NULL,
-        出品状況詳細 = NULL,
-        last_updated_str = NULL,
-        last_ng_at = NULL
-    WHERE vendor_name = ?
-      AND vendor_item_id = ?
-    """
-    cursor.execute(update_sql, vendor_name, sku)
-    conn.commit()
+    if before_updated is not None:
+        s = str(before_updated)
 
-    print(f"[CLEAR DONE] sku={sku}", flush=True)
+        if ("ヶ月前" in s) or ("か月前" in s) or ("半年以上前" in s):
+
+            # 変更前状態を表示（デバッグ用）
+            print(
+                f"[CLEAR BEFORE] sku={sku} "
+                f"出品状況={before_status} "
+                f"出品状況詳細={before_detail} "
+                f"last_updated_str={before_updated} "
+                f"last_ng_at={before_ng}",
+                flush=True,
+            )
+
+            update_sql = """
+            UPDATE trx.vendor_item
+            SET
+                出品状況 = NULL,
+                出品状況詳細 = NULL,
+                last_updated_str = NULL,
+                last_ng_at = NULL
+            WHERE vendor_name = ?
+            AND vendor_item_id = ?
+            """
+            cursor.execute(update_sql, vendor_name, sku)
+            conn.commit()
+
+            print(f"[CLEAR DONE] sku={sku}", flush=True)
+
 
     # ─────────────────────────────
     # ③ USDレンジ計算
@@ -262,9 +269,12 @@ def handle_price_change_side_effects(
     # ⑤ 範囲内 → 価格更新
     # ─────────────────────────────
     print(
-        f"[PRICE CHANGE] {sku}: {old_price} -> {new_price_jpy} JPY / USD={usd}",
+        f"[PRICE CHANGE] {sku}: "
+        f"{old_price} -> {new_price_jpy} JPY / USD={usd} "
+        f"(last_updated_str={before_updated})",
         flush=True,
     )
+
 
     handle_listing_price_update(conn, sku, vendor_name, usd)
 
