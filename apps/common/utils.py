@@ -511,8 +511,17 @@ def build_driver(
     opts.add_argument("--lang=ja-JP,ja")
 
     # 軽量化
-    opts.add_argument("--disable-renderer-backgrounding")
-    opts.add_argument("--disable-backgrounding-occluded-windows")
+
+    # 目的：バックグラウンドになっても処理を止めない（スクリプトが止まらない）
+    # 副作用：CPU/メモリ消費が増え、rendererが詰まりやすくなる場合がある（特に重いSPA）
+    # ※ headless だと「そもそも常にバックグラウンド扱いっぽい挙動」になり、ここが妙に効いたり悪さしたりします。
+    # opts.add_argument("--disable-renderer-backgrounding")
+
+
+    # 目的：ウィンドウが見えてなくても処理速度を落とさない
+    # 副作用：同様に負荷が上がる／挙動が変わる
+    # opts.add_argument("--disable-backgrounding-occluded-windows")
+
     opts.add_argument("--blink-settings=imagesEnabled=false")
 
     opts.add_argument("--disable-gpu")

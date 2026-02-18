@@ -67,7 +67,7 @@ WHEN MATCHED THEN
         jp_category_id = src.jp_category_id
 WHEN NOT MATCHED THEN
     INSERT (asin, last_seen_at, jp_category_id, us_existence)
-    VALUES (src.asin, SYSDATETIME(), src.jp_category_id, NULL);
+    VALUES (src.asin, SYSDATETIME(), src.jp_category_id, 0); -- NULLから0へ変更
 """
 
 # step1_keepa_jp_to_asin.py 内の修正
@@ -131,19 +131,19 @@ def fetch_and_save_recursive(cat_id, min_rank, max_rank, cursor):
         return saved_count
 
 def main():
-# 引数の数を確認
-    print("Script started...") # これすら出ない場合は、パスの指定ミスか権限エラーです
-    args = sys.argv
-    if len(args) < 2:
-        print("--- ERROR: Category ID is required ---")
-        print(f"Executed command: {args}")
-        return # sys.exit(1) の代わりに return で関数を抜ける
+    # --- 引数のチェック ---
+    # sys.argv[0]はスクリプト名なので、引数がある場合は len が 2 以上になる
+    if len(sys.argv) < 2:
+        print("エラー: カテゴリーIDが指定されていません。")
+        print("使用法: python step1_keepa_jp_to_asin.py [Category_ID]")
+        sys.exit(1)  # 異常終了 (ステータスコード1)
 
     try:
-        target_category_id = int(args[1])
+        # 引数を数値に変換
+        target_category_id = int(sys.argv[1])
     except ValueError:
-        print(f"--- ERROR: '{args[1]}' is not a valid number ---")
-        return
+        print(f"エラー: 指定された引数 '{sys.argv[1]}' は有効な数値ではありません。")
+        sys.exit(1)
 
     # --- メイン処理 ---
     print(f"実行開始 - カテゴリーID: {target_category_id}")
