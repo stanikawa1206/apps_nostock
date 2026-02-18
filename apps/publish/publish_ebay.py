@@ -941,6 +941,9 @@ OUTPUT
 """
 
 
+import time
+import pyodbc
+
 def take_one_vendor_item_by_preset(
     conn,
     preset: str,
@@ -948,24 +951,34 @@ def take_one_vendor_item_by_preset(
     start_time: datetime,
     low_cost: int,
     high_cost: int,
-) -> Optional[Tuple[str, str, Optional[int], Optional[str], Optional[str], str]]:
-    """
-    preset を指定して、trx.vendor_item を 1件だけ確保して返す。
-    return: (vendor_item_id, vendor_name, price, shipping_region, shipping_days, preset)
-    """
+):
     with conn.cursor() as cur:
-        cur.execute(
-            TAKE_ONE_VENDOR_ITEM_SQL,
-            (
-                preset,
-                low_cost,
-                high_cost,
-                start_time,
-                processing_by,
-                start_time,
-                processing_by,
-            )
-        )
+
+        # 🔁 1205だけリトライ
+        for attempt in range(3):
+            try:
+                cur.execute(
+                    TAKE_ONE_VENDOR_ITEM_SQL,
+                    (
+                        preset,
+                        low_cost,
+                        high_cost,
+                        start_time,
+                        processing_by,
+                        start_time,
+                        processing_by,
+                    )
+                )
+                break  # 成功したら抜ける
+
+            except pyodbc.Error as e:
+                # SQL Server デッドロック(1205)
+                if "1205" in str(e):
+                    if attempt < 2:
+                        time.sleep(0.2)  # 少し待つ
+                        continue
+                raise  # それ以外はそのまま上に投げる
+
         row = cur.fetchone()
         if not row:
             return None

@@ -124,6 +124,7 @@ def _wait_product_price_ready(driver: webdriver.Chrome, timeout: int = TIMEOUT) 
 
 def detect_status_from_mercari_shops(
     driver: webdriver.Chrome,
+    
 ) -> tuple[Status, Optional[int]]:
 
     try:
