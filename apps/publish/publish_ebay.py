@@ -1898,16 +1898,24 @@ def main():
 
                     except FatalRendererError as e:
                         print(f"!!! [RECOVERY] レンダラーエラー検知。ブラウザを再起動します: {e}")
+
+                        print(">>> before quit")
                         try:
                             driver.quit()
-                        except Exception:
-                            pass
+                            print(">>> after quit")
+                        except Exception as ex:
+                            print(f">>> quit exception: {ex}")
+
+                        print(">>> sleep")
                         time.sleep(5)
+
+                        print(">>> rebuild driver")
                         driver = build_driver()
+
+                        print(">>> rebuild done")
+
                         processed_in_session = 0
                         continue
-
-
                 if group_items_exhausted:
                     break
 

@@ -8,8 +8,9 @@ from my_utils import get_sql_server_connection, keepa_request
 # ==========================================
 # 設定: 検索条件 & ログ設定
 # ==========================================
-TARGET_CATEGORY_ID = 2229202051
-QUERY_LIMIT = 10000           # Keepaの1回あたりの取得上限
+# デフォルト値を設定（引数がない場合の予備）
+DEFAULT_CATEGORY_ID = 2229202051
+QUERY_LIMIT = 10000
 
 # --- ログ出力設定 ---
 LOG_DIR = r"X:\apps\snapshot\keepa_us_to_jp_cross_asin\logs"
@@ -130,13 +131,29 @@ def fetch_and_save_recursive(cat_id, min_rank, max_rank, cursor):
         return saved_count
 
 def main():
+# 引数の数を確認
+    print("Script started...") # これすら出ない場合は、パスの指定ミスか権限エラーです
+    args = sys.argv
+    if len(args) < 2:
+        print("--- ERROR: Category ID is required ---")
+        print(f"Executed command: {args}")
+        return # sys.exit(1) の代わりに return で関数を抜ける
+
+    try:
+        target_category_id = int(args[1])
+    except ValueError:
+        print(f"--- ERROR: '{args[1]}' is not a valid number ---")
+        return
+
+    # --- メイン処理 ---
+    print(f"実行開始 - カテゴリーID: {target_category_id}")
     conn = get_sql_server_connection()
     cursor = conn.cursor()
     
     try:
-        total_saved = fetch_and_save_recursive(TARGET_CATEGORY_ID, RANK_MIN, RANK_MAX, cursor)
+        total_saved = fetch_and_save_recursive(target_category_id, RANK_MIN, RANK_MAX, cursor)
         conn.commit()
-        print(f"=== DB保存完了: 合計 {total_saved}件 ===")
+        print(f"=== DB保存完了: 合計 {total_saved}件 (CatID: {target_category_id}) ===")
         
     except Exception as e:
         print(f"Fatal Error: {e}")

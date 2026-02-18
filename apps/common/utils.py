@@ -488,7 +488,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 def build_driver(
     *,
     headless: bool = True,
-    page_load_strategy: str = "none",
+    page_load_strategy: str = "eager",
 ):
     import os
     from selenium import webdriver
