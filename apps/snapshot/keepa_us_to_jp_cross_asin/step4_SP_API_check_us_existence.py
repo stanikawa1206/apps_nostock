@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 import time
 import requests
+import sys
 from my_utils import get_sql_server_connection, get_spapi_access_token, get_spapi_items_batch
 
 # 設定
@@ -33,22 +34,30 @@ def main():
     cursor = conn.cursor()
 
     # 1. 対象取得
-    cursor.execute(SQL_SELECT)
-    rows = cursor.fetchall()
-    target_asins = [row.asin for row in rows]
+    try:
+        cursor.execute(SQL_SELECT)
+        rows = cursor.fetchall()
+        # row.asin がエラーになる環境があるため、インデックス指定を推奨
+        target_asins = [row[0] for row in rows]
+    except Exception as e:
+        print(f"DB接続エラー: {e}")
+        conn.close()
+        sys.exit(1) # 異常終了
+
     print(f"US存在確認対象: {len(target_asins)}件")
 
     if not target_asins:
         print("処理対象のASINがありません。")
         conn.close()
-        return
+        sys.exit(0) # 正常終了（これによりパイプラインが次へ進める）
 
     # トークン取得 (US)
     try:
         token = get_spapi_access_token("US")
     except Exception as e:
         print(f"初期トークン取得失敗: {e}")
-        return
+        conn.close()
+        sys.exit(1) # 異常終了
 
     total_processed = 0
 
@@ -56,52 +65,39 @@ def main():
     for i in range(0, len(target_asins), BATCH_SIZE):
         batch = target_asins[i : i + BATCH_SIZE]
         current_retry = 0
-        max_retries = 5
+        max_retries = 1 # トークン切れ等に対する再試行は1回
         
         while current_retry <= max_retries:
             try:
                 print(f"Checking batch {i} - {i+len(batch)} (Retry: {current_retry})")
-                
-                # A. 存在確認 (Catalog API のみ実行)
                 items = get_spapi_items_batch(batch, "US", token)
-                
-                # カタログにあったASINのリストを作成
                 found_asins = [item["asin"] for item in items if "asin" in item]
                 
-                # B. DB更新
                 for asin in batch:
                     if asin in found_asins:
-                        # 存在あり
                         cursor.execute(SQL_UPDATE_EXIST, [asin])
                     else:
-                        # 存在なし
                         cursor.execute(SQL_UPDATE_NOT_EXIST, [asin])
 
                 conn.commit()
                 total_processed += len(batch)
                 break 
 
-            except requests.exceptions.HTTPError as e:
-                status_code = e.response.status_code
-                if status_code == 403:
-                    print("  [403] トークン更新中...")
-                    time.sleep(10)
-                    try:
-                        token = get_spapi_access_token("US")
-                    except: break
-                    current_retry += 1
-                elif status_code == 429:
-                    time.sleep((2 ** current_retry) * 2)
-                    current_retry += 1
-                elif status_code >= 500:
-                    time.sleep(30)
-                    current_retry += 1
-                else:
-                    print(f"  [API Error {status_code}] スキップ")
-                    break
             except Exception as e:
-                print(f"  [Unexpected Error] {e}")
-                break
+                print(f"  [Error Occurred] {e}")
+                if current_retry >= max_retries:
+                    print("  [Critical] 最大リトライ回数を超えました。")
+                    conn.close()
+                    sys.exit(1) # 異常終了して親に再起動させる
+                
+                print("  トークンを再取得してリトライします...")
+                try:
+                    token = get_spapi_access_token("US")
+                    current_retry += 1
+                    time.sleep(5)
+                except:
+                    conn.close()
+                    sys.exit(1)
         
         time.sleep(BASE_WAIT_TIME)
 

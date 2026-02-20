@@ -3,6 +3,7 @@
 import time
 import requests
 import sys
+import traceback
 from my_utils import get_sql_server_connection, get_spapi_access_token, get_spapi_items_batch
 
 # ==========================================
@@ -18,7 +19,6 @@ SQL_SELECT = """
     ORDER BY last_seen_at DESC
 """
 
-# 行ロック(ROWLOCK)を指定して更新
 SQL_UPDATE = """
 UPDATE trx.amazon_cross_market_asin WITH (ROWLOCK)
 SET jp_title = ?, jp_price = ?, jp_brand = ?, last_seen_at = SYSDATETIME()
@@ -47,7 +47,6 @@ def process_items(cursor, items):
 
         summaries = item.get("summaries", [])
         if not summaries:
-            print(f"  [Skip] No summaries for {asin}")
             continue
             
         summary = summaries[0]
@@ -60,17 +59,13 @@ def process_items(cursor, items):
         if brand:
             brand = str(brand).strip()
         
-        # --- 修正ポイント：1件ごとにリトライとコミットを行う ---
-        # これにより Step 1 とのデッドロックを回避し、成功分を確実に保存する
         for retry in range(3):
             try:
                 cursor.execute(SQL_UPDATE, [title, price, brand, asin])
-                # 実行直後にこの行のロックを解放するためにコミット
                 cursor.connection.commit() 
                 count += 1
                 break 
             except Exception as e:
-                # タイムアウトやデッドロック時は少し待機してリトライ
                 if "timeout" in str(e).lower() or "deadlock" in str(e).lower():
                     time.sleep(1)
                     continue
@@ -80,14 +75,24 @@ def process_items(cursor, items):
     return count
 
 def main():
-    conn = get_sql_server_connection()
-    cursor = conn.cursor()
-    
-    # 1. 対象取得
+    conn = None
+    try:
+        conn = get_sql_server_connection()
+        cursor = conn.cursor()
+    except Exception as e:
+        print(f"DB接続エラー: {e}")
+        sys.exit(1)
+
     print("更新対象を検索中...")
-    cursor.execute(SQL_SELECT)
-    rows = cursor.fetchall()
-    target_asins = [row[0] for row in rows] # row.asin がエラーになる場合はインデックス指定
+    try:
+        cursor.execute(SQL_SELECT)
+        rows = cursor.fetchall()
+        target_asins = [row[0] for row in rows]
+    except Exception as e:
+        print(f"SQL実行エラー: {e}")
+        conn.close()
+        sys.exit(1)
+
     print(f"更新対象: {len(target_asins)}件")
 
     if not target_asins:
@@ -95,73 +100,58 @@ def main():
         conn.close()
         return
 
-    # トークン取得と取得時刻の記録
+    # 初回のトークン取得
     try:
         token = get_spapi_access_token("JP")
-        token_start_time = time.time() # トークン取得時刻を記録
     except Exception as e:
         print(f"初期トークン取得失敗: {e}")
         conn.close()
-        return
+        sys.exit(1)
 
-# 2. バッチ処理ループ
     total_processed = 0
     
     for i in range(0, len(target_asins), BATCH_SIZE):
         batch = target_asins[i : i + BATCH_SIZE]
-        current_retry = 0
-        max_retries = 2 # バッチ全体のリトライ回数
         
-        while current_retry <= max_retries:
-            try:
-                print(f"Processing batch {i} - {i+len(batch)} (Retry: {current_retry})")
-                
-                # APIリクエストを実行
-                items = get_spapi_items_batch(batch, "JP", token)
-                
-                # 成功した場合（データがある場合）
-                if items:
-                    process_items(cursor, items)
-                    total_processed += len(batch)
-                    break 
-                else:
-                    # アイテムが空（404等）の場合も、正常終了として次へ
-                    print(f"  [Info] No items found for this batch.")
-                    total_processed += len(batch)
-                    break
+        try:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Processing batch {i} - {i+len(batch)}")
+            
+            # 実行
+            items = get_spapi_items_batch(batch, "JP", token)
+            
+            # もし my_utils 内で print されるだけで例外が投げられない場合への対策
+            # 標準出力を監視するのは難しいため、戻り値が None かつエラーが疑われる場合はここで判定
+            if items is None:
+                # ここに到達＝関数内でエラーが発生して return None された可能性が高い
+                # 安全のため、1度リトライせず終了してバッチファイルに任せる
+                print("!!! APIから有効なレスポンスがありませんでした。トークン切れの可能性があるため終了します !!!")
+                conn.close()
+                sys.exit(1)
 
-            except Exception as e:
-                # --- ここでエラーが出たら一律トークンを再取得 ---
-                print(f"  [Error Occurred] {e}")
-                print("  トークンを再取得してリトライします...")
-                
-                try:
-                    # トークンを更新して再試行カウントを増やす
-                    token = get_spapi_access_token("JP")
-                    current_retry += 1
-                    time.sleep(2) # 少し待機してからリトライ
-                    
-                    if current_retry > max_retries:
-                        print(f"  [Skip] 最大リトライ回数を超えたため、このバッチを1件ずつ処理に回します。")
-                        # 1件ずつのリトライロジックへ（既存のコードを流用）
-                        for single_asin in batch:
-                            try:
-                                single_items = get_spapi_items_batch([single_asin], "JP", token)
-                                if single_items:
-                                    process_items(cursor, single_items)
-                            except Exception:
-                                pass
-                        total_processed += len(batch)
-                        break
-                except Exception as token_e:
-                    print(f"  [Critical] トークンの再取得自体に失敗しました: {token_e}")
-                    time.sleep(10)
-                    current_retry += 1
+            if items:
+                processed_count = process_items(cursor, items)
+                total_processed += processed_count
+            
+        except Exception as e:
+            error_msg = str(e)
+            print(f"  [Error Occurred] {error_msg}")
+            
+            # トークン切れキーワードが含まれていたら即終了
+            if "Unauthorized" in error_msg or "expired" in error_msg:
+                print("!!! トークン期限切れ検知。強制終了して再起動を待機します !!!")
+                if conn: conn.close()
+                sys.exit(1)
+            
+            # その他の不明なエラーも、ループが止まらないリスクを避けるため終了させる
+            print("!!! 予期せぬエラーのためシステムを再起動します !!!")
+            if conn: conn.close()
+            sys.exit(1)
         
         time.sleep(BASE_WAIT_TIME)
 
     conn.close()
-    print(f"=== 完了: 合計 {total_processed}件 処理しました ===")
+    print(f"=== 正常終了: 合計 {total_processed}件 処理しました ===")
 
 if __name__ == "__main__":
+    from datetime import datetime
     main()

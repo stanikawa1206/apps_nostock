@@ -5,115 +5,76 @@ import sys
 import time
 import subprocess
 import multiprocessing
-from multiprocessing import Process, Manager, Value
+from multiprocessing import Process, Manager
 
 # --- パス設定 ---
 BASE_DIR = r"\\MOUSE\apps_nostock\apps\snapshot\keepa_us_to_jp_cross_asin"
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
-from step0_category_manager import get_next_category, update_category_fetched_at
-
-# --- スクリプトパス設定 ---
 STEP1_KEEPA = os.path.join(BASE_DIR, "step1_keepa_jp_to_asin.py")
 STEP2_SCRIPT = os.path.join(BASE_DIR, "step2_SP_API_amazon_jp_data.py")
 STEP3_SCRIPT = os.path.join(BASE_DIR, "step3_check_brand_wakarunda.py")
 STEP4_SCRIPT = os.path.join(BASE_DIR, "step4_SP_API_check_us_existence.py")
-STEP5_SCRIPT = os.path.join(BASE_DIR, "step5_get_ATS_input_asin.py")
 
-# 各工程の間隔設定
-STEP2_INTERVAL = 10
-STEP3_INTERVAL = 30
-STEP4_INTERVAL = 20
+RESTART_INTERVAL = 3000  # 1時間
 
-def run_step1_window(shared_status):
-    """
-    カテゴリが尽きるまで Step 1 を新しいウィンドウで繰り返し実行する
-    """
-    while True:
-        category = get_next_category()
-        if not category:
-            print("[Step 1] 処理対象のカテゴリがすべて終了しました。")
-            break
-        
-        cat_id = category['id']
-        cat_name = category['name']
-        print(f"[Step 1 Monitor] 次のカテゴリを開始します: {cat_name} (ID: {cat_id})")
+def run_step1_once():
+    """Step1を一度だけ別ウィンドウで起動する"""
+    print(f"[Step1] 起動します...")
+    # タイトルを固定して起動
+    cmd = f'start "PIPELINE_STEP1" python "{STEP1_KEEPA}"'
+    subprocess.run(cmd, shell=True)
 
-        # Step 1 を別窓で実行し、終了を待つ (/wait を付与)
-        title = f"STEP1_{cat_name}"
-        cmd = f'start /wait "{title}" cmd /c python -u "{STEP1_KEEPA}" {cat_id}'
-        
-        result = subprocess.run(cmd, shell=True)
+def run_follower_process(script_path, title_name):
+    """個別のプロセスとして実行（ループはメイン側で制御）"""
+    print(f"[{title_name}] ウィンドウを起動します...")
+    # titleコマンドでウィンドウ名を固定し、後でキルしやすくする
+    cmd = f'start "{title_name}" python "{script_path}"'
+    subprocess.run(cmd, shell=True)
 
-        # 正常終了(ウィンドウが閉じられた)した場合に日付更新
-        if result.returncode == 0:
-            update_category_fetched_at(cat_id)
-            print(f"[Step 1 Monitor] 完了: {cat_name}")
-        else:
-            print(f"[Step 1 Monitor] エラーまたは中断: {cat_name}")
-            time.sleep(10)
-
-    shared_status['p1_running'] = False
-
-def run_follower_window(script_name, shared_status, parent_key, interval, my_key):
-    """
-    新しいウィンドウで追いかけスクリプトを実行し、終了を待ってから待機する
-    """
-    script_basename = os.path.basename(script_name)
-    
-    while shared_status.get(parent_key, True):
-        print(f"[{script_basename} Monitor] 実行中...")
-        
-        title = f"PROCESS_{script_basename}"
-        # /wait を付けて、スクリプトが終わるまでこのループを止める
-        cmd = f'start /wait "{title}" cmd /c python -u "{script_name}"'
-        
-        subprocess.run(cmd, shell=True)
-        
-        # インターバル待機
-        wait_start = time.time()
-        while time.time() - wait_start < interval:
-            if not shared_status.get(parent_key, True):
-                break
-            time.sleep(1)
-    
-    # 最終実行
-    print(f"[{script_basename} Monitor] 最終実行中...")
-    subprocess.run([sys.executable, "-u", script_name])
-    shared_status[my_key] = False
+def kill_step_processes(titles):
+    """指定したタイトルを持つウィンドウを強制終了する"""
+    for title in titles:
+        print(f"[{title}] を終了させています...")
+        # タイトルが完全に一致するウィンドウを狙い撃ち
+        cmd = f'taskkill /F /FI "WINDOWTITLE eq {title}" /T'
+        subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()
 
-    with Manager() as manager:
-        shared_status = manager.dict({
-            'p1_running': True, 
-            'p2_running': True, 
-            'p3_running': True, 
-            'p4_running': True
-        })
-        
-        # すべてを Process として定義（すべて別窓で開く）
-        p1 = Process(target=run_step1_window, args=(shared_status,))
-        p2 = Process(target=run_follower_window, args=(STEP2_SCRIPT, shared_status, 'p1_running', STEP2_INTERVAL, 'p2_running'))
-        p3 = Process(target=run_follower_window, args=(STEP3_SCRIPT, shared_status, 'p2_running', STEP3_INTERVAL, 'p3_running'))
-        p4 = Process(target=run_follower_window, args=(STEP4_SCRIPT, shared_status, 'p3_running', STEP4_INTERVAL, 'p4_running'))
+    # 1. Step1 を最初に一回だけ実行
+    run_step1_once()
+    
+    # 再起動対象の管理
+    targets = [
+        {"path": STEP2_SCRIPT, "title": "PIPELINE_STEP2"},
+        {"path": STEP3_SCRIPT, "title": "PIPELINE_STEP3"},
+        {"path": STEP4_SCRIPT, "title": "PIPELINE_STEP4"},
+    ]
+    target_titles = [t["title"] for t in targets]
 
-        print("=== 全工程を別ウィンドウで起動します ===")
-        p1.start()
-        p2.start()
-        p3.start()
-        p4.start()
+    try:
+        while True:
+            print(f"\n{'='*50}\nStep 2-4 の実行サイクルを開始します\n{'='*50}")
+            
+            # 2. Step2-4 を起動
+            for target in targets:
+                run_follower_process(target["path"], target["title"])
+                time.sleep(2) # 起動の衝突防止
 
-        # 全プロセスの終了を待機
-        p1.join()
-        p2.join()
-        p3.join()
-        p4.join()
+            print(f"\n次回の再起動まで {RESTART_INTERVAL/60:.0f} 分間待機します...")
+            time.sleep(RESTART_INTERVAL)
 
-        # 最後に Step 5 を実行
-        print("\n=== 全工程完了。最終の Step 5 を実行します ===")
-        subprocess.run([sys.executable, "-u", STEP5_SCRIPT])
+            # 3. 指定したタイトルのプロセスのみをキル
+            print(f"\n--- 定時リフレッシュ: プロセスを終了します ---")
+            kill_step_processes(target_titles)
+            
+            time.sleep(5) # 終了処理の完了待ち
+            print("再起動中...")
 
-    print("=== 全パイプライン処理が終了しました ===")
+    except KeyboardInterrupt:
+        print("\n親プロセスが停止されました。")
+        # 必要に応じて Step1 も終了させる場合は以下を有効にしてください
+        # kill_step_processes(["PIPELINE_STEP1"])

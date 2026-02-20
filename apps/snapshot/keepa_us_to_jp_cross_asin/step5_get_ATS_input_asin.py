@@ -1,13 +1,14 @@
 import pandas as pd
 import pyodbc
 import os
+import schedule
+import time
 from datetime import datetime
 from dotenv import load_dotenv
 
-# .envファイルを読み込む
+# --- 設定・環境読み込み ---
 load_dotenv()
 
-# --- 設定項目 ---
 DB_DRIVER = os.getenv("DB_DRIVER")
 DB_SERVER = os.getenv("DB_SERVER")
 DB_NAME   = os.getenv("DB_NAME")
@@ -15,9 +16,7 @@ DB_USER   = os.getenv("DB_USER")
 DB_PASS   = os.getenv("DB_PASS")
 
 conn_str = f'DRIVER={{{DB_DRIVER}}};SERVER={DB_SERVER};DATABASE={DB_NAME};UID={DB_USER};PWD={DB_PASS}'
-
 BASE_DIR = r"\\MOUSE\apps_nostock\apps\snapshot\keepa_us_to_jp_cross_asin\ATS_file"
-TODAY_STR = datetime.now().strftime("%y%m%d")
 
 def get_unique_filepath(directory, date_str):
     counter = 1
@@ -28,18 +27,17 @@ def get_unique_filepath(directory, date_str):
             return file_path
         counter += 1
 
-def main():
-    if not all([DB_DRIVER, DB_SERVER, DB_NAME, DB_USER, DB_PASS]):
-        print("エラー: .env内の設定が不足しています。")
-        return
+def execute_extraction(trigger_reason):
+    """メインの抽出・書き出しロジック"""
+    today_str = datetime.now().strftime("%y%m%d")
+    now_time = datetime.now().strftime("%H:%M:%S")
+    print(f"[{now_time}] 実行開始 (理由: {trigger_reason})")
 
     try:
-        # 1. データベース接続
         conn = pyodbc.connect(conn_str)
         cur = conn.cursor()
 
-        # 2. 条件に合うASINを10,000件抽出
-        # pandasの警告を避けるため、cursorでexecuteしてからfetch
+        # 1. 10,000件抽出
         select_query = """
             SELECT TOP 10000 asin 
             FROM trx.amazon_cross_market_asin WITH (NOLOCK)
@@ -49,45 +47,78 @@ def main():
         rows = cur.fetchall()
         
         if not rows:
-            print("条件に一致するASINが見つかりませんでした。")
+            print(f"[{now_time}] 対象のASINが0件のため、処理をスキップしました。")
             return
 
-        # リストに変換
         asins = [row.asin for row in rows]
         df = pd.DataFrame(asins, columns=['asin'])
 
-        # 3. 抽出した行に実行日を記録する
-        # エラー回避のため、IN句を使わず一時テーブルや分割更新をするのが理想ですが、
-        # ここではシンプルかつ確実な「抽出条件を再利用した一括更新」を行います。
+        # 2. フラグ更新
         update_query = f"""
             UPDATE trx.amazon_cross_market_asin WITH (ROWLOCK)
-            SET ATS = '{TODAY_STR}' 
+            SET ATS = '{today_str}' 
             WHERE asin IN (
                 SELECT TOP 10000 asin 
                 FROM trx.amazon_cross_market_asin WITH (NOLOCK)
                 WHERE us_existence = 1 AND ATS IS NULL
             );
         """
-        # 注意: 厳密にはSELECT時とUPDATE時で対象がズレる可能性がありますが、
-        # ATS IS NULLを条件にしているため、このスクリプト単体運用なら安全です。
         cur.execute(update_query)
         conn.commit()
 
-        # 4. 保存パスの決定
-        save_path = get_unique_filepath(BASE_DIR, TODAY_STR)
-
-        # 5. CSV書き出し (ヘッダーなし)
+        # 3. 保存
+        save_path = get_unique_filepath(BASE_DIR, today_str)
         df['asin'].to_csv(save_path, index=False, header=False, encoding='utf-8')
         
-        print(f"正常に終了しました。")
-        print(f"保存先: {save_path}")
-        print(f"処理件数: {len(asins)} 件")
+        print(f"[{now_time}] 正常終了: {len(asins)} 件を {os.path.basename(save_path)} に出力しました。")
 
     except Exception as e:
-        print(f"エラーが発生しました: {e}")
+        print(f"[{now_time}] エラー発生: {e}")
     finally:
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
 
-if __name__ == "__main__":
-    main()
+def check_count_and_run():
+    """DBの件数を確認し、10,000件を超えていたら実行する"""
+    try:
+        conn = pyodbc.connect(conn_str)
+        cur = conn.cursor()
+        
+        check_query = """
+            SELECT COUNT(*) 
+            FROM trx.amazon_cross_market_asin WITH (NOLOCK)
+            WHERE us_existence = 1 AND ATS IS NULL;
+        """
+        cur.execute(check_query)
+        count = cur.fetchone()[0]
+        cur.close()
+        conn.close()
+
+        if count >= 10000:
+            print(f"--- 件数検知: 現在 {count} 件の未処理データがあります ---")
+            execute_extraction(f"件数超過({count}件)")
+        else:
+            # 5分ごとのチェック時にログがうるさければ、このprintは消してもOKです
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] チェック完了: {count} 件 (10,000件未満のため待機)")
+
+    except Exception as e:
+        print(f"件数チェック中にエラー: {e}")
+
+# --- スケジュール登録 ---
+
+# 1. 5分ごとに件数チェック
+schedule.every(5).minutes.do(check_count_and_run)
+
+# 2. 毎日 08:30 に強制実行
+schedule.every().day.at("08:30").do(execute_extraction, trigger_reason="定刻実行(08:30)")
+
+# --- メインループ ---
+print("========================================")
+print(" ATS ASIN 抽出スケジューラー 起動中 ")
+print(" ・5分ごとに10,000件到達をチェック")
+print(" ・毎日 08:30 に残りを一括書き出し")
+print("========================================")
+
+while True:
+    schedule.run_pending()
+    time.sleep(1)

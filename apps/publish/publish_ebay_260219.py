@@ -20,8 +20,6 @@ import os
 from dotenv import load_dotenv
 import boto3
 from datetime import timedelta  # 追加（mainのstateで使う）
-from dataclasses import dataclass
-
 
 # =========================
 # Third-party
@@ -1609,14 +1607,7 @@ def take_one_from_group_presets(
         if not row:
             continue
 
-
-        vendor_item_id, vendor_name, price, ship_region, ship_days, preset = row
-        p = {
-            "preset": preset,
-            "vendor_name": vendor_name,
-        }
-
-
+        vendor_item_id, vendor_name, price, ship_region, ship_days, _preset_out = row
         next_idx = (idx + 1) % n
         return p, vendor_item_id, price, ship_region, ship_days, next_idx
 
@@ -1647,138 +1638,28 @@ def upload_image_to_r2(r2, bucket, public_base, image_url, key):
 
     return f"{public_base}/{key}"
 
-def take_one_by_preset_group(conn, preset_group, processing_by):
-    with conn.cursor() as cur:
-        cur.execute("""
-            ;WITH cte AS (
-                SELECT TOP (1) *
-                FROM trx.vendor_item
-                WHERE preset_group = ?
-                  AND processing_at IS NULL
-                ORDER BY vendor_item_id
-            )
-            UPDATE cte
-            SET
-                processing_by = ?,
-                processing_at = SYSDATETIME()
-            OUTPUT inserted.vendor_item_id,
-                   inserted.preset,
-                   inserted.vendor_name,
-                   inserted.price,
-                   inserted.shipping_region,
-                   inserted.shipping_days
-        """, (preset_group, processing_by))
-        return cur.fetchone()
-
-
-@dataclass
-class Account:
-    account: str
-    preset_group: str
-    post_target: Optional[int]
-
-
-def fetch_accounts_for_pc(conn, current_pc):
-    with conn.cursor() as cur:
-        cur.execute("""
-            SELECT account, preset_group, post_target
-            FROM mst.ebay_accounts
-            WHERE execute_pc = ?
-              AND ISNULL(is_excluded,0) = 0
-            ORDER BY account
-        """, (current_pc,))
-
-        rows = cur.fetchall()
-
-    return [
-        Account(
-            account=r[0].strip(),
-            preset_group=r[1].strip(),
-            post_target=r[2]
-        )
-        for r in rows
-    ]
-
-@dataclass
-class PublishState:
-    debug_unavailable_dump: dict
-    writes_since_commit: int
-    acct_targets: dict
-    acct_success: dict
-    acct_policies_map: dict
-    total_listings: int
-    stop_all: bool
-    image_mode: str
-    image_error_count: int
-    cdn_mode_until: object
-    cdn_cache: dict
-
-def process_one_item(conn, driver, acct, row):
-
-    vendor_item_id = row[0]
-    preset         = row[1]
-    vendor_name    = row[2]
-    price          = row[3]
-    ship_region    = row[4]
-    ship_days      = row[5]
-
-    sku = vendor_item_id.strip()
-
-    # URL
-    if vendor_name == "メルカリshops":
-        item_url = f"https://mercari-shops.com/products/{sku}"
-    else:
-        item_url = f"https://jp.mercari.com/item/{sku}"
-
-    # pをここで作る（heavy_check用）
-    p = {
-        "preset": preset,
-        "vendor_name": vendor_name,
-        "mode": "NORMAL",   # ← 仮（あとでDBから取るなら修正）
-        "low_usd_target": 0,
-        "high_usd_target": 999999,
-    }
-
-    debug_unavailable_dump = {}
-    writes_since_commit = 0
-
-    heavy, debug_unavailable_dump, writes_since_commit, d_skip_detail, d_fail = heavy_check_detail(
-        conn,
-        driver,
-        item_url,
-        sku,
-        preset,
-        vendor_name,
-        p,
-        debug_unavailable_dump,
-        writes_since_commit
-    )
-
-    if not heavy:
-        return False
-
-    # ここで post_to_ebay を呼ぶ（今は省略）
-
-    return True
-
 def main():
+    load_dotenv()  
 
-    load_dotenv()
-
-    current_pc = socket.gethostname().strip()
-    processing_by = get_processing_by()
-    start_time = datetime.now()
-
-    # ===== R2設定 =====
+    # --- 1. 設定の取得 ---
     r2_endpoint    = os.getenv("R2_ENDPOINT")
     r2_access_key  = os.getenv("R2_ACCESS_KEY_ID")
     r2_secret_key  = os.getenv("R2_SECRET_ACCESS_KEY")
     r2_bucket_name = os.getenv("R2_BUCKET")
     r2_public_base = os.getenv("R2_PUBLIC_BASE")
 
+    # --- 2. エンドポイントURLの自動補正 (重要！) ---
+    # テストで確認した通り、末尾にバケット名がついていると失敗するので削除します
     if r2_endpoint and r2_bucket_name and r2_endpoint.endswith("/" + r2_bucket_name):
         r2_endpoint = r2_endpoint.replace("/" + r2_bucket_name, "")
 
+    # ===== 画像モード state machine =====
+    image_mode = "NORMAL"       # or "CDN"
+    image_error_count = 0       # 画像500px未満系を数える
+    cdn_mode_until = None       # datetime
+    cdn_cache = {}              # sku -> [cdn_url,...]
+
+    # --- 3. クライアントの初期化 (整形後のURLを使用) ---
     r2 = boto3.client(
         "s3",
         endpoint_url=r2_endpoint,
@@ -1787,206 +1668,307 @@ def main():
         region_name="auto",
     )
 
-    # ===== state machine =====
-    image_mode = "NORMAL"
-    image_error_count = 0
-    cdn_mode_until = None
-    cdn_cache = {}
+    # 後続の処理で使う定数を上書き
+    R2_BUCKET = r2_bucket_name
+    R2_PUBLIC_BASE = r2_public_base
 
-    writes_since_commit = 0
-    total_listings = 0
-    MAX_LISTINGS = 10**9
+    # (この後、current_pc = socket.gethostname().strip() などの処理が続く...)
+
+
+    target_accounts = []
+
+    print("### publish_ebay_new.py 起動（processing_by → preset_group → account → items） ###")
+    start_time = datetime.now()
+
+ 
+
+    # ===== 必須: ローカル変数の初期化（UnboundLocalError / NameError 回避）=====
     stop_all = False
+
+    debug_unavailable_dump = {}   # heavy_check_detail で受け回す
+    writes_since_commit = 0
+
+    skip_count = 0
+    skip_detail_count = 0
+    fail_other = 0
+
+    total_listings = 0
+    MAX_LISTINGS = 10**9          # 上限制御するなら適切な値に（例: 200 など）
+    # ===============================================================
+
+    current_pc = socket.gethostname().strip()
+    processing_by = get_processing_by()
 
     conn = get_sql_server_connection()
     driver = build_driver()
-
+    processed_in_session = 0
     try:
-        # ===== アカウント取得 =====
-        accounts = fetch_accounts_for_pc(conn, current_pc)
-        presets = fetch_active_presets(conn)
+        global TITLE_RULES
+        TITLE_RULES = load_title_rules(conn)
 
-        # ===== policies事前ロード =====
-        acct_policies_map = {}
+        # ----- ebay_accounts をロードして group ごとのアカウント一覧を作る -----
+        group_accounts_map: Dict[str, List[str]] = {}
         with conn.cursor() as cur:
-            for acct in accounts:
+            cur.execute("""
+                SELECT account, preset_group
+                FROM [mst].[ebay_accounts]
+                WHERE ISNULL(is_excluded, 0) = 0
+                  AND LTRIM(RTRIM(execute_pc)) = LTRIM(RTRIM(?))  -- ★ NEW
+            """, (current_pc,))
+            for acct, grp in cur.fetchall():
+                grp = (grp or "").strip()
+                acct = (acct or "").strip()
+                if grp and acct:
+                    group_accounts_map.setdefault(grp, []).append(acct)
+
+        # ----- 各アカウントの post_target をロード -----
+        acct_targets: Dict[str, Optional[int]] = {}
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT account,
+                    CASE WHEN post_target = 0 THEN 0
+                            WHEN post_target IS NULL THEN NULL
+                            ELSE post_target END AS target
+                FROM [nostock].[mst].[ebay_accounts]
+                WHERE ISNULL(is_excluded, 0) = 0
+                  AND LTRIM(RTRIM(execute_pc)) = LTRIM(RTRIM(?))  -- ★ NEW
+            """, (current_pc,))
+            for acct, tgt in cur.fetchall():
+                acct = (acct or "").strip()
+                if acct:
+                    acct_targets[acct] = tgt
+
+        acct_success = {acct: 0 for acct in acct_targets.keys()}
+
+        # ----- 各アカウントの policies を事前にロード -----
+        acct_policies_map: Dict[str, Dict[str, str]] = {}
+        with conn.cursor() as cur:
+            for acct in acct_targets.keys():
                 cur.execute("""
-                    SELECT fulfillment_policy_id,
-                           payment_policy_id,
-                           return_policy_id
-                    FROM mst.ebay_accounts
-                    WHERE account = ?
-                """, acct.account)
+                    SELECT fulfillment_policy_id, payment_policy_id, return_policy_id
+                    FROM [mst].[ebay_accounts]
+                    WHERE LTRIM(RTRIM(account)) = LTRIM(RTRIM(?))
+                """, (acct,))
                 row = cur.fetchone()
                 if not row:
-                    raise RuntimeError(f"policy未設定: {acct.account}")
-
-                acct_policies_map[acct.account] = {
+                    raise RuntimeError(f"mst.ebay_accounts にアカウントがありません: {acct}")
+                acct_policies_map[acct] = {
                     "fulfillment_policy_id": str(row[0]),
                     "payment_policy_id": str(row[1]),
                     "return_policy_id": str(row[2]),
                     "merchant_location_key": "Default",
                 }
 
-        acct_success = {acct.account: 0 for acct in accounts}
-        acct_targets = {acct.account: acct.post_target for acct in accounts}
+        presets = fetch_active_presets(conn)
 
-        # ===== アカウントループ =====
-        for acct in accounts:
+        # ===== preset_group をサマリー =====
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT DISTINCT LTRIM(RTRIM(preset_group)) AS preset_group
+                FROM [mst].[ebay_accounts]
+                WHERE ISNULL(is_excluded, 0) = 0
+                  AND LTRIM(RTRIM(execute_pc)) = LTRIM(RTRIM(?))  -- ★ NEW
+                  AND preset_group IS NOT NULL
+                  AND LTRIM(RTRIM(preset_group)) <> ''
+                ORDER BY LTRIM(RTRIM(preset_group));
+            """, (current_pc,))
+            preset_groups = [r[0] for r in cur.fetchall()]
 
-            print(f"[ACCOUNT START] {acct.account}")
+        def has_quota(acct: str) -> bool:
+            t = acct_targets[acct]
+            if t is None:
+                return True
+            return t > 0
 
-            def has_quota(a):
-                t = acct_targets[a.account]
-                if t is None:
-                    return True
-                return t > 0
+        # ===== ループ順：preset_group → account → items =====
+        for preset_group in preset_groups:
+            print(f"[DEBUG][GROUP] start preset_group={preset_group}")
+            if stop_all:
+                break
 
-            group_presets = [
-                p for p in presets
-                if (p.get("preset_group") or "").strip() == acct.preset_group
-            ]
+            target_accounts = group_accounts_map.get(preset_group, [])
+            if not target_accounts:
+                continue
 
+            group_presets = [p for p in presets if (p.get("preset_group") or "").strip() == preset_group]
             if not group_presets:
                 continue
 
-            rr_idx = 0
+            if not any(has_quota(a) for a in target_accounts):
+                continue
 
-            while has_quota(acct) and not stop_all:
+            # ★ NEW: ラウンドロビン開始位置
+            rr_idx = 0  # ★ NEW
+            group_items_exhausted = False
 
-                # CDN解除チェック
-                now_dt = datetime.now()
-                if image_mode == "CDN" and cdn_mode_until and now_dt >= cdn_mode_until:
-                    print("[IMG_MODE] CDN -> NORMAL")
-                    image_mode = "NORMAL"
-                    image_error_count = 0
-                    cdn_mode_until = None
-
-                # ===== presetラウンドロビン =====
-                p = None
-                vendor_row = None
-
-                for i in range(len(group_presets)):
-                    idx = (rr_idx + i) % len(group_presets)
-                    preset_obj = group_presets[idx]
-                    preset = preset_obj["preset"]
-
-                    low_cost, high_cost = compute_cost_range_jpy_from_usd_range(
-                        preset_obj["mode"],
-                        preset_obj["low_usd_target"],
-                        preset_obj["high_usd_target"],
-                    )
-
-                    row = take_one_vendor_item_by_preset(
-                        conn,
-                        preset,
-                        processing_by,
-                        start_time,
-                        low_cost,
-                        high_cost,
-                    )
-
-                    if row:
-                        p = preset_obj
-                        vendor_row = row
-                        rr_idx = (idx + 1) % len(group_presets)
-                        break
-
-                if not vendor_row:
-                    print(f"[INFO] {acct.account} 在庫枯渇")
+            for acct in target_accounts:
+                if stop_all:
                     break
-
-                vendor_item_id, vendor_name, price, ship_region, ship_days, preset = vendor_row
-                sku = vendor_item_id.strip()
-
-                if vendor_name == "メルカリshops":
-                    item_url = f"https://mercari-shops.com/products/{sku}"
-                else:
-                    item_url = f"https://jp.mercari.com/item/{sku}"
-
-                # ===== heavy =====
-                try:
-                    heavy, _, writes_since_commit, _, _ = heavy_check_detail(
-                        conn,
-                        driver,
-                        item_url,
-                        sku,
-                        preset,
-                        vendor_name,
-                        p,
-                        {},
-                        writes_since_commit
-                    )
-                except FatalRendererError:
-                    print("[RECOVERY] Renderer crash")
-                    driver.quit()
-                    time.sleep(3)
-                    driver = build_driver()
+                if not has_quota(acct):
                     continue
 
-                if not heavy:
-                    continue
-
-                # ===== 出品 =====
-                (
-                    acct_targets,
-                    acct_success,
-                    total_listings,
-                    stop_all,
-                    writes_since_commit,
-                    _,
-                    image_mode,
-                    image_error_count,
-                    cdn_mode_until,
-                ) = post_to_ebay(
-                    conn=conn,
-                    p=p,
-                    acct=acct.account,
-                    heavy=heavy,
-                    acct_targets=acct_targets,
-                    acct_success=acct_success,
-                    acct_policies_map=acct_policies_map,
-                    total_listings=total_listings,
-                    MAX_LISTINGS=MAX_LISTINGS,
-                    stop_all=stop_all,
-                    writes_since_commit=writes_since_commit,
-                    BATCH_COMMIT=BATCH_COMMIT,
-                    image_mode=image_mode,
-                    image_error_count=image_error_count,
-                    cdn_mode_until=cdn_mode_until,
-                    r2=r2,
-                    r2_bucket=r2_bucket_name,
-                    r2_public_base=r2_public_base,
-                    cdn_cache=cdn_cache,
-                    now_dt=datetime.now(),
+                print(
+                    f"[DEBUG][ACCOUNT] preset_group={preset_group} "
+                    f"account={acct} post_target={acct_targets[acct]} pc={current_pc}"  # ★ NEW
                 )
+
+                while has_quota(acct):
+                    try:
+                        # --- ブラウザのリフレッシュ（20件ごと） ---
+                        if processed_in_session >= 20:
+                            print("[INFO] 20件処理したためブラウザをリフレッシュします...")
+                            try:
+                                driver.quit()
+                            except Exception:
+                                pass
+                            time.sleep(3)
+                            driver = build_driver()
+                            processed_in_session = 0
+
+                        # ===== CDN 20分解除チェック（SKUごと）=====
+                        now_dt = datetime.now()
+                        if image_mode == "CDN" and cdn_mode_until and now_dt >= cdn_mode_until:
+                            print("[IMG_MODE] CDN -> NORMAL (20min elapsed)")
+                            image_mode = "NORMAL"
+                            image_error_count = 0
+                            cdn_mode_until = None
+                            # cdn_cache は消さなくてOK（再upload防止）
+
+                        # ★ take_one は即コミット
+                        conn.autocommit = True
+
+                        p, vendor_item_id, price_db, ship_region, ship_days, rr_idx = take_one_from_group_presets(
+                            conn, group_presets, processing_by, rr_idx, start_time
+                        )
+                        conn.autocommit = False
+
+                        if not p or not vendor_item_id:
+                            print(f"[INFO] preset_group={preset_group} items枯渇 → group終了")
+                            group_items_exhausted = True
+                            break
+
+                        vendor_name = (p["vendor_name"] or "").strip()
+                        sku = vendor_item_id.strip()
+                        preset = p["preset"]
+
+                        # URL 組み立て
+                        if vendor_name == "メルカリshops":
+                            item_url = f"https://mercari-shops.com/products/{sku}"
+                        else:
+                            item_url = f"https://jp.mercari.com/item/{sku}"
+
+                        heavy, debug_unavailable_dump, writes_since_commit, d_skip_detail, d_fail = heavy_check_detail(
+                            conn,
+                            driver,
+                            item_url,
+                            sku,
+                            preset,
+                            vendor_name,
+                            p,
+                            debug_unavailable_dump,
+                            writes_since_commit,
+                        )
+
+                        skip_detail_count += d_skip_detail
+                        fail_other += d_fail
+
+                        if heavy is None:
+                            processed_in_session += 1
+                            continue
+
+                        (
+                            acct_targets,
+                            acct_success,
+                            total_listings,
+                            stop_all,
+                            writes_since_commit,
+                            d_fail2,
+                            image_mode,
+                            image_error_count,
+                            cdn_mode_until,
+                        ) = post_to_ebay(
+                            conn=conn,
+                            p=p,
+                            acct=acct,
+                            heavy=heavy,
+                            acct_targets=acct_targets,
+                            acct_success=acct_success,
+                            acct_policies_map=acct_policies_map,
+                            total_listings=total_listings,
+                            MAX_LISTINGS=MAX_LISTINGS,
+                            stop_all=stop_all,
+                            writes_since_commit=writes_since_commit,
+                            BATCH_COMMIT=BATCH_COMMIT,
+                            image_mode=image_mode,
+                            image_error_count=image_error_count,
+                            cdn_mode_until=cdn_mode_until,
+                            r2=r2,
+                            r2_bucket=R2_BUCKET,
+                            r2_public_base=R2_PUBLIC_BASE,
+                            cdn_cache=cdn_cache,
+                            now_dt=datetime.now(),
+                        )
+
+                        fail_other += d_fail2
+                        processed_in_session += 1
+
+                        if stop_all:
+                            break
+
+                    except FatalRendererError as e:
+                        print(f"!!! [RECOVERY] レンダラーエラー検知。ブラウザを再起動します: {e}")
+
+                        print(">>> before quit")
+                        try:
+                            driver.quit()
+                            print(">>> after quit")
+                        except Exception as ex:
+                            print(f">>> quit exception: {ex}")
+
+                        print(">>> sleep")
+                        time.sleep(5)
+
+                        print(">>> rebuild driver")
+                        driver = build_driver()
+
+                        print(">>> rebuild done")
+
+                        processed_in_session = 0
+                        continue
+                if group_items_exhausted:
+                    break
 
         if writes_since_commit > 0:
             conn.commit()
+        conn.autocommit = True
 
-        # ===== 完了メール =====
         end_time = datetime.now()
         elapsed = end_time - start_time
 
-        lines = [f"{acct}: 成功 {acct_success.get(acct,0)}"
-                 for acct in acct_success.keys()]
-
-        body = (
-            f"PC: {current_pc}\n"
-            f"開始: {start_time}\n終了: {end_time}\n処理時間: {elapsed}\n\n"
-            + "\n".join(lines)
-        )
-
-        send_mail(
-            "✅ eBay出品処理 完了通知",
-            body
-        )
+        try:
+            subject = "✅ eBay出品処理 完了通知（processing_by版）"  # ★ NEW
+            lines = [f"{acct}: 成功 {acct_success.get(acct, 0)}" for acct in acct_success.keys()]
+            body = (
+                f"PC: {current_pc}\n"  # ★ NEW
+                f"開始: {start_time}\n終了: {end_time}\n処理時間: {elapsed}\n"
+                f"スキップ: {skip_count} / スキップ(詳細): {skip_detail_count} / 失敗: {fail_other}\n\n"
+                + "\n".join(lines)
+            )
+            send_mail(subject, body)
+        except Exception as e:
+            print(f"[WARN] 完了メール送信失敗: {e}")
 
     finally:
-        driver.quit()
-        conn.close()
-
-
+        try:
+            if driver:
+                driver.quit()
+        except Exception as e:
+            print(f"[WARN] driver.quit() failed: {e}")
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
 
 
 def main_test():

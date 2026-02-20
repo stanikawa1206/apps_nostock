@@ -271,25 +271,41 @@ def main():
             print("   事前sold → フル在庫チェック → delete → publish")
             print("==============================")
 
-            # ------------------------------------------------
-            # ① 事前 sold チェック
-            # ------------------------------------------------
-            #pre_sold_script = APPS_INV / "fetch_sold_ebay.py"
-            #print("\n=== ⭐ 事前 sold チェック ===")
-            #pre_start = datetime.now()
-            #pre_code, _ = run_script(pre_sold_script)
-            #pre_end = datetime.now()
 
-            #send_script_mail(
-            #    pre_sold_script,
-            #    pre_start,
-            #    pre_end,
-            #    pre_code,
-            #    round_no=set_no,
-            #    conn=conn,
-            #)
+            # ------------------------------------------------
+            # ① 事前 sold チェック（分散版）
+            # ------------------------------------------------
+            print("\n=== ⭐ 事前 sold チェック（分散版）開始 ===")
 
-            time.sleep(WAIT_SECONDS)
+            pre_sold_start = datetime.now()
+            pre_sold_code, _ = run_script(FETCH_SOLD)  # job投入
+
+            if pre_sold_code != 0:
+                pre_sold_end = datetime.now()
+                send_script_mail(
+                    FETCH_SOLD,
+                    pre_sold_start,
+                    pre_sold_end,
+                    pre_sold_code,
+                    round_no=set_no,
+                    conn=conn,
+                )
+                print("[STOP] 事前 fetch_sold job投入失敗")
+                continue
+
+            # worker完了待ち
+            wait_until_no_pending(conn, phase_name="pre_sold")
+
+            pre_sold_end = datetime.now()
+
+            send_script_mail(
+                FETCH_SOLD,
+                pre_sold_start,
+                pre_sold_end,
+                0,
+                round_no=set_no,
+                conn=conn,
+            )
 
             # ------------------------------------------------
             # ② フル在庫チェック（fetch_active だけ分散）
@@ -434,6 +450,17 @@ def main():
             # ④ publish_ebay.py を 1 回実行
             # ------------------------------------------------
             print("\n=== 🚀 publish_ebay.py 実行 ===")
+
+            cur.execute("""
+                UPDATE trx.vendor_item
+                SET
+                    processing_by = NULL,
+                    processing_at = NULL
+                WHERE processing_by IS NOT NULL
+                   OR processing_at IS NOT NULL
+
+            """)
+            conn.commit()
             pub_start = datetime.now()
             pub_code, _ = run_script(PUBLISH_SCRIPT)
             pub_end = datetime.now()
