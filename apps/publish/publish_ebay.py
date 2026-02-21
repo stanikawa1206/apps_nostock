@@ -1579,7 +1579,7 @@ def take_one_vendor_item_by_preset(
     )
     UPDATE v
     SET processing_by = ?,
-        processing_at = ?
+        processing_at = SYSDATETIME()
     OUTPUT inserted.vendor_item_id,
            inserted.vendor_name,
            inserted.price,
@@ -1743,7 +1743,6 @@ def main():
                         conn,
                         preset,
                         processing_by,
-                        start_time,
                         low_cost,
                         high_cost,
                     )
