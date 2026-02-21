@@ -1561,7 +1561,6 @@ def take_one_vendor_item_by_preset(
     conn,
     preset,
     processing_by,
-    start_time,
     low_cost,
     high_cost,
 ):
@@ -1597,7 +1596,6 @@ def take_one_vendor_item_by_preset(
             low_cost,
             high_cost,
             processing_by,
-            start_time,
         )
         row = cur.fetchone()
         if not row:
