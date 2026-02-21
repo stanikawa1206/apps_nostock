@@ -1614,24 +1614,24 @@ def main():
     start_time = datetime.now()
 
     # ===== R2設定 (昨日動いていたver) =====
-        r2_endpoint    = os.getenv("R2_ENDPOINT")
-        r2_access_key  = os.getenv("R2_ACCESS_KEY_ID")
-        r2_secret_key  = os.getenv("R2_SECRET_ACCESS_KEY")
-        r2_bucket_name = os.getenv("R2_BUCKET")
-        r2_public_base = os.getenv("R2_PUBLIC_BASE")
+    r2_endpoint    = os.getenv("R2_ENDPOINT")
+    r2_access_key  = os.getenv("R2_ACCESS_KEY_ID")
+    r2_secret_key  = os.getenv("R2_SECRET_ACCESS_KEY")
+    r2_bucket_name = os.getenv("R2_BUCKET")
+    r2_public_base = os.getenv("R2_PUBLIC_BASE")
 
-        # 末尾のスラッシュ＋バケット名を除去するロジック
-        if r2_endpoint and r2_bucket_name and r2_endpoint.endswith("/" + r2_bucket_name):
-            r2_endpoint = r2_endpoint.replace("/" + r2_bucket_name, "")
+    # 末尾のスラッシュ＋バケット名を除去するロジック
+    if r2_endpoint and r2_bucket_name and r2_endpoint.endswith("/" + r2_bucket_name):
+        r2_endpoint = r2_endpoint.replace("/" + r2_bucket_name, "")
 
-        # クライアント初期化
-        r2 = boto3.client(
-            "s3",
-            endpoint_url=r2_endpoint,
-            aws_access_key_id=r2_access_key,
-            aws_secret_access_key=r2_secret_key,
-            region_name="auto",
-        )
+    # クライアント初期化
+    r2 = boto3.client(
+        "s3",
+        endpoint_url=r2_endpoint,
+        aws_access_key_id=r2_access_key,
+        aws_secret_access_key=r2_secret_key,
+        region_name="auto",
+    )
 
 
     # 以降のコード（R2_BUCKET = r2_bucket_name ...など）はそのまま
