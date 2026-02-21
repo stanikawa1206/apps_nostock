@@ -1663,6 +1663,10 @@ def main():
     R2_BUCKET = r2_bucket_name
     R2_PUBLIC_BASE = r2_public_base
 
+    print("ACCESS_KEY:", r2_access_key)
+    print("ENDPOINT:", r2_endpoint)
+    print("BUCKET:", r2_bucket_name)
+
     # (この後、current_pc = socket.gethostname().strip() などの処理が続く...)
 
 
