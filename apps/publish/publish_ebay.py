@@ -1605,7 +1605,7 @@ def take_one_vendor_item_by_preset(
 
 
 def main():
-    print("26022121_3ver") # バージョンを更新しておくと確認しやすいです
+    print("26022121_4ver") # バージョンを更新しておくと確認しやすいです
 
     load_dotenv()
 
@@ -1631,9 +1631,13 @@ def main():
         endpoint_url=r2_endpoint,
         aws_access_key_id=r2_access_key,
         aws_secret_access_key=r2_secret_key,
-        region_name="auto",
-        config=Config(s3={'addressing_style': 'path'}) 
+        region_name="auto",  # R2は必ず "auto"
+        config=Config(
+            s3={'addressing_style': 'path'}, # R2で必須の指定
+            signature_version='s3v4'        # 署名バージョンを固定
+        )
     )
+
 
     # 以降のコード（R2_BUCKET = r2_bucket_name ...など）はそのまま
     R2_BUCKET = r2_bucket_name

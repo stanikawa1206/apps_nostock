@@ -26,9 +26,6 @@ if [ $? != 0 ]; then
                 break
             fi
 
-            echo 'ERROR DETECTED! Press Enter to restart, or Ctrl+C to stop.'
-            read dummy
-            
             echo 'restart after 15 sec...'
             sleep 15
         done
