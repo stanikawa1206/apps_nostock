@@ -1589,6 +1589,20 @@ def take_one_vendor_item_by_preset(
     JOIN cte ON v.vendor_item_id = cte.vendor_item_id;
     """
 
+    params = (
+        preset,
+        low_cost,
+        high_cost,
+        processing_by,
+    )
+
+
+    # 👇 ここ追加
+    print("----- DEBUG SQL -----")
+    print(debug_render_sql(sql, list(params)))
+    print("---------------------")
+
+
     with conn.cursor() as cur:
         cur.execute(
             sql,
@@ -1604,7 +1618,6 @@ def take_one_vendor_item_by_preset(
 
 
 def main():
-    print("26022121_process") # バージョンを更新
 
     # --- 修正ポイント1: .env の場所を絶対パスで指定 ---
     # プロジェクトルートにある .env を確実に読み込むようにします
@@ -1615,7 +1628,6 @@ def main():
     
     from dotenv import load_dotenv
     load_dotenv(dotenv_path=env_path, override=True)
-    print(f"DEBUG: .env loaded from {env_path}")
 
     current_pc = socket.gethostname().strip()
     processing_by = get_processing_by()
@@ -1626,7 +1638,6 @@ def main():
     r2_endpoint    = os.getenv("R2_ENDPOINT", "").strip()
     r2_access_key  = os.getenv("R2_ACCESS_KEY_ID", "").strip()
     r2_secret_key = os.getenv("R2_SECRET_ACCESS_KEY", "").strip()
-    print(f"DEBUG: Confirmed Secret Key = {r2_secret_key[:5]}...")
     r2_bucket_name = os.getenv("R2_BUCKET", "").strip()
     r2_public_base = os.getenv("R2_PUBLIC_BASE", "").strip()
 
@@ -1648,11 +1659,6 @@ def main():
     # 既存の変数への代入
     R2_BUCKET = r2_bucket_name
     R2_PUBLIC_BASE = r2_public_base
-
-    # デバッグ出力（キーは一部隠して表示）
-    print("ACCESS_KEY:", f"{r2_access_key[:5]}...")
-    print("ENDPOINT:", r2_endpoint)
-    print("BUCKET:", r2_bucket_name)
 
     # ===== state machine =====
     image_mode = "NORMAL"
