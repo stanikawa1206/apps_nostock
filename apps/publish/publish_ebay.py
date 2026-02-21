@@ -59,7 +59,7 @@ from apps.common.utils import (
 )
 
 from apps.adapters.ebay_api import ApiHandledError, ListingLimitError, post_one_item
-from apps.adapters.mercari_search import calc_cost_range_from_usd_range, fetch_active_presets
+from apps.adapters.mercari_search import fetch_active_presets
 from apps.adapters.mercari_item_status import (
     MercariItemUnavailableError,
     detect_status_from_mercari,
@@ -891,105 +891,6 @@ def _truncate_for_db2(s: str, max_len: int = 200) -> str:
         return s
     return s[: max_len - 3] + "..."
 
-# =========================
-# ★ NEW: processing_by で vendor_item を1件確保する
-# =========================
-TAKE_ONE_VENDOR_ITEM_SQL = """
-;WITH cte AS (
-    SELECT TOP (1)
-        v.vendor_item_id,
-        v.vendor_name,
-        v.price,
-        v.shipping_region,
-        v.shipping_days,
-        v.preset,
-        v.processing_by,
-        v.processing_at
-    FROM vw_vendor_item_ready v
-    WHERE
-        -- =========================
-        -- 動的条件
-        -- =========================
-        v.preset = ?
-        AND v.price BETWEEN ? AND ?
-
-        -- =========================
-        -- processing ロック
-        -- =========================
-        and v.processing_at IS NULL        
-
-    ORDER BY
-        CASE WHEN v.vendor_page IS NULL THEN 1 ELSE 0 END,
-        v.vendor_page ASC
-)
-UPDATE cte
-SET
-    processing_by = ?,
-    processing_at = SYSDATETIME()
-OUTPUT
-    inserted.vendor_item_id,
-    inserted.vendor_name,
-    inserted.price,
-    inserted.shipping_region,
-    inserted.shipping_days,
-    inserted.preset;
-"""
-
-
-import time
-import pyodbc
-
-def take_one_vendor_item_by_preset(
-    conn,
-    preset: str,
-    processing_by: str,
-    start_time: datetime,
-    low_cost: int,
-    high_cost: int,
-):
-    with conn.cursor() as cur:
-
-        # 🔁 1205だけリトライ
-        for attempt in range(3):
-            try:
-                cur.execute(
-                    TAKE_ONE_VENDOR_ITEM_SQL,
-                    (
-                        preset,
-                        low_cost,
-                        high_cost,
-                        processing_by,
-                    )
-                )
-                break  # 成功したら抜ける
-
-            except pyodbc.Error as e:
-                # SQL Server デッドロック(1205)
-                if "1205" in str(e):
-                    if attempt < 2:
-                        time.sleep(0.2)  # 少し待つ
-                        continue
-                raise  # それ以外はそのまま上に投げる
-
-        row = cur.fetchone()
-        if not row:
-            return None
-
-        vendor_item_id = (row[0] or "").strip()
-        vendor_name = (row[1] or "").strip()
-
-        price = None
-        try:
-            price = int(row[2]) if row[2] is not None else None
-        except Exception:
-            price = None
-
-        ship_region = row[3]
-        ship_days = row[4]
-        preset_out = (row[5] or "").strip()
-
-        return vendor_item_id, vendor_name, price, ship_region, ship_days, preset_out
-
 def is_image_too_small_error(err_msg: str) -> bool:
     if not err_msg:
         return False
@@ -1418,6 +1319,9 @@ def post_to_ebay(
             print(f"✅ 出品成功: acct={acct} SKU={sku} listing_id={item_id_ebay}")
             record_ebay_listing(item_id_ebay, acct, sku, vendor_name)
 
+            rec["processing_by"] = None
+            rec["processing_at"] = None
+
             rec["listing_head"] = "出品"
             rec["listing_detail"] = ""
             upsert_vendor_item(conn, rec)
@@ -1500,6 +1404,9 @@ def post_to_ebay(
                     print(f"✅ 出品成功(CDN retry): acct={acct} SKU={sku} listing_id={item_id_ebay}")
                     record_ebay_listing(item_id_ebay, acct, sku, vendor_name)
 
+                    rec["processing_by"] = None
+                    rec["processing_at"] = None
+
                     rec["listing_head"] = "出品"
                     rec["listing_detail"] = ""
                     upsert_vendor_item(conn, rec)
@@ -1564,65 +1471,6 @@ def post_to_ebay(
                 fail_other_delta, image_mode, image_error_count, cdn_mode_until)
 
 
-# =========================
-# ★ NEW: group_presets から 1件確保（ラウンドロビン）
-# =========================
-def take_one_from_group_presets(
-    conn,
-    group_presets,
-    processing_by,
-    start_idx,
-    start_time
-):
-    """
-    group_presets を start_idx から順に試して 1件確保する。
-    return: (p, vendor_item_id, price, ship_region, ship_days, next_start_idx)
-      - 取れない場合は (None, None, None, None, None, start_idx)
-    """
-    if not group_presets:
-        return None, None, None, None, None, start_idx
-
-    n = len(group_presets)
-    for i in range(n):
-        idx = (start_idx + i) % n
-        p = group_presets[idx]
-        preset = (p.get("preset") or "").strip()
-        if not preset:
-            continue
-
-        # ★ ここで逆算
-        low_cost, high_cost = compute_cost_range_jpy_from_usd_range(
-            p["mode"],
-            p["low_usd_target"],
-            p["high_usd_target"],
-        )
-
-        row = take_one_vendor_item_by_preset(
-            conn,
-            preset,
-            processing_by,
-            start_time,
-            low_cost,
-            high_cost,
-        )
-
-        if not row:
-            continue
-
-
-        vendor_item_id, vendor_name, price, ship_region, ship_days, preset = row
-        p = {
-            "preset": preset,
-            "vendor_name": vendor_name,
-        }
-
-
-        next_idx = (idx + 1) % n
-        return p, vendor_item_id, price, ship_region, ship_days, next_idx
-
-    return None, None, None, None, None, start_idx
-
-import os
 def get_processing_by():
     return os.environ.get("WORKER_NAME", socket.gethostname())
 
@@ -1646,30 +1494,6 @@ def upload_image_to_r2(r2, bucket, public_base, image_url, key):
     )
 
     return f"{public_base}/{key}"
-
-def take_one_by_preset_group(conn, preset_group, processing_by):
-    with conn.cursor() as cur:
-        cur.execute("""
-            ;WITH cte AS (
-                SELECT TOP (1) *
-                FROM trx.vendor_item
-                WHERE preset_group = ?
-                  AND processing_at IS NULL
-                ORDER BY vendor_item_id
-            )
-            UPDATE cte
-            SET
-                processing_by = ?,
-                processing_at = SYSDATETIME()
-            OUTPUT inserted.vendor_item_id,
-                   inserted.preset,
-                   inserted.vendor_name,
-                   inserted.price,
-                   inserted.shipping_region,
-                   inserted.shipping_days
-        """, (preset_group, processing_by))
-        return cur.fetchone()
-
 
 @dataclass
 class Account:
@@ -1713,53 +1537,52 @@ class PublishState:
     cdn_mode_until: object
     cdn_cache: dict
 
-def process_one_item(conn, driver, acct, row):
-
-    vendor_item_id = row[0]
-    preset         = row[1]
-    vendor_name    = row[2]
-    price          = row[3]
-    ship_region    = row[4]
-    ship_days      = row[5]
-
-    sku = vendor_item_id.strip()
-
-    # URL
-    if vendor_name == "メルカリshops":
-        item_url = f"https://mercari-shops.com/products/{sku}"
-    else:
-        item_url = f"https://jp.mercari.com/item/{sku}"
-
-    # pをここで作る（heavy_check用）
-    p = {
-        "preset": preset,
-        "vendor_name": vendor_name,
-        "mode": "NORMAL",   # ← 仮（あとでDBから取るなら修正）
-        "low_usd_target": 0,
-        "high_usd_target": 999999,
-    }
-
-    debug_unavailable_dump = {}
-    writes_since_commit = 0
-
-    heavy, debug_unavailable_dump, writes_since_commit, d_skip_detail, d_fail = heavy_check_detail(
-        conn,
-        driver,
-        item_url,
-        sku,
-        preset,
-        vendor_name,
-        p,
-        debug_unavailable_dump,
-        writes_since_commit
+def take_one_vendor_item_by_preset(
+    conn,
+    preset,
+    processing_by,
+    start_time,
+    low_cost,
+    high_cost,
+):
+    """
+    preset単位で1件確保（古い順）
+    """
+    sql = """
+    ;WITH cte AS (
+        SELECT TOP (1) vendor_item_id
+        FROM dbo.vw_vendor_item_ready
+        WHERE preset = ?
+          AND price BETWEEN ? AND ?
+        ORDER BY created_at ASC
     )
+    UPDATE v
+    SET processing_by = ?,
+        processing_at = ?
+    OUTPUT inserted.vendor_item_id,
+           inserted.vendor_name,
+           inserted.price,
+           inserted.shipping_region,
+           inserted.shipping_days,
+           inserted.preset
+    FROM trx.vendor_item v
+    JOIN cte ON v.vendor_item_id = cte.vendor_item_id;
+    """
 
-    if not heavy:
-        return False
+    with conn.cursor() as cur:
+        cur.execute(
+            sql,
+            preset,
+            low_cost,
+            high_cost,
+            processing_by,
+            start_time,
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return row
 
-    # ここで post_to_ebay を呼ぶ（今は省略）
-
-    return True
 
 def main():
 
@@ -1831,13 +1654,15 @@ def main():
         acct_success = {acct.account: 0 for acct in accounts}
         acct_targets = {acct.account: acct.post_target for acct in accounts}
 
-        # ===== アカウントループ =====
+        # ===== 第一階層 アカウントループ =====
+        # このPCに割り当てられた複数アカウントを順番に処理する
         for acct in accounts:
 
             print(f"[ACCOUNT START] {acct.account}")
 
-            def has_quota(a):
-                t = acct_targets[a.account]
+            # --- quota判定（acct_targets を参照）---
+            def has_quota(a: Account) -> bool:
+                t = acct_targets.get(a.account)
                 if t is None:
                     return True
                 return t > 0
@@ -1850,25 +1675,16 @@ def main():
             if not group_presets:
                 continue
 
-            rr_idx = 0
-
+            # ===== 第二階層 アカウント内ループ =====
+            # そのアカウントで「何件出品するか」を管理
             while has_quota(acct) and not stop_all:
 
-                # CDN解除チェック
-                now_dt = datetime.now()
-                if image_mode == "CDN" and cdn_mode_until and now_dt >= cdn_mode_until:
-                    print("[IMG_MODE] CDN -> NORMAL")
-                    image_mode = "NORMAL"
-                    image_error_count = 0
-                    cdn_mode_until = None
-
-                # ===== presetラウンドロビン =====
-                p = None
                 vendor_row = None
+                selected_preset = None
 
-                for i in range(len(group_presets)):
-                    idx = (rr_idx + i) % len(group_presets)
-                    preset_obj = group_presets[idx]
+                # ===== preset順次探索 =====
+                for preset_obj in group_presets:
+
                     preset = preset_obj["preset"]
 
                     low_cost, high_cost = compute_cost_range_jpy_from_usd_range(
@@ -1887,16 +1703,15 @@ def main():
                     )
 
                     if row:
-                        p = preset_obj
                         vendor_row = row
-                        rr_idx = (idx + 1) % len(group_presets)
+                        selected_preset = preset_obj
                         break
 
                 if not vendor_row:
                     print(f"[INFO] {acct.account} 在庫枯渇")
                     break
 
-                vendor_item_id, vendor_name, price, ship_region, ship_days, preset = vendor_row
+                vendor_item_id, vendor_name, price, shipping_region, shipping_days, preset = vendor_row
                 sku = vendor_item_id.strip()
 
                 if vendor_name == "メルカリshops":
@@ -1913,7 +1728,7 @@ def main():
                         sku,
                         preset,
                         vendor_name,
-                        p,
+                        selected_preset,
                         {},
                         writes_since_commit
                     )
@@ -1940,7 +1755,7 @@ def main():
                     cdn_mode_until,
                 ) = post_to_ebay(
                     conn=conn,
-                    p=p,
+                    p=selected_preset,
                     acct=acct.account,
                     heavy=heavy,
                     acct_targets=acct_targets,
@@ -1960,6 +1775,8 @@ def main():
                     cdn_cache=cdn_cache,
                     now_dt=datetime.now(),
                 )
+
+ 
 
         if writes_since_commit > 0:
             conn.commit()
