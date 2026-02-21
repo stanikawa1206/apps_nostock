@@ -1613,25 +1613,24 @@ def main():
     processing_by = get_processing_by()
     start_time = datetime.now()
 
-    r2_endpoint    = os.getenv("R2_ENDPOINT")
-    r2_access_key  = os.getenv("R2_ACCESS_KEY_ID")
-    r2_secret_key  = os.getenv("R2_SECRET_ACCESS_KEY")
-    r2_bucket_name = os.getenv("R2_BUCKET")
-    r2_public_base = os.getenv("R2_PUBLIC_BASE")
+    # --- 修正版：main関数のR2初期化部分 ---
+    r2_endpoint = os.getenv("R2_ENDPOINT", "").strip().rstrip('/')
 
-    # ★旧verの重要処理：endpoint末尾に/bucketが付いてたら削る
-    if r2_endpoint and r2_bucket_name and r2_endpoint.endswith("/" + r2_bucket_name):
-        r2_endpoint = r2_endpoint.replace("/" + r2_bucket_name, "")
+    # バケット名が含まれている場合のみ除去
+    if r2_bucket_name and r2_endpoint.endswith(f"/{r2_bucket_name}"):
+        r2_endpoint = r2_endpoint.replace(f"/{r2_bucket_name}", "")
 
-    # ★旧verと同じ client 初期化
+    # 重要：Boto3クライアント側の設定を明示的に指定
+    from botocore.config import Config
+
     r2 = boto3.client(
         "s3",
         endpoint_url=r2_endpoint,
         aws_access_key_id=r2_access_key,
         aws_secret_access_key=r2_secret_key,
-        region_name="auto",
+        region_name="auto", # R2はautoでOK
+        config=Config(s3={'addressing_style': 'path'}) # R2との互換性を高める
     )
-
     R2_BUCKET = r2_bucket_name
     R2_PUBLIC_BASE = r2_public_base
 
