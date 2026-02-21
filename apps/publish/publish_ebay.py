@@ -1605,26 +1605,35 @@ def take_one_vendor_item_by_preset(
 
 
 def main():
-    print("26022121_5ver") # バージョンを更新しておくと確認しやすいです
+    print("26022121_Final_Fixed") # バージョンを更新
 
-    load_dotenv()
+    # --- 修正ポイント1: .env の場所を絶対パスで指定 ---
+    # プロジェクトルートにある .env を確実に読み込むようにします
+    from pathlib import Path
+    _PROJECT_ROOT = Path(__file__).resolve().parents[2] # 階層に合わせて調整してください
+    env_path = _PROJECT_ROOT / ".env"
+    
+    from dotenv import load_dotenv
+    load_dotenv(dotenv_path=env_path)
+    print(f"DEBUG: .env loaded from {env_path}")
 
     current_pc = socket.gethostname().strip()
     processing_by = get_processing_by()
     start_time = datetime.now()
     
-    # 1. 環境変数をロード
-    r2_endpoint    = os.getenv("R2_ENDPOINT")
-    r2_access_key  = os.getenv("R2_ACCESS_KEY_ID")
-    r2_secret_key  = os.getenv("R2_SECRET_ACCESS_KEY")
-    r2_bucket_name = os.getenv("R2_BUCKET")
-    r2_public_base = os.getenv("R2_PUBLIC_BASE")
+    # --- 修正ポイント2: .strip() で目に見えないゴミを削除 ---
+    # これにより SignatureDoesNotMatch を防ぎます
+    r2_endpoint    = os.getenv("R2_ENDPOINT", "").strip()
+    r2_access_key  = os.getenv("R2_ACCESS_KEY_ID", "").strip()
+    r2_secret_key  = os.getenv("R2_SECRET_ACCESS_KEY", "").strip()
+    r2_bucket_name = os.getenv("R2_BUCKET", "").strip()
+    r2_public_base = os.getenv("R2_PUBLIC_BASE", "").strip()
 
     # 2. テストで成功したロジックをそのまま適用
     if r2_endpoint and r2_bucket_name and r2_endpoint.endswith("/" + r2_bucket_name):
         r2_endpoint = r2_endpoint.replace("/" + r2_bucket_name, "")
 
-    # 3. テストで成功した Config 指定を本番にも入れる
+    # 3. テストで成功した Config 指定を適用
     from botocore.config import Config
     r2 = boto3.client(
         "s3",
@@ -1632,14 +1641,15 @@ def main():
         aws_access_key_id=r2_access_key,
         aws_secret_access_key=r2_secret_key,
         region_name="auto",
-        config=Config(signature_version='s3v4') # ★これを必ず入れる
+        config=Config(signature_version='s3v4') 
     )
 
-    # 以降のコード（R2_BUCKET = r2_bucket_name ...など）はそのまま
+    # 既存の変数への代入
     R2_BUCKET = r2_bucket_name
     R2_PUBLIC_BASE = r2_public_base
 
-    print("ACCESS_KEY:", r2_access_key)
+    # デバッグ出力（キーは一部隠して表示）
+    print("ACCESS_KEY:", f"{r2_access_key[:5]}...")
     print("ENDPOINT:", r2_endpoint)
     print("BUCKET:", r2_bucket_name)
 
