@@ -1641,25 +1641,17 @@ def upload_image_to_r2(r2, bucket, public_base, image_url, key):
 def main():
     load_dotenv()  
 
-    # --- 1. 設定の取得 ---
     r2_endpoint    = os.getenv("R2_ENDPOINT")
     r2_access_key  = os.getenv("R2_ACCESS_KEY_ID")
     r2_secret_key  = os.getenv("R2_SECRET_ACCESS_KEY")
     r2_bucket_name = os.getenv("R2_BUCKET")
     r2_public_base = os.getenv("R2_PUBLIC_BASE")
 
-    # --- 2. エンドポイントURLの自動補正 (重要！) ---
-    # テストで確認した通り、末尾にバケット名がついていると失敗するので削除します
+    # ★旧verの重要処理：endpoint末尾に/bucketが付いてたら削る
     if r2_endpoint and r2_bucket_name and r2_endpoint.endswith("/" + r2_bucket_name):
         r2_endpoint = r2_endpoint.replace("/" + r2_bucket_name, "")
 
-    # ===== 画像モード state machine =====
-    image_mode = "NORMAL"       # or "CDN"
-    image_error_count = 0       # 画像500px未満系を数える
-    cdn_mode_until = None       # datetime
-    cdn_cache = {}              # sku -> [cdn_url,...]
-
-    # --- 3. クライアントの初期化 (整形後のURLを使用) ---
+    # ★旧verと同じ client 初期化
     r2 = boto3.client(
         "s3",
         endpoint_url=r2_endpoint,
@@ -1668,7 +1660,6 @@ def main():
         region_name="auto",
     )
 
-    # 後続の処理で使う定数を上書き
     R2_BUCKET = r2_bucket_name
     R2_PUBLIC_BASE = r2_public_base
 
