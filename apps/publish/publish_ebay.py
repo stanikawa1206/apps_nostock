@@ -1605,7 +1605,7 @@ def take_one_vendor_item_by_preset(
 
 
 def main():
-    print("26022121ver")
+    print("26022121_2ver")
 
     load_dotenv()
 
