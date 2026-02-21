@@ -1605,7 +1605,7 @@ def take_one_vendor_item_by_preset(
 
 
 def main():
-    print("26022121_2ver")
+    print("26022121_3ver") # バージョンを更新しておくと確認しやすいです
 
     load_dotenv()
 
@@ -1613,24 +1613,29 @@ def main():
     processing_by = get_processing_by()
     start_time = datetime.now()
 
-    # --- 修正版：main関数のR2初期化部分 ---
-    r2_endpoint = os.getenv("R2_ENDPOINT", "").strip().rstrip('/')
+    # 1. まず環境変数をすべて読み込む（順番が重要！）
+    r2_endpoint    = os.getenv("R2_ENDPOINT", "").strip().rstrip('/')
+    r2_access_key  = os.getenv("R2_ACCESS_KEY_ID")
+    r2_secret_key  = os.getenv("R2_SECRET_ACCESS_KEY")
+    r2_bucket_name = os.getenv("R2_BUCKET") # これを先に定義する
+    r2_public_base = os.getenv("R2_PUBLIC_BASE")
 
-    # バケット名が含まれている場合のみ除去
+    # 2. エンドポイントの整形処理（r2_bucket_nameが定義された後に行う）
     if r2_bucket_name and r2_endpoint.endswith(f"/{r2_bucket_name}"):
         r2_endpoint = r2_endpoint.replace(f"/{r2_bucket_name}", "")
 
-    # 重要：Boto3クライアント側の設定を明示的に指定
+    # 3. Boto3クライアントの初期化
     from botocore.config import Config
-
     r2 = boto3.client(
         "s3",
         endpoint_url=r2_endpoint,
         aws_access_key_id=r2_access_key,
         aws_secret_access_key=r2_secret_key,
-        region_name="auto", # R2はautoでOK
-        config=Config(s3={'addressing_style': 'path'}) # R2との互換性を高める
+        region_name="auto",
+        config=Config(s3={'addressing_style': 'path'}) 
     )
+
+    # 以降のコード（R2_BUCKET = r2_bucket_name ...など）はそのまま
     R2_BUCKET = r2_bucket_name
     R2_PUBLIC_BASE = r2_public_base
 
