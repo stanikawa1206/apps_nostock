@@ -1624,6 +1624,7 @@ def main():
     if r2_endpoint and r2_bucket_name and r2_endpoint.endswith("/" + r2_bucket_name):
         r2_endpoint = r2_endpoint.replace("/" + r2_bucket_name, "")
 
+    from botocore.config import Config
     # クライアント初期化
     r2 = boto3.client(
         "s3",
@@ -1631,6 +1632,9 @@ def main():
         aws_access_key_id=r2_access_key,
         aws_secret_access_key=r2_secret_key,
         region_name="auto",
+        config=Config(
+            signature_version='s3v4'
+        )
     )
 
 
