@@ -1476,24 +1476,44 @@ def get_processing_by():
 
 def upload_image_to_r2(r2, bucket, public_base, image_url, key):
     import requests
-    print("[R2 DEBUG",
-        "endpoint=", r2._endpoint.host if r2 else None,
-        "bucket=", bucket,
-        "access_key=", bool(os.getenv("R2_ACCESS_KEY_ID")),
-        "secret_key=", bool(os.getenv("R2_SECRET_ACCESS_KEY")),
-    )
+    from botocore.exceptions import ClientError
 
-    res = requests.get(image_url, timeout=30)
-    res.raise_for_status()
+    # 1. パスの正規化（スラッシュの重複を防止）
+    # keyの先頭に / があるとバケット直下に空の名前のフォルダができる原因になるため除去
+    clean_key = key.lstrip('/')
+    # public_baseの末尾の / を除去
+    base_url = public_base.rstrip('/')
 
-    r2.put_object(
-        Bucket=bucket,
-        Key=key,
-        Body=res.content,
-        ContentType="image/jpeg",
-    )
+    print(f"[R2 UPLOAD START] Target: {image_url} -> Key: {clean_key}")
 
-    return f"{public_base}/{key}"
+    try:
+        # 2. 画像のダウンロード
+        res = requests.get(image_url, timeout=30)
+        res.raise_for_status()
+        
+        # 3. R2へのアップロード
+        # ACLはR2では基本的に不要（バケットポリシーで公開設定にするのが一般的）
+        r2.put_object(
+            Bucket=bucket,
+            Key=clean_key,
+            Body=res.content,
+            ContentType="image/jpeg",
+        )
+        
+        # 4. 返却URLの組み立て（必ず スラッシュ1つで結合）
+        final_url = f"{base_url}/{clean_key}"
+        print(f"[R2 SUCCESS] Public URL: {final_url}")
+        return final_url
+
+    except requests.exceptions.RequestException as e:
+        print(f"[R2 ERROR] Failed to download image: {e}")
+        return image_url  # 失敗時はオリジナルのURLを返してフォールバック
+    except ClientError as e:
+        print(f"[R2 ERROR] Boto3 Upload Failed: {e}")
+        return image_url
+    except Exception as e:
+        print(f"[R2 ERROR] Unknown error: {e}")
+        return image_url
 
 @dataclass
 class Account:
