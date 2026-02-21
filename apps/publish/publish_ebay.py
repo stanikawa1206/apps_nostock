@@ -1612,31 +1612,28 @@ def main():
     current_pc = socket.gethostname().strip()
     processing_by = get_processing_by()
     start_time = datetime.now()
-
-    # ===== R2設定 (昨日動いていたver) =====
+    
+    # 1. 環境変数をロード
     r2_endpoint    = os.getenv("R2_ENDPOINT")
     r2_access_key  = os.getenv("R2_ACCESS_KEY_ID")
     r2_secret_key  = os.getenv("R2_SECRET_ACCESS_KEY")
     r2_bucket_name = os.getenv("R2_BUCKET")
     r2_public_base = os.getenv("R2_PUBLIC_BASE")
 
-    # 末尾のスラッシュ＋バケット名を除去するロジック
+    # 2. テストで成功したロジックをそのまま適用
     if r2_endpoint and r2_bucket_name and r2_endpoint.endswith("/" + r2_bucket_name):
         r2_endpoint = r2_endpoint.replace("/" + r2_bucket_name, "")
 
+    # 3. テストで成功した Config 指定を本番にも入れる
     from botocore.config import Config
-    # クライアント初期化
     r2 = boto3.client(
         "s3",
         endpoint_url=r2_endpoint,
         aws_access_key_id=r2_access_key,
         aws_secret_access_key=r2_secret_key,
         region_name="auto",
-        config=Config(
-            signature_version='s3v4'
-        )
+        config=Config(signature_version='s3v4') # ★これを必ず入れる
     )
-
 
     # 以降のコード（R2_BUCKET = r2_bucket_name ...など）はそのまま
     R2_BUCKET = r2_bucket_name
