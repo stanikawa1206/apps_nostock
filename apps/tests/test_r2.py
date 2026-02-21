@@ -1,59 +1,68 @@
 import os
 import boto3
+import socket
 from pathlib import Path
 from dotenv import load_dotenv
 from botocore.config import Config
 
-def test_env_absolute_path():
-    # 1. .env の場所を絶対パスで指定
-    env_path = Path("/opt/apps_nostock/.env")
+def test_vps_final():
+    # 実行環境に合わせて .env のパスを切り替える
+    if os.name == 'nt':  # Windowsの場合
+        env_path = Path(r"D:\apps_nostock\.env")
+    else:                # Linux/VPSの場合
+        env_path = Path("/opt/apps_nostock/.env")
     
-    print(f"--- .env 絶対パス読み込みテスト ---")
-    print(f"Target path: {env_path}")
+    print(f"--- 接続テスト開始 ---")
+    print(f"OS: {os.name}, Path: {env_path}")
 
-    # 2. 指定したパスから読み込み
     if env_path.exists():
         load_dotenv(dotenv_path=env_path)
-        print("✅ .env ファイルが見つかりました。")
+        print("✅ .env を読み込みました")
     else:
-        print("❌ 失敗: 指定したパスに .env が存在しません。")
+        print(f"❌ .env が見つかりません: {env_path}")
         return
 
-    # 3. 値の取得
-    endpoint    = os.getenv("R2_ENDPOINT")
-    access_key  = os.getenv("R2_ACCESS_KEY_ID")
-    secret_key  = os.getenv("R2_SECRET_ACCESS_KEY")
-    bucket_name = os.getenv("R2_BUCKET")
+    # 取得時に .strip() を行うことで、目に見えない改行コードを消し去る
+    # これが SignatureDoesNotMatch 対策の最重要ポイントです
+    r_endpoint    = os.getenv("R2_ENDPOINT", "").strip()
+    r_access_key  = os.getenv("R2_ACCESS_KEY_ID", "").strip()
+    # test_vps_final 関数の中身を以下のように修正
+    r_secret_key = os.getenv("R2_SECRET_ACCESS_KEY", "").strip()
+    
+    # 【重要チェック】
+    # repr() を使うことで、末尾に '\r' などが残っていないか可視化します
+    print(f"DEBUG: Secret Key Length = {len(r_secret_key)}")
+    print(f"DEBUG: Secret Key Raw Value = {repr(r_secret_key)}") 
 
-    if not secret_key:
-        print("❌ 失敗: .env から値を取得できませんでした。")
+    if len(r_secret_key) != 64:
+        print(f"⚠️ 警告: R2のシークレットキーは通常64文字ですが、{len(r_secret_key)}文字になっています。")
+    r_bucket_name = os.getenv("R2_BUCKET", "").strip()
+
+
+    if not r_secret_key:
+        print("❌ .env の中身が空、あるいは読み込めていません")
         return
 
-    print(f"取得確認: Endpoint={endpoint}")
-    print(f"取得確認: Access Key={access_key[:5]}...")
+    print(f"確認: Endpoint = {r_endpoint}")
 
-    # 4. R2 クライアント作成
+    # クライアント作成
     r2 = boto3.client(
         "s3",
-        endpoint_url=endpoint,
-        aws_access_key_id=access_key,
-        aws_secret_access_key=secret_key,
+        endpoint_url=r_endpoint,
+        aws_access_key_id=r_access_key,
+        aws_secret_access_key=r_secret_key,
         region_name="auto",
-        config=Config(signature_version='s3v4')
+        config=Config(
+            signature_version='s3v4',
+            s3={'addressing_style': 'path'}
+        )
     )
 
-    # 5. アップロード試行
     try:
-        print("アップロードを試行中...")
-        r2.put_object(
-            Bucket=bucket_name, 
-            Key="env_path_test.txt", 
-            Body="Absolute Path Test OK"
-        )
-        print("✅ 成功！絶対パス指定で .env から読み込んでアップロードできました。")
+        r2.put_object(Bucket=r_bucket_name, Key="final_test.txt", Body="Fixed")
+        print("✅ 成功！ .env 経由でアップロードできました。")
     except Exception as e:
         print(f"❌ 失敗: {e}")
 
 if __name__ == "__main__":
-    print("v3")
-    test_env_absolute_path()
+    test_vps_final()
