@@ -1592,16 +1592,17 @@ def main():
     processing_by = get_processing_by()
     start_time = datetime.now()
 
-    # ===== R2設定 =====
     r2_endpoint    = os.getenv("R2_ENDPOINT")
     r2_access_key  = os.getenv("R2_ACCESS_KEY_ID")
     r2_secret_key  = os.getenv("R2_SECRET_ACCESS_KEY")
     r2_bucket_name = os.getenv("R2_BUCKET")
     r2_public_base = os.getenv("R2_PUBLIC_BASE")
 
+    # ★旧verの重要処理：endpoint末尾に/bucketが付いてたら削る
     if r2_endpoint and r2_bucket_name and r2_endpoint.endswith("/" + r2_bucket_name):
         r2_endpoint = r2_endpoint.replace("/" + r2_bucket_name, "")
 
+    # ★旧verと同じ client 初期化
     r2 = boto3.client(
         "s3",
         endpoint_url=r2_endpoint,
@@ -1609,6 +1610,9 @@ def main():
         aws_secret_access_key=r2_secret_key,
         region_name="auto",
     )
+
+    R2_BUCKET = r2_bucket_name
+    R2_PUBLIC_BASE = r2_public_base
 
     # ===== state machine =====
     image_mode = "NORMAL"
