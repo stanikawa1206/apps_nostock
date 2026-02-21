@@ -1574,6 +1574,7 @@ def take_one_vendor_item_by_preset(
         FROM dbo.vw_vendor_item_ready
         WHERE preset = ?
           AND price BETWEEN ? AND ?
+        AND processing_at IS NULL
         ORDER BY created_at ASC
     )
     UPDATE v
@@ -1605,7 +1606,7 @@ def take_one_vendor_item_by_preset(
 
 
 def main():
-    print("26022121_Final_Fixed") # バージョンを更新
+    print("###################26022121_process") # バージョンを更新
 
     # --- 修正ポイント1: .env の場所を絶対パスで指定 ---
     # プロジェクトルートにある .env を確実に読み込むようにします
