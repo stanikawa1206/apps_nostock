@@ -1,46 +1,30 @@
-import os
 import boto3
-from dotenv import load_dotenv
 from botocore.config import Config
 
-load_dotenv()
+def test_direct():
+    # .env を使わず、ここに直接値を書く（テストのため一時的に）
+    endpoint    = "https://971a284140f61ec89f737806ab012d11.r2.cloudflarestorage.com"
+    access_key  = "3da0759396fdfa1e89c9d1b42a02bbaa"
+    secret_key  = "43db03620fc111e7512c7e3291af9f0a4d6b7ad68af18c3f8799c896b2120fc7"
+    bucket_name = "ebay-images"
 
-def test_upload():
-    r2_endpoint    = os.getenv("R2_ENDPOINT")
-    r2_access_key  = os.getenv("R2_ACCESS_KEY_ID")
-    r2_secret_key  = os.getenv("R2_SECRET_ACCESS_KEY")
-    r2_bucket_name = os.getenv("R2_BUCKET")
-
-    print(f"--- 接続設定確認 ---")
-    print(f"Endpoint: {r2_endpoint}")
-    print(f"Access Key: {r2_access_key}")
-    print(f"Bucket: {r2_bucket_name}")
-    print(f"------------------")
-
-    # endpoint整形（昨日動いていたverのロジック）
-    if r2_endpoint and r2_bucket_name and r2_endpoint.endswith("/" + r2_bucket_name):
-        r2_endpoint = r2_endpoint.replace("/" + r2_bucket_name, "")
-
+    print("--- 直接指定テスト開始 ---")
+    
     r2 = boto3.client(
         "s3",
-        endpoint_url=r2_endpoint,
-        aws_access_key_id=r2_access_key,
-        aws_secret_access_key=r2_secret_key,
+        endpoint_url=endpoint,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
         region_name="auto",
-        config=Config(signature_version='s3v4') # 明示的にs3v4を指定
+        config=Config(signature_version='s3v4')
     )
 
     try:
-        print("テストアップロードを開始します...")
-        r2.put_object(
-            Bucket=r2_bucket_name,
-            Key="test_connection.txt",
-            Body="OK",
-            ContentType="text/plain",
-        )
-        print("✅ 成功！ R2との接続・アップロードは正常です。")
+        r2.put_object(Bucket=bucket_name, Key="direct_test.txt", Body="OK")
+        print("✅ 成功！直接指定なら動きます。")
     except Exception as e:
         print(f"❌ 失敗: {e}")
 
 if __name__ == "__main__":
-    test_upload()
+    print("v2")
+    test_direct()
