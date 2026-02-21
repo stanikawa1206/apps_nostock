@@ -511,7 +511,7 @@ def build_driver(
     opts.add_argument("--lang=ja-JP,ja")
 
     # 軽量化
-    print("260210ver")
+
     # 目的：バックグラウンドになっても処理を止めない（スクリプトが止まらない）
     # 副作用：CPU/メモリ消費が増え、rendererが詰まりやすくなる場合がある（特に重いSPA）
     # ※ headless だと「そもそも常にバックグラウンド扱いっぽい挙動」になり、ここが妙に効いたり悪さしたりします。
@@ -554,8 +554,6 @@ def build_driver(
     driver.set_window_size(1400, 1000)
     driver.set_page_load_timeout(30)
     driver.set_script_timeout(30)
-
-    print("build_driver OK")
 
     return driver
 

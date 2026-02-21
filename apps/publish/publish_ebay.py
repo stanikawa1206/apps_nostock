@@ -1585,6 +1585,7 @@ def take_one_vendor_item_by_preset(
 
 
 def main():
+    print("26022121ver")
 
     load_dotenv()
 
@@ -1613,6 +1614,10 @@ def main():
 
     R2_BUCKET = r2_bucket_name
     R2_PUBLIC_BASE = r2_public_base
+
+    print("ACCESS_KEY:", r2_access_key)
+    print("ENDPOINT:", r2_endpoint)
+    print("BUCKET:", r2_bucket_name)
 
     # ===== state machine =====
     image_mode = "NORMAL"
