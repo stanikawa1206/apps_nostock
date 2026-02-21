@@ -1610,11 +1610,12 @@ def main():
     # --- 修正ポイント1: .env の場所を絶対パスで指定 ---
     # プロジェクトルートにある .env を確実に読み込むようにします
     from pathlib import Path
-    _PROJECT_ROOT = Path(__file__).resolve().parents[2] # 階層に合わせて調整してください
+    # publish_ebay.py の場所から見て .env がどこにあるか指定
+    _PROJECT_ROOT = Path("/opt/apps_nostock") 
     env_path = _PROJECT_ROOT / ".env"
     
     from dotenv import load_dotenv
-    load_dotenv(dotenv_path=env_path)
+    load_dotenv(dotenv_path=env_path, override=True)
     print(f"DEBUG: .env loaded from {env_path}")
 
     current_pc = socket.gethostname().strip()
@@ -1625,7 +1626,8 @@ def main():
     # これにより SignatureDoesNotMatch を防ぎます
     r2_endpoint    = os.getenv("R2_ENDPOINT", "").strip()
     r2_access_key  = os.getenv("R2_ACCESS_KEY_ID", "").strip()
-    r2_secret_key  = os.getenv("R2_SECRET_ACCESS_KEY", "").strip()
+    r2_secret_key = os.getenv("R2_SECRET_ACCESS_KEY", "").strip()
+    print(f"DEBUG: Confirmed Secret Key = {r2_secret_key[:5]}...")
     r2_bucket_name = os.getenv("R2_BUCKET", "").strip()
     r2_public_base = os.getenv("R2_PUBLIC_BASE", "").strip()
 
