@@ -58,7 +58,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
 from apps.common.utils import (
     USD_JPY_RATE, PROFIT_RATE, EBAY_FEE_RATE,
-    DOMESTIC_SHIPPING_JPY, INTL_SHIPPING_JPY, DUTY_RATE
+    DOMESTIC_SHIPPING_JPY, INTL_SHIPPING_JPY, DUTY_RATE,compute_cost_range_jpy_from_usd_range
 )
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional, Tuple
@@ -234,10 +234,10 @@ def make_search_url(*,
     st    = f"&status={status}" if status else ""
 
     # === 円レンジの計算 ===
-    min_cost, max_cost = calc_cost_range_from_usd_range(
+    min_cost, max_cost = compute_cost_range_jpy_from_usd_range(
         mode=mode,
-        low_usd_target=low_usd_target,
-        high_usd_target=high_usd_target,
+        low_usd_target=float(low_usd_target),
+        high_usd_target=float(high_usd_target),
     )
 
     # ★★★ デバッグ出力（重要） ★★★
