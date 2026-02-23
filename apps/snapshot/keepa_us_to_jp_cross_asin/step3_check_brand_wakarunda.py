@@ -8,7 +8,7 @@ import wakarunda_utils
 # ==========================================
 # 処理対象：ブランドがあり、wakarunda判定が未実施、または 'E' のもの
 SQL_SELECT_TARGET = """
-SELECT asin, jp_brand 
+SELECT asin, jp_brand, category_id 
 FROM trx.amazon_cross_market_asin WITH (NOLOCK) 
 WHERE jp_brand IS NOT NULL 
   AND (wakarunda IS NULL OR wakarunda = '' OR wakarunda = 'E')
@@ -37,12 +37,31 @@ WHERE asin = ?
 """
 
 def main():
+    # ==========================================
+    # 設定：スキップ対象のカテゴリIDを管理
+    # ==========================================
+    SKIP_CATEGORY_IDS = [465392] 
+
     conn = get_sql_server_connection()
     cursor = conn.cursor()
 
     print("判定対象データを検索中...")
-    cursor.execute(SQL_SELECT_TARGET)
-    rows = cursor.fetchall()
+    
+    # SQLを更新：jp_category_id を取得するように変更
+    SQL_SELECT_TARGET = """
+        SELECT asin, jp_brand, jp_category_id 
+        FROM trx.amazon_cross_market_asin WITH (NOLOCK) 
+        WHERE jp_brand IS NOT NULL 
+          AND (wakarunda IS NULL OR wakarunda = '' OR wakarunda = 'E')
+    """
+    
+    try:
+        cursor.execute(SQL_SELECT_TARGET)
+        rows = cursor.fetchall()
+    except Exception as e:
+        print(f"SQLエラーが発生しました: {e}")
+        conn.close()
+        return
     
     if not rows:
         print("処理対象のデータはありませんでした。")
@@ -61,6 +80,17 @@ def main():
     for row in rows:
         asin = row.asin
         db_brand = row.jp_brand.strip() if row.jp_brand else None
+        
+        # ------------------------------------------
+        # Python側でのカテゴリIDスキップ判定
+        # ------------------------------------------
+        # 取得した jp_category_id で判定を行います
+        current_cat_id = getattr(row, 'jp_category_id', None)
+        
+        # if current_cat_id in SKIP_CATEGORY_IDS:
+        #     print(f"[{updated_count + 1}/{total_rows}] スキップ: ASIN={asin} (カテゴリID:{current_cat_id} は除外設定中)")
+        #     continue
+
         if not db_brand: continue
         
         print(f"[{updated_count + 1}/{total_rows}] 処理中: ASIN={asin} | Brand={db_brand}")
@@ -71,7 +101,7 @@ def main():
         # 1. キャッシュ/マスタ確認
         if db_brand in brand_rank_cache:
             rank = brand_rank_cache[db_brand]
-            if rank == 'E': needs_judge = True # キャッシュ上もEなら再判定
+            if rank == 'E': needs_judge = True
         else:
             cursor.execute(SQL_SELECT_MASTER, [db_brand])
             master_row = cursor.fetchone()
@@ -85,12 +115,11 @@ def main():
             else:
                 needs_judge = True
 
-        # 2. Wakarunda判定（ASIN直接参照 + ブランド照合）
+        # 2. Wakarunda判定
         if needs_judge:
             print("   -> ASINページから直接判定を取得します...")
             fetched_rank, page_brand = wakarunda_utils.fetch_rank_and_brand_by_asin(asin)
             
-            # ブランド一致確認 (大文字小文字・空白を無視)
             clean_db_brand = db_brand.lower().replace(" ", "").replace("　", "")
             clean_pg_brand = page_brand.lower().replace(" ", "").replace("　", "")
 
@@ -98,7 +127,6 @@ def main():
                 rank = fetched_rank if fetched_rank != "判定不能" else "E"
                 print(f"   -> [Match OK] Result Rank: {rank}")
                 
-                # 一致した場合のみマスタを更新
                 try:
                     cursor.execute(SQL_UPSERT_MASTER, [db_brand, rank])
                     conn.commit()
@@ -107,9 +135,8 @@ def main():
                 
                 brand_rank_cache[db_brand] = rank
             else:
-                # 一致しない場合
                 print(f"   -> [Mismatch] DB:{db_brand} != Page:{page_brand}")
-                rank = 'N' # 無効フラグ（マスタは更新しない）
+                rank = 'N'
 
         # 3. メインテーブルの更新
         try:

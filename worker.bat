@@ -1,0 +1,23 @@
+@echo off
+cd /d D:\apps_nostock
+
+echo === AUTO COMMIT ^& PUSH ===
+git add .
+git commit -m "auto deploy"
+git push
+
+echo === DEPLOY TO VPS & START WORKER ===
+
+start "" cmd /k ssh root@162.43.15.160 -t "cd /opt/apps_nostock && git reset --hard && git pull && python3 -m apps.inventory.scrape_worker; bash"
+
+start "" cmd /k ssh root@162.43.29.154 -t "cd /opt/apps_nostock && git reset --hard && git pull && python3 -m apps.inventory.scrape_worker; bash"
+
+start "" cmd /k ssh root@162.43.42.135 -t "cd /opt/apps_nostock && git reset --hard && git pull && python3 -m apps.inventory.scrape_worker; bash"
+
+echo === START LOCAL WORKER (PowerShell #1) ===
+start "" powershell -NoExit -Command "cd 'D:\apps_nostock'; python -m apps.inventory.scrape_worker"
+
+echo === START LOCAL WORKER (PowerShell #2) ===
+start "" powershell -NoExit -Command "cd 'D:\apps_nostock'; python -m apps.inventory.scrape_worker"
+
+pause
