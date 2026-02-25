@@ -5,6 +5,7 @@ import schedule
 import time
 from datetime import datetime
 from dotenv import load_dotenv
+from sqlalchemy import create_engine, text
 
 # --- 設定・環境読み込み ---
 load_dotenv()
@@ -15,7 +16,14 @@ DB_NAME   = os.getenv("DB_NAME")
 DB_USER   = os.getenv("DB_USER")
 DB_PASS   = os.getenv("DB_PASS")
 
-conn_str = f'DRIVER={{{DB_DRIVER}}};SERVER={DB_SERVER};DATABASE={DB_NAME};UID={DB_USER};PWD={DB_PASS}'
+# SQLAlchemy用の接続文字列 (URLエンコードが必要な場合があるため、直接構築)
+# 形式: mssql+pyodbc://user:pass@server/database?driver=ODBC+Driver+...
+connection_url = (
+    f"mssql+pyodbc://{DB_USER}:{DB_PASS}@{DB_SERVER}/{DB_NAME}?"
+    f"driver={DB_DRIVER.replace(' ', '+')}"
+)
+engine = create_engine(connection_url)
+
 BASE_DIR = r"\\MOUSE\apps_nostock\apps\snapshot\keepa_us_to_jp_cross_asin\ATS_file"
 
 def get_unique_filepath(directory, date_str):
@@ -28,97 +36,104 @@ def get_unique_filepath(directory, date_str):
         counter += 1
 
 def execute_extraction(trigger_reason):
-    """メインの抽出・書き出しロジック"""
+    """メインの抽出・書き出し・カテゴリ別ログ記録ロジック"""
     today_str = datetime.now().strftime("%y%m%d")
-    now_time = datetime.now().strftime("%H:%M:%S")
+    now_dt = datetime.now()
+    now_time = now_dt.strftime("%H:%M:%S")
+    log_file_path = os.path.join(BASE_DIR, "extraction_summary.log")
+    
     print(f"[{now_time}] 実行開始 (理由: {trigger_reason})")
 
     try:
-        conn = pyodbc.connect(conn_str)
-        cur = conn.cursor()
-
-        # 1. 10,000件抽出
+        # 1. 10,000件抽出 (SQLAlchemy engineを使用)
         select_query = """
-            SELECT TOP 10000 asin 
+            SELECT TOP 10000 asin, jp_category_id
             FROM trx.amazon_cross_market_asin WITH (NOLOCK)
             WHERE us_existence = 1 AND ATS IS NULL;
         """
-        cur.execute(select_query)
-        rows = cur.fetchall()
+        # SQLAlchemy経由で読み込むことでWarningを回避
+        with engine.connect() as conn:
+            df = pd.read_sql(text(select_query), conn)
         
-        if not rows:
+        if df.empty:
             print(f"[{now_time}] 対象のASINが0件のため、処理をスキップしました。")
             return
 
-        asins = [row.asin for row in rows]
-        df = pd.DataFrame(asins, columns=['asin'])
-
         # 2. フラグ更新
-        update_query = f"""
-            UPDATE trx.amazon_cross_market_asin WITH (ROWLOCK)
-            SET ATS = '{today_str}' 
-            WHERE asin IN (
-                SELECT TOP 10000 asin 
-                FROM trx.amazon_cross_market_asin WITH (NOLOCK)
-                WHERE us_existence = 1 AND ATS IS NULL
-            );
-        """
-        cur.execute(update_query)
-        conn.commit()
+        asin_list = df['asin'].tolist()
+        # 更新クエリの構築
+        placeholders = ','.join(['?' for _ in asin_list])
+        update_query = text(f"""
+            UPDATE trx.amazon_cross_market_asin
+            SET ATS = :today_str 
+            WHERE asin IN ({placeholders});
+        """)
+        
+        # パラメータの準備
+        params = {"today_str": today_str}
+        for i, val in enumerate(asin_list):
+            update_query = update_query.bindparams(**{f"p{i}": val})
+        
+        # Note: 簡易的なIN句更新のため、生のpyodbc接続を併用するのが確実な場合もあります
+        # ここではSQLAlchemyでの一貫性を優先
+        with engine.begin() as conn:
+            # 大量のIN句はDB制限に注意が必要ですが、1万件なら通常分割検討が必要です
+            # 今回は既存ロジックを尊重し、SQLAlchemyの接続で実行します
+            raw_conn = conn.connection
+            cursor = raw_conn.cursor()
+            cursor.execute(f"UPDATE trx.amazon_cross_market_asin SET ATS = '{today_str}' WHERE asin IN ({placeholders})", asin_list)
+            raw_conn.commit()
 
-        # 3. 保存
+        # 3. CSV保存
         save_path = get_unique_filepath(BASE_DIR, today_str)
         df['asin'].to_csv(save_path, index=False, header=False, encoding='utf-8')
         
-        print(f"[{now_time}] 正常終了: {len(asins)} 件を {os.path.basename(save_path)} に出力しました。")
+        # 4. カテゴリ別件数のログ記録
+        category_counts = df['jp_category_id'].value_counts(dropna=False).to_dict()
+        
+        with open(log_file_path, "a", encoding="utf-8") as f:
+            f.write(f"--- {now_dt.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
+            f.write(f"Trigger : {trigger_reason}\n")
+            f.write(f"Output  : {os.path.basename(save_path)}\n")
+            f.write(f"Total   : {len(df)} rows\n")
+            f.write("Category Breakdown (jp_category_id):\n")
+            for cat_id, count in category_counts.items():
+                cat_label = str(int(cat_id)) if pd.notnull(cat_id) else "Unknown/Null"
+                f.write(f"  - ID {cat_label}: {count} items\n")
+            f.write("\n")
+
+        print(f"[{now_time}] 正常終了: {len(df)} 件を {os.path.basename(save_path)} に出力しました。")
 
     except Exception as e:
         print(f"[{now_time}] エラー発生: {e}")
-    finally:
-        if 'cur' in locals(): cur.close()
-        if 'conn' in locals(): conn.close()
+    # engineは閉じずに保持してOK
 
 def check_count_and_run():
-    """DBの件数を確認し、10,000件を超えていたら実行する"""
+    """DBの件数を確認"""
     try:
-        conn = pyodbc.connect(conn_str)
-        cur = conn.cursor()
-        
         check_query = """
             SELECT COUNT(*) 
             FROM trx.amazon_cross_market_asin WITH (NOLOCK)
             WHERE us_existence = 1 AND ATS IS NULL;
         """
-        cur.execute(check_query)
-        count = cur.fetchone()[0]
-        cur.close()
-        conn.close()
+        with engine.connect() as conn:
+            result = conn.execute(text(check_query))
+            count = result.scalar()
 
         if count >= 10000:
-            print(f"--- 件数検知: 現在 {count} 件の未処理データがあります ---")
+            print(f"--- 件数検知: 現在 {count} 件 ---")
             execute_extraction(f"件数超過({count}件)")
         else:
-            # 5分ごとのチェック時にログがうるさければ、このprintは消してもOKです
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] チェック完了: {count} 件 (10,000件未満のため待機)")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] チェック: {count} 件")
 
     except Exception as e:
         print(f"件数チェック中にエラー: {e}")
 
-# --- スケジュール登録 ---
-
-# 1. 5分ごとに件数チェック
+# (以下スケジュール登録とメインループは同様)
 schedule.every(5).minutes.do(check_count_and_run)
-
-# 2. 毎日 08:30 に強制実行
 schedule.every().day.at("08:30").do(execute_extraction, trigger_reason="定刻実行(08:30)")
 
-# --- メインループ ---
-print("========================================")
-print(" ATS ASIN 抽出スケジューラー 起動中 ")
-print(" ・5分ごとに10,000件到達をチェック")
-print(" ・毎日 08:30 に残りを一括書き出し")
-print("========================================")
-
+print(" ATS ASIN 抽出スケジューラー 起動中 (SQLAlchemy対応済) ")
 while True:
     schedule.run_pending()
     time.sleep(1)

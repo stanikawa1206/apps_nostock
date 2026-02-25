@@ -52,57 +52,69 @@ INTL_SHIPPING_JPY = 3300      # 国際送料
 DUTY_RATE = 0.15              # 関税
 
 
+from decimal import Decimal, ROUND_HALF_UP
+from typing import Optional, Tuple
+
+
 def compute_cost_range_jpy_from_usd_range(
     mode: str,
     low_usd_target: float,
     high_usd_target: float
 ) -> Optional[Tuple[int, int]]:
     """
-    compute_start_price_usd の逆算。
+    USDレンジから許容仕入原価レンジ(JPY)を逆算する。
 
-    与えられた USD の範囲から、
-    許容される cost_jpy の範囲 (min_cost, max_cost) を返す。
-
-    戻り値:
-        (min_cost_jpy, max_cost_jpy)
-        ※ int（円単位）
-
-    mode:
-        GA  or  DDP
+    ルール:
+        mode == "DDP" → 常にDDP計算
+        mode == "GA"  → USD >= 500 は GA
+                         USD < 500  は DDP
     """
 
     mode_up = mode.upper()
-
-    if mode_up == "GA":
-        ship = Decimal(DOMESTIC_SHIPPING_JPY)
-        duty = Decimal("0")
-    elif mode_up == "DDP":
-        ship = Decimal(INTL_SHIPPING_JPY)
-        duty = Decimal(str(DUTY_RATE))
-    else:
-        raise ValueError(f"未知のmodeです: {mode}")
 
     rate = Decimal(str(USD_JPY_RATE))
     p = Decimal(str(PROFIT_RATE))
     f = Decimal(str(EBAY_FEE_RATE))
 
-    denom = Decimal("1") - p - f - duty
-    if denom <= 0:
-        raise ValueError("利益率＋手数料率＋関税率の合計が1.0以上です。")
-
     low = Decimal(str(low_usd_target))
     high = Decimal(str(high_usd_target))
 
-    # 逆算式
-    # cost = usd * rate * denom - ship
-    min_cost = (low * rate * denom - ship)
-    max_cost = (high * rate * denom - ship)
+    if low > high:
+        raise ValueError("low_usd_target > high_usd_target")
 
-    # 円単位に丸め（安全側に広げる）
+    def calc_cost(usd: Decimal, effective_mode: str) -> Decimal:
+        if effective_mode == "GA":
+            ship = Decimal(DOMESTIC_SHIPPING_JPY)
+            duty = Decimal("0")
+        elif effective_mode == "DDP":
+            ship = Decimal(INTL_SHIPPING_JPY)
+            duty = Decimal(str(DUTY_RATE))
+        else:
+            raise ValueError(f"未知のmodeです: {effective_mode}")
+
+        denom = Decimal("1") - p - f - duty
+        if denom <= 0:
+            raise ValueError("利益率＋手数料率＋関税率の合計が1.0以上です。")
+
+        return usd * rate * denom - ship
+
+    # --- effective_mode 決定ロジック ---
+    def effective_mode_by_usd(usd: Decimal) -> str:
+        if mode_up == "DDP":
+            return "DDP"
+        elif mode_up == "GA":
+            return "GA" if usd >= Decimal("500") else "DDP"
+        else:
+            raise ValueError(f"未知のmodeです: {mode}")
+
+    # low と high をそれぞれ計算
+    min_cost = calc_cost(low, effective_mode_by_usd(low))
+    max_cost = calc_cost(high, effective_mode_by_usd(high))
+
+    # 円単位に丸め
     min_cost_jpy = int(min_cost.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
     max_cost_jpy = int(max_cost.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
-    # 安全のためマイナスは0に
     if min_cost_jpy < 0:
         min_cost_jpy = 0
 
@@ -115,45 +127,139 @@ def compute_start_price_usd(
     high_usd_target: float
 ) -> Optional[str]:
     """
-    仕入れ円から開始価格USDを逆算。
-    GA:  関税なし
-    DDP: 関税 = 売価の DUTY_RATE %
+    新ロジック版 start price 計算
+
+    ■ 基本思想
+    mode="GA" は「GA対象の可能性がある」という意味に変更。
+    そのため GA計算 と DDP計算 の両方を行い、
+    より有利（＝安い）方を採用する。
+
+    ■ 挙動まとめ
+
+    mode="DDP":
+        - DDP方式のみで計算
+        - レンジ外なら None
+
+    mode="GA":
+        - GA方式で計算
+        - DDP方式で計算
+        - レンジ内のものだけを候補とする
+        - 両方有効なら安い方を採用
+        - GA計算を採用し、価格が 450〜525 の場合は 525 に引き上げ
+        - 両方レンジ外なら None
+
+    ※ GA強制525ロジックは戦略的価格ジャンプ
     """
+
     cost = Decimal(cost_jpy)
     mode_up = mode.upper()
-
-    if mode_up == "GA":
-        ship = Decimal(DOMESTIC_SHIPPING_JPY)
-        duty = Decimal("0")
-    elif mode_up == "DDP":
-        ship = Decimal(INTL_SHIPPING_JPY)
-        duty = Decimal(str(DUTY_RATE))
-    else:
-        raise ValueError(f"未知のmodeです: {mode}")
 
     rate = Decimal(str(USD_JPY_RATE))
     p = Decimal(str(PROFIT_RATE))
     f = Decimal(str(EBAY_FEE_RATE))
 
-    denom = Decimal("1") - p - f - duty
-    if denom <= 0:
-        raise ValueError("利益率＋手数料率＋関税率の合計が1.0以上です。")
-
-    base = cost + ship
-    jpy_total = base / denom
-    usd = (jpy_total / rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-
     low = Decimal(str(low_usd_target))
     high = Decimal(str(high_usd_target))
-    if usd < low or usd > high:
-        return None
 
-    if mode_up == "GA":
-        if Decimal("450.00") <= usd <= Decimal("525.00"):
-            usd = Decimal("525.00")
+    # ---------------------------------------------------------
+    # 内部ヘルパー：計算ロジック本体
+    # ---------------------------------------------------------
+    def calc_usd(ship_jpy: Decimal, duty_rate: Decimal) -> Decimal:
+        """
+        共通価格計算式
 
-    return f"{usd:.2f}"
+        売価 = (cost + ship) / (1 - 利益率 - 手数料率 - 関税率)
+        """
+        denom = Decimal("1") - p - f - duty_rate
+        if denom <= 0:
+            raise ValueError("利益率＋手数料率＋関税率の合計が1.0以上です。")
 
+        base = cost + ship_jpy
+        jpy_total = base / denom
+        usd = (jpy_total / rate).quantize(
+            Decimal("0.01"),
+            rounding=ROUND_HALF_UP
+        )
+        return usd
+
+    # =========================================================
+    # mode = DDP の場合（従来通り）
+    # =========================================================
+    if mode_up == "DDP":
+
+        ship = Decimal(INTL_SHIPPING_JPY)
+        duty = Decimal(str(DUTY_RATE))
+
+        usd_ddp = calc_usd(ship, duty)
+
+        # レンジ外は出品しない
+        if usd_ddp < low or usd_ddp > high:
+            return None
+
+        return f"{usd_ddp:.2f}"
+
+    # =========================================================
+    # mode = GA の場合（新ロジック）
+    # =========================================================
+    elif mode_up == "GA":
+
+        # -------------------------
+        # ① GA方式計算
+        # -------------------------
+        ship_ga = Decimal(DOMESTIC_SHIPPING_JPY)
+        duty_ga = Decimal("0")
+
+        usd_ga = calc_usd(ship_ga, duty_ga)
+
+        # -------------------------
+        # ② DDP方式計算
+        # -------------------------
+        ship_ddp = Decimal(INTL_SHIPPING_JPY)
+        duty_ddp = Decimal(str(DUTY_RATE))
+
+        usd_ddp = calc_usd(ship_ddp, duty_ddp)
+
+        # -------------------------
+        # ③ レンジ内のものだけ残す
+        # -------------------------
+        candidates = []
+
+        if low <= usd_ga <= high:
+            candidates.append(("GA", usd_ga))
+
+        if low <= usd_ddp <= high:
+            candidates.append(("DDP", usd_ddp))
+
+        # 両方レンジ外なら出品しない
+        if not candidates:
+            return None
+
+        # -------------------------
+        # ④ 安い方を採用
+        # -------------------------
+        selected_mode, selected_price = min(
+            candidates,
+            key=lambda x: x[1]
+        )
+
+        # -------------------------
+        # ⑤ GA価格ジャンプ戦略
+        #
+        # GA方式が採用され、
+        # 価格が 450〜525 に入るなら
+        # 525 に引き上げて GA帯へ押し込む
+        # -------------------------
+        if selected_mode == "GA":
+            if Decimal("450.00") <= selected_price <= Decimal("525.00"):
+                selected_price = Decimal("525.00")
+
+        return f"{selected_price:.2f}"
+
+    # =========================================================
+    # 不明モード
+    # =========================================================
+    else:
+        raise ValueError(f"未知のmodeです: {mode}")
 
 # ============================================================
 # OpenAI（遅延初期化）

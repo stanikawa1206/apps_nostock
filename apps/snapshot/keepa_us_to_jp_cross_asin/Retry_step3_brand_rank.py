@@ -38,7 +38,7 @@ WHERE (t.wakarunda = 'E' OR t.wakarunda IS NULL) AND m.[rank] <> 'E'
 
 # 4. トランザクションの 'N' 判定を抽出
 SQL_SELECT_TRX_N = """
-SELECT TOP 100 asin, jp_brand
+SELECT asin, jp_brand
 FROM trx.amazon_cross_market_asin
 WHERE wakarunda = 'N'
 """

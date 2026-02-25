@@ -19,17 +19,15 @@ STEP4_SCRIPT = os.path.join(BASE_DIR, "step4_SP_API_check_us_existence.py")
 
 RESTART_INTERVAL = 3000  # 1時間
 
-def run_step1_once():
-    """Step1を一度だけ別ウィンドウで起動する"""
-    print(f"[Step1] 起動します...")
-    # タイトルを固定して起動
-    cmd = f'start "PIPELINE_STEP1" python "{STEP1_KEEPA}"'
+def run_step1_once(min_rank, max_rank):
+    """Step1を引数とともに一度だけ別ウィンドウで起動する"""
+    print(f"[Step1] 起動します... (指定ランク: {min_rank}位 - {max_rank}位)")
+    cmd = f'start "PIPELINE_STEP1" python "{STEP1_KEEPA}" {min_rank} {max_rank}'
     subprocess.run(cmd, shell=True)
 
 def run_follower_process(script_path, title_name):
     """個別のプロセスとして実行（ループはメイン側で制御）"""
     print(f"[{title_name}] ウィンドウを起動します...")
-    # titleコマンドでウィンドウ名を固定し、後でキルしやすくする
     cmd = f'start "{title_name}" python "{script_path}"'
     subprocess.run(cmd, shell=True)
 
@@ -37,16 +35,28 @@ def kill_step_processes(titles):
     """指定したタイトルを持つウィンドウを強制終了する"""
     for title in titles:
         print(f"[{title}] を終了させています...")
-        # タイトルが完全に一致するウィンドウを狙い撃ち
         cmd = f'taskkill /F /FI "WINDOWTITLE eq {title}" /T'
         subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()
 
-    # 1. Step1 を最初に一回だけ実行
-    run_step1_once()
-    
+    # --- 引数(ランキング閾値)のチェック ---
+    if len(sys.argv) < 3:
+        print("エラー: ランキング閾値が指定されていません。")
+        print("使用法: python run_pipeline.py [min_rank] [max_rank]")
+        sys.exit(1)
+
+    try:
+        target_min_rank = int(sys.argv[1])
+        target_max_rank = int(sys.argv[2])
+    except ValueError:
+        print("エラー: ランクは数値で指定してください。")
+        sys.exit(1)
+
+    # 1. Step1 を引数付きで最初に一回だけ実行
+    run_step1_once(target_min_rank, target_max_rank)
+
     # 再起動対象の管理
     targets = [
         {"path": STEP2_SCRIPT, "title": "PIPELINE_STEP2"},
@@ -76,5 +86,3 @@ if __name__ == "__main__":
 
     except KeyboardInterrupt:
         print("\n親プロセスが停止されました。")
-        # 必要に応じて Step1 も終了させる場合は以下を有効にしてください
-        # kill_step_processes(["PIPELINE_STEP1"])

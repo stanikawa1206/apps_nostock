@@ -259,7 +259,7 @@ def make_search_url(*,
 
 def fetch_active_presets(conn) -> List[Dict]:
     """
-    mst.v_presets から is_active=1 の行を読み込む（共通）
+    mst.v_presets から 読み込む（共通）
     """
     sql = """
         SELECT
@@ -273,11 +273,8 @@ def fetch_active_presets(conn) -> List[Dict]:
             category_id_ebay,
             department,
             default_brand_en,
-            type_ebay,
-            preset_group,
-            max_page
+            type_ebay
           FROM [nostock].[mst].[v_presets] WITH (NOLOCK)
-         WHERE ISNULL(is_active, 0) = 1
          ORDER BY preset
     """
     with conn.cursor() as cur:
@@ -298,7 +295,50 @@ def fetch_active_presets(conn) -> List[Dict]:
             "department":       (r[8] or "").strip(),
             "default_brand_en": (r[9] or "").strip(),
             "type_ebay":        (r[10] or "").strip() if r[10] is not None else "",
-            "preset_group":     (r[11] or "").strip(),
+        })
+    return out
+
+def fetch_active_presets(conn) -> List[Dict]:
+    """
+    mst.v_presets から行を読み込む（共通）
+    """
+    sql = """
+        SELECT
+            preset,
+            vendor_name,
+            brand_id,
+            category_id,
+            mode,
+            low_usd_target,
+            high_usd_target,
+            category_id_ebay,
+            department,
+            default_brand_en,
+            type_ebay,
+            category_group,
+            max_page
+          FROM [nostock].[mst].[v_presets] WITH (NOLOCK)
+         ORDER BY preset
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql)
+        rows = cur.fetchall()
+
+    out: List[Dict] = []
+    for r in rows:
+        out.append({
+            "preset":           (r[0] or "").strip(),
+            "vendor_name":      (r[1] or "").strip(),
+            "brand_id":         int(r[2]) if r[2] is not None else 0,
+            "category_id":      int(r[3]) if r[3] is not None else 0,
+            "mode":             (r[4] or "").strip(),
+            "low_usd_target":   float(r[5]) if r[5] is not None else None,
+            "high_usd_target":  float(r[6]) if r[6] is not None else None,
+            "category_id_ebay": (r[7] or "").strip(),
+            "department":       (r[8] or "").strip(),
+            "default_brand_en": (r[9] or "").strip(),
+            "type_ebay":        (r[10] or "").strip() if r[10] is not None else "",
+            "category_group":     (r[11] or "").strip(),
             "max_page":         int(r[12]) if r[12] is not None else None,
         })
     return out

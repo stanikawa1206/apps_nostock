@@ -2,18 +2,13 @@
 # -*- coding: utf-8 -*-
 
 from __future__ import annotations
-
-import os
-import random
-import re
-import socket
-import sys
-import time
-from datetime import datetime
-from pathlib import Path
-from typing import Optional
+import json, re, time, random, argparse, sys, traceback, os
+from typing import Literal, Optional, List, Dict
 
 from selenium import webdriver  # 型注釈用
+
+import sys
+from pathlib import Path
 
 # ===== プロジェクトルートを sys.path に追加（最初にやる）=====
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -25,11 +20,11 @@ from apps.adapters.mercari_item_status import (
     Status,
     detect_status_from_mercari,
     detect_status_from_mercari_shops,
-    handle_listing_delete,
-    handle_listing_price_update,
 )
-from apps.adapters.mercari_scraper import build_driver
-from apps.common.utils import get_sql_server_connection, compute_start_price_usd
+from apps.adapters.mercari_item_status import handle_listing_delete,handle_listing_price_update
+
+# ===== ここで send_mail を import（重要） =====
+from apps.common.utils import send_mail
 
 # ===== UTF-8 出力の強制（絵文字/日本語の安全化） =====
 if os.name == "nt" and hasattr(sys.stdout, "reconfigure"):
@@ -80,6 +75,16 @@ RATE = {
 # ===================== ユーティリティ =====================
 def human_sleep(a: float, b: float):
     time.sleep(random.uniform(a, b))
+
+def update_vendor_item_status(conn, vendor_name: str, sku: str, status: str) -> None:
+    """ vendor_item の status を更新（sku=vendor_item_id） """
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE [trx].[vendor_item]
+               SET status = ?, last_checked_at = SYSDATETIME()
+             WHERE vendor_name = ? AND vendor_item_id = ?
+        """, (status, vendor_name, sku))
+    conn.commit()
 
 def get_status(driver: webdriver.Chrome, url: str) -> tuple[Status, Optional[int]]:
     driver.get(url)
@@ -160,14 +165,22 @@ def run_remaining_worker(worker_name: str):
                 process_status_and_sync(
                     conn,
                     driver,
-                    row,
+                    row["vendor_name"],
+                    row["vendor_item_id"],
                     worker_name,
                 )
-            except Exception:
-                import traceback
-                traceback.print_exc()
+            except Exception as e:
+                # ログを吐いて、プログラムを異常終了(exit code 1)させる
+                print(f"[ERROR] 実行を中断し、再起動を待機します。SKU:{row['vendor_item_id']} 理由: {e}")
+                
+                # driver が生きていれば閉じる
                 safe_quit(driver)
+                
+                # シェルスクリプトのリトライをトリガーするために 1 で終了
+                import sys
                 sys.exit(1)
+
+
 
             time.sleep(random.uniform(2.0, 5.0))
 
@@ -182,7 +195,8 @@ def run_remaining_worker(worker_name: str):
 def process_status_and_sync(
     conn,
     driver,
-    row: dict,
+    vendor_name: str,
+    sku: str,
     worker_name: str,
 ):
     """
@@ -193,10 +207,6 @@ def process_status_and_sync(
     - 判定できた場合のみ vendor_item / eBay / listings を同期
     - 最後に remaining_check_at を確定
     """
-    
-    vendor_name = row["vendor_name"]
-    sku = row["vendor_item_id"]
-
 
     url = build_mercari_url(vendor_name, sku)
 
@@ -227,9 +237,9 @@ def process_status_and_sync(
         if old_price is None or old_price != price_jpy:
             new_price_usd = compute_start_price_usd(
                 price_jpy,
-                row["mode"],
-                row["low_usd_target"],
-                row["high_usd_target"],
+                "GA",
+                450,
+                1000,
             )
 
             # =====================
@@ -301,8 +311,8 @@ def process_status_and_sync(
             UPDATE trx.vendor_item
                SET remaining_check_at = SYSDATETIME(),
                    remaining_check_by = ?
-            WHERE vendor_name = ? AND vendor_item_id = ?
-        """, (worker_name, vendor_name,  sku))
+             WHERE vendor_item_id = ?
+        """, (worker_name,  sku))
 
     conn.commit()
 
@@ -321,39 +331,29 @@ def pull_one_remaining_target(conn, worker_name: str):
                     l.listing_id,
                     l.account,
                     l.vendor_name,
-                    l.vendor_item_id,
-                    v.preset,
-                    p.mode,
-                    p.low_usd_target,
-                    p.high_usd_target
+                    l.vendor_item_id
                 FROM trx.listings AS l WITH (UPDLOCK, READPAST, ROWLOCK)
                 INNER JOIN trx.vendor_item AS v
                     ON v.vendor_name    = l.vendor_name
-                AND v.vendor_item_id = l.vendor_item_id
-                INNER JOIN mst.v_presets AS p
-                    ON p.preset = v.preset
+                   AND v.vendor_item_id = l.vendor_item_id
                 WHERE l.is_deleted = 0
-                AND l.vendor_name IN (N'メルカリ', N'メルカリshops')
-                AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')
-                AND v.remaining_check_at IS NULL
-                AND v.remaining_check_by IS NULL
+                  AND l.vendor_name IN (N'メルカリ', N'メルカリshops')
+                  AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')
+                  AND v.remaining_check_at IS NULL
+                  AND v.remaining_check_by IS NULL
                 ORDER BY l.start_time DESC
             )
             UPDATE v
-            SET remaining_check_by = ?
+               SET remaining_check_by = ?
             OUTPUT
                 inserted.vendor_name,
                 inserted.vendor_item_id,
                 cte.account,
-                cte.listing_id,
-                cte.preset,
-                cte.mode,
-                cte.low_usd_target,
-                cte.high_usd_target
+                cte.listing_id
             FROM trx.vendor_item AS v
             INNER JOIN cte
-            ON v.vendor_name    = cte.vendor_name
-            AND v.vendor_item_id = cte.vendor_item_id;                    
+              ON v.vendor_name    = cte.vendor_name
+             AND v.vendor_item_id = cte.vendor_item_id;
         """, (worker_name,))
 
         row = cur.fetchone()
@@ -366,10 +366,6 @@ def pull_one_remaining_target(conn, worker_name: str):
         "vendor_item_id": row[1],
         "account": row[2],
         "listing_id": row[3],
-        "preset": row[4],
-        "mode": row[5],
-        "low_usd_target": float(row[6]),
-        "high_usd_target": float(row[7]),
     }
 
 

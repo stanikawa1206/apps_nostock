@@ -4,21 +4,16 @@ import sys
 import os
 from datetime import datetime
 from my_utils import get_sql_server_connection, keepa_request
+from step0_category_manager import get_next_category, update_category_status
 
 # ==========================================
 # 設定: 検索条件 & ログ設定
 # ==========================================
-# デフォルト値を設定（引数がない場合の予備）
-DEFAULT_CATEGORY_ID = 2229202051
 QUERY_LIMIT = 10000
 
 # --- ログ出力設定 ---
 LOG_DIR = r"X:\apps\snapshot\keepa_us_to_jp_cross_asin\logs"
 # ------------------
-
-# 1. ランキング範囲 (180日平均)
-RANK_MIN = 1
-RANK_MAX = 50000
 
 # 2. 価格フィルタ (新品価格 90日平均)
 PRICE_MIN_JPY = 10000
@@ -32,25 +27,15 @@ MAX_WEIGHT_G = 30000
 # ログ出力用関数
 # ==========================================
 def write_execution_log(rank_range, cat_id, count):
-    """
-    指定のフォルダに実行ログを出力する
-    内容: ランキング区間、カテゴリーID、書き込み数、書き込み日時
-    """
-    # フォルダが存在しない場合は作成
     if not os.path.exists(LOG_DIR):
         os.makedirs(LOG_DIR)
     
-    # ファイル名は日付（例: 2026-02-12.log）
     today = datetime.now().strftime("%Y-%m-%d")
     log_file = os.path.join(LOG_DIR, f"{today}.log")
     
-    # 書き込み日時の取得
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    # ログ行の作成
     log_line = f"[{now_str}] Rank: {rank_range} | CatID: {cat_id} | Saved: {count} items\n"
     
-    # 追記モード("a")で保存
     with open(log_file, mode="a", encoding="utf-8") as f:
         f.write(log_line)
 
@@ -67,10 +52,8 @@ WHEN MATCHED THEN
         jp_category_id = src.jp_category_id
 WHEN NOT MATCHED THEN
     INSERT (asin, last_seen_at, jp_category_id, us_existence)
-    VALUES (src.asin, SYSDATETIME(), src.jp_category_id, 0); -- NULLから0へ変更
+    VALUES (src.asin, SYSDATETIME(), src.jp_category_id, 0);
 """
-
-# step1_keepa_jp_to_asin.py 内の修正
 
 def save_asins_to_db(cursor, asin_list, cat_id):
     if not asin_list:
@@ -80,7 +63,6 @@ def save_asins_to_db(cursor, asin_list, cat_id):
     for asin in asin_list:
         try:
             cursor.execute(SQL_UPSERT, [asin, cat_id])
-            # ★ 1件ごとに確定させてロックを即座に解放する
             cursor.connection.commit() 
             count += 1
         except Exception as e:
@@ -89,9 +71,6 @@ def save_asins_to_db(cursor, asin_list, cat_id):
     return count
 
 def fetch_and_save_recursive(cat_id, min_rank, max_rank, cursor):
-    """
-    再帰的にKeepaからASINを取得し、その都度DBに保存する
-    """
     print(f"Fetching Cat: {cat_id} | Rank(Avg180): {min_rank}-{max_rank}")
     
     selection = {
@@ -123,43 +102,59 @@ def fetch_and_save_recursive(cat_id, min_rank, max_rank, cursor):
         print(f"   -> Got {len(asin_list)} items. Saving...")
         saved_count = save_asins_to_db(cursor, asin_list, cat_id)
         
-        # --- ログ出力の実行 ---
         rank_range_str = f"{min_rank}-{max_rank}"
         write_execution_log(rank_range_str, cat_id, saved_count)
-        # --------------------
         
         return saved_count
 
-def main():
-    # --- 引数のチェック ---
-    # sys.argv[0]はスクリプト名なので、引数がある場合は len が 2 以上になる
-    if len(sys.argv) < 2:
-        print("エラー: カテゴリーIDが指定されていません。")
-        print("使用法: python step1_keepa_jp_to_asin.py [Category_ID]")
-        sys.exit(1)  # 異常終了 (ステータスコード1)
+# step1_keepa_jp_to_asin.py の main() 関数部分のみ抜粋
 
+def main():
+    if len(sys.argv) < 3:
+        print("エラー: ランキング閾値が指定されていません。")
+        print("使用法: python step1_keepa_jp_to_asin.py [min_rank] [max_rank]")
+        sys.exit(1)
+        
     try:
-        # 引数を数値に変換
-        target_category_id = int(sys.argv[1])
+        target_min_rank = int(sys.argv[1])
+        target_max_rank = int(sys.argv[2])
     except ValueError:
-        print(f"エラー: 指定された引数 '{sys.argv[1]}' は有効な数値ではありません。")
+        print("エラー: ランクは数値で指定してください。")
         sys.exit(1)
 
-    # --- メイン処理 ---
-    print(f"実行開始 - カテゴリーID: {target_category_id}")
-    conn = get_sql_server_connection()
-    cursor = conn.cursor()
+    print(f"=== Step1: カテゴリー連続処理を開始 (指定ランク: {target_min_rank} - {target_max_rank}) ===")
     
-    try:
-        total_saved = fetch_and_save_recursive(target_category_id, RANK_MIN, RANK_MAX, cursor)
-        conn.commit()
-        print(f"=== DB保存完了: 合計 {total_saved}件 (CatID: {target_category_id}) ===")
+    while True:
+        # 1. DBから次のカテゴリーを取得
+        category = get_next_category(target_min_rank, target_max_rank)
         
-    except Exception as e:
-        print(f"Fatal Error: {e}")
-        conn.rollback()
-    finally:
-        conn.close()
+        if not category:
+            print(f"\n=== 全ての対象カテゴリーの処理が完了しました (閾値 {target_min_rank}-{target_max_rank}) ===")
+            break
+            
+        target_category_id = category["id"]
+        target_category_name = category["name"]
+        
+        print(f"\n実行開始 - カテゴリー: {target_category_name} (ID: {target_category_id})")
+        
+        conn = get_sql_server_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # 2. 再帰取得と保存を実行
+            total_saved = fetch_and_save_recursive(target_category_id, target_min_rank, target_max_rank, cursor)
+            print(f"=== DB保存完了: 合計 {total_saved}件 (CatID: {target_category_id}) ===")
+            
+            # 3. 【変更箇所】1カテゴリーの処理が正常に完了した直後にマスタを更新する
+            update_category_status(target_category_id, target_min_rank, target_max_rank)
+            print(f"=== マスタ更新完了: 実行日と閾値を反映しました ===")
+            
+        except Exception as e:
+            print(f"Fatal Error: {e}")
+            conn.rollback()
+            # エラー時はマスタが更新されないため、次回再実行の対象として残ります
+        finally:
+            conn.close()
 
 if __name__ == "__main__":
     main()

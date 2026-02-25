@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# publish_ebay.py — listings / vendor_item 対応（Shops/通常 両対応・processing_by方式, Py3.8/3.9互換）
+# publish_ebay_new.py — listings / vendor_item 対応（Shops/通常 両対応・processing_by方式, Py3.8/3.9互換）
 
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 # =========================
 # sys.path bootstrap: file-direct run safe
 # =========================
-# このファイル: D:\apps_nostock\apps\publish\publish_ebay.py
+# このファイル: D:\apps_nostock\apps\publish\publish_ebay_new.py
 # プロジェクトルート: D:\apps_nostock  ← parents[2]
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:

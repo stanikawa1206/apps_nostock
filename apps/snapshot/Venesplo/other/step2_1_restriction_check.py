@@ -74,7 +74,7 @@ def main():
         token = get_spapi_access_token(region="US")
         
         # 2. テストしたいASINを指定してください
-        test_asin = "B0CM6BGH5W"  # ★ここを任意のASINに書き換えてテストしてください
+        test_asin = "0140136347"  # ★ここを任意のASINに書き換えてテストしてください
         
         # 3. 制限チェック実行
         status = check_us_restriction(test_asin, token)

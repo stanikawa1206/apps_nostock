@@ -48,7 +48,6 @@ if str(_PROJECT_ROOT) not in sys.path:
 # =========================
 from apps.common.utils import (
     compute_start_price_usd,
-    compute_cost_range_jpy_from_usd_range,
     generate_ebay_description,
     get_sql_server_connection,
     send_mail,
@@ -1557,65 +1556,49 @@ class PublishState:
     cdn_mode_until: object
     cdn_cache: dict
 
-def take_one_vendor_item_by_preset(
+def take_one_vendor_item(
     conn,
-    preset,
+    preset_group,
     processing_by,
-    low_cost,
-    high_cost,
 ):
     """
-    preset単位で1件確保（古い順）
+    preset_group単位で1件確保（古い順）
+    JPYレンジは mst.presets_price_ranges から取得
     """
+
     sql = """
-    ;WITH cte AS (
-        SELECT TOP (1) vendor_item_id
-        FROM dbo.vw_vendor_item_ready
-        WHERE preset = ?
-          AND price BETWEEN ? AND ?
-        AND processing_at IS NULL
-        ORDER BY created_at ASC
+    ;WITH target_item AS (
+        SELECT TOP (1) ready.vendor_item_id
+        FROM dbo.vw_vendor_item_ready AS ready
+        INNER JOIN nostock.mst.presets_price_ranges AS price_range
+            ON price_range.category_group = ready.category_group
+           AND price_range.preset_group   = ?
+        WHERE
+            ready.price BETWEEN price_range.low_jpy_target
+                             AND price_range.high_jpy_target
+            AND ready.processing_at IS NULL
+        ORDER BY
+            ready.created_at ASC,
+            ready.vendor_page ASC
     )
-    UPDATE v
-    SET processing_by = ?,
-        processing_at = SYSDATETIME()
+    UPDATE vendor_item
+       SET processing_by = ?,
+           processing_at = SYSDATETIME()
     OUTPUT inserted.vendor_item_id,
            inserted.vendor_name,
            inserted.price,
            inserted.shipping_region,
            inserted.shipping_days,
            inserted.preset
-    FROM trx.vendor_item v
-    JOIN cte ON v.vendor_item_id = cte.vendor_item_id;
+    FROM trx.vendor_item AS vendor_item
+    INNER JOIN target_item
+        ON vendor_item.vendor_item_id = target_item.vendor_item_id;
     """
 
-    params = (
-        preset,
-        low_cost,
-        high_cost,
-        processing_by,
-    )
-
-
-    # 👇 ここ追加
-    print("----- DEBUG SQL -----")
-    print(debug_render_sql(sql, list(params)))
-    print("---------------------")
-
-
     with conn.cursor() as cur:
-        cur.execute(
-            sql,
-            preset,
-            low_cost,
-            high_cost,
-            processing_by,
-        )
+        cur.execute(sql, preset_group, processing_by)
         row = cur.fetchone()
-        if not row:
-            return None
         return row
-
 
 def main():
 
@@ -1737,18 +1720,10 @@ def main():
 
                     preset = preset_obj["preset"]
 
-                    low_cost, high_cost = compute_cost_range_jpy_from_usd_range(
-                        preset_obj["mode"],
-                        preset_obj["low_usd_target"],
-                        preset_obj["high_usd_target"],
-                    )
-
-                    row = take_one_vendor_item_by_preset(
+                    row = take_one_vendor_item(
                         conn,
                         preset,
                         processing_by,
-                        low_cost,
-                        high_cost,
                     )
 
                     if row:
@@ -1852,93 +1827,3 @@ def main():
         driver.quit()
         conn.close()
 
-
-
-
-def main_test():
-    print("=== TAKE_ONE_VENDOR_ITEM_SQL テスト開始 ===")
-
-    preset = "ヴィトン長財布MS"
-    worker_name = "TEST_WORKER"
-
-    from datetime import datetime, timedelta
-    lock_timeout = datetime.now() - timedelta(minutes=10)
-
-    conn = get_sql_server_connection()
-    cur = conn.cursor()
-
-    # --------------------------------------
-    # ① preset情報取得
-    # --------------------------------------
-    cur.execute("""
-        SELECT mode, low_usd_target, high_usd_target
-        FROM mst.v_presets
-        WHERE preset = ?
-    """, preset)
-
-    row = cur.fetchone()
-    if not row:
-        print("presetが見つかりません")
-        return
-
-    p = {
-        "mode": row[0],
-        "low_usd_target": row[1],
-        "high_usd_target": row[2],
-    }
-
-    # --------------------------------------
-    # ② 本番と同じ価格レンジ算出
-    # --------------------------------------
-    low_cost, high_cost = compute_cost_range_jpy_from_usd_range(
-        p["mode"],
-        p["low_usd_target"],
-        p["high_usd_target"],
-    )
-
-    print(f"価格レンジ: {low_cost} ～ {high_cost}")
-
-    # --------------------------------------
-    # ③ ready view 件数確認
-    # --------------------------------------
-    TEST_SQL = """
-    SELECT COUNT(*)
-    FROM vw_vendor_item_ready v
-    WHERE
-        v.preset = ?
-        AND v.price BETWEEN ? AND ?
-        AND (
-            v.processing_at IS NULL
-            OR v.processing_at < ?
-            OR (
-                v.processing_by = ?
-                AND v.processing_at < ?
-            )
-        )
-    """
-
-    cur.execute(
-        TEST_SQL,
-        preset,
-        low_cost,
-        high_cost,
-        lock_timeout,
-        worker_name,
-        lock_timeout,
-    )
-
-    count = cur.fetchone()[0]
-
-    print(f"取得可能件数 = {count}")
-
-    cur.close()
-    conn.close()
-
-    print("=== テスト終了 ===")
-
-
-
-
-if __name__ == "__main__":
-    main()
-    #main_test()

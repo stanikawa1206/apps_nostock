@@ -1,4 +1,4 @@
-# fetch_active_ebay.py
+# fetch_active_ebay_new.py
 # 役割: fetch_active_ebay の task を trx.scrape_job に積むだけ
 
 import sys
