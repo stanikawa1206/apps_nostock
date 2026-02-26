@@ -315,8 +315,7 @@ def fetch_active_presets(conn) -> List[Dict]:
             department,
             default_brand_en,
             type_ebay,
-            category_group,
-            max_page
+            category_group
           FROM [nostock].[mst].[v_presets] WITH (NOLOCK)
          ORDER BY preset
     """
@@ -339,6 +338,5 @@ def fetch_active_presets(conn) -> List[Dict]:
             "default_brand_en": (r[9] or "").strip(),
             "type_ebay":        (r[10] or "").strip() if r[10] is not None else "",
             "category_group":     (r[11] or "").strip(),
-            "max_page":         int(r[12]) if r[12] is not None else None,
         })
     return out

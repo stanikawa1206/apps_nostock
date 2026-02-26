@@ -548,7 +548,91 @@ def _inventory_publish_offer(token: str, offer_id: str) -> tuple[bool, dict]:
     r = requests.post(url, headers=_ebay_json_headers(token), json={}, timeout=45)
     return (r.status_code == 200), _safe_json(r)
 
+def update_ebay_price_rest(
+    account: str,
+    sku: str,
+    new_price_usd,
+    *,
+    debug: bool = False
+) -> dict:
+    if not account or not sku:
+        return {"success": False, "error": "missing_account_or_sku"}
+
+    price_str = _to_price_str(new_price_usd)
+
+    # 1) token取得
+    token = get_access_token_new(account)
+    if not token:
+        return {"success": False, "sku": sku, "error": "get_token_failed"}
+
+    # 2) offer_id取得
+    offer_id, list_res = _inventory_get_offer_id_by_sku(token, sku)
+    if not offer_id:
+        out = {
+            "success": False,
+            "sku": sku,
+            "error": "offer_not_found_for_sku",
+        }
+        if debug:
+            out["raw"] = list_res
+        return out
+
+    # 3) offer取得
+    offer_obj = _inventory_get_offer(token, offer_id)
+    if not offer_obj:
+        return {
+            "success": False,
+            "sku": sku,
+            "error": "offer_get_failed",
+        }
+
+    # 4) 価格変更
+    offer_obj.setdefault("pricingSummary", {})
+    offer_obj["pricingSummary"]["price"] = {
+        "value": price_str,
+        "currency": "USD",
+    }
+
+    # 5) PUT
+    ok, put_res = _inventory_put_offer(token, offer_id, offer_obj)
+    if not ok:
+        out = {
+            "success": False,
+            "sku": sku,
+            "error": "inventory_put_failed",
+        }
+        if debug:
+            out["raw"] = put_res
+        return out
+
+    # 6) publish
+    ok2, pub_res = _inventory_publish_offer(token, offer_id)
+    if not ok2:
+        out = {
+            "success": False,
+            "sku": sku,
+            "error": "inventory_publish_failed",
+        }
+        if debug:
+            out["raw"] = pub_res
+        return out
+
+    out = {
+        "success": True,
+        "sku": sku,
+        "listing_id": pub_res.get("listingId"),
+        "price": price_str,
+        "note": "via_inventory_rest",
+    }
+    if debug:
+        out["raw"] = pub_res
+
+    return out
+
+
+
 def update_ebay_price(account: str, ebay_item_id: str, new_price_usd, *, sku: Optional[str] = None, debug: bool=False) -> dict:
+    
     if not account or not ebay_item_id:
         return {'success': False, 'error': 'missing_account_or_item_id'}
 

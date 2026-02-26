@@ -203,57 +203,42 @@ def compute_start_price_usd(
     # =========================================================
     elif mode_up == "GA":
 
-        # -------------------------
-        # ① GA方式計算
-        # -------------------------
         ship_ga = Decimal(DOMESTIC_SHIPPING_JPY)
         duty_ga = Decimal("0")
-
         usd_ga = calc_usd(ship_ga, duty_ga)
 
-        # -------------------------
-        # ② DDP方式計算
-        # -------------------------
         ship_ddp = Decimal(INTL_SHIPPING_JPY)
         duty_ddp = Decimal(str(DUTY_RATE))
-
         usd_ddp = calc_usd(ship_ddp, duty_ddp)
 
+        GA_THRESHOLD = Decimal("450.00")
+        GA_FORCE_PRICE = Decimal("525.00")
+
         # -------------------------
-        # ③ レンジ内のものだけ残す
+        # ① usd_ddp < 450
         # -------------------------
-        candidates = []
+        if usd_ddp < GA_THRESHOLD:
+            final_price = usd_ddp
 
-        if low <= usd_ga <= high:
-            candidates.append(("GA", usd_ga))
+        # -------------------------
+        # ② GAゾーン強制525
+        # -------------------------
+        elif usd_ga <= GA_FORCE_PRICE:
+            final_price = GA_FORCE_PRICE
 
-        if low <= usd_ddp <= high:
-            candidates.append(("DDP", usd_ddp))
+        # -------------------------
+        # ③ usd_ga > 525
+        # -------------------------
+        else:
+            final_price = usd_ga
 
-        # 両方レンジ外なら出品しない
-        if not candidates:
+        # -------------------------
+        # 最終レンジチェック
+        # -------------------------
+        if final_price < low or final_price > high:
             return None
 
-        # -------------------------
-        # ④ 安い方を採用
-        # -------------------------
-        selected_mode, selected_price = min(
-            candidates,
-            key=lambda x: x[1]
-        )
-
-        # -------------------------
-        # ⑤ GA価格ジャンプ戦略
-        #
-        # GA方式が採用され、
-        # 価格が 450〜525 に入るなら
-        # 525 に引き上げて GA帯へ押し込む
-        # -------------------------
-        if selected_mode == "GA":
-            if Decimal("450.00") <= selected_price <= Decimal("525.00"):
-                selected_price = Decimal("525.00")
-
-        return f"{selected_price:.2f}"
+        return f"{final_price:.2f}"
 
     # =========================================================
     # 不明モード

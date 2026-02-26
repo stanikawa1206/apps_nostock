@@ -1,0 +1,13 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "scrape_worker",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "apps.inventory.scrape_worker",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": false
+        }
+    ]
+}
