@@ -67,3 +67,29 @@ Category Breakdown (jp_category_id):
   - ID 561956: 20 items
   - ID 465392: 16 items
 
+--- 2026-02-28 06:14:45 ---
+Trigger : 件数超過(10101件)
+Output  : 260228_1.csv
+Total   : 10000 rows
+Category Breakdown (jp_category_id):
+  - ID 3210981: 1640 items
+  - ID 561958: 1516 items
+  - ID 2016929051: 1453 items
+  - ID 14304371: 900 items
+  - ID 2123629051: 835 items
+  - ID 637394: 780 items
+  - ID 2017304051: 653 items
+  - ID 2229202051: 648 items
+  - ID 2127209051: 323 items
+  - ID 3828871: 322 items
+  - ID 52033011: 200 items
+  - ID 3445393051: 178 items
+  - ID 561956: 141 items
+  - ID 86731051: 126 items
+  - ID 2127212051: 87 items
+  - ID 2277721051: 80 items
+  - ID 344845011: 45 items
+  - ID 13299531: 36 items
+  - ID 160384011: 36 items
+  - ID 637392: 1 items
+

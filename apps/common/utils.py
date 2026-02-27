@@ -192,6 +192,7 @@ def compute_start_price_usd(
         duty = Decimal(str(DUTY_RATE))
 
         usd_ddp = calc_usd(ship, duty)
+        final_price = usd_ddp
  
     # =========================================================
     # mode = GA の場合（新ロジック）
@@ -230,6 +231,19 @@ def compute_start_price_usd(
     # -------------------------
     # 最終レンジチェック
     # -------------------------
+    # apps/common/utils.py の 234行目付近
+
+    # --- 診断用コードの挿入 ---
+    if 'final_price' not in locals():
+        print(f"!!! CRITICAL BUG !!!")
+        print(f"Variable 'final_price' was NEVER assigned.")
+        print(f"Input Data -> mode: '{mode}', jpy_price: {jpy_price}")
+        # 他にも計算に使っている変数があればここに並べる
+        # print(f"Context -> rate: {rate}, fee: {fee}")
+        final_price = 0 # 一時的にエラー回避して続行させる
+    # -------------------------
+
+
     if low is not None and high is not None:
         if final_price < low or final_price > high:
             return None
