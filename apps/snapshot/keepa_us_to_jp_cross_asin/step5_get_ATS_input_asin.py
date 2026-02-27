@@ -59,32 +59,33 @@ def execute_extraction(trigger_reason):
             print(f"[{now_time}] 対象のASINが0件のため、処理をスキップしました。")
             return
 
-        # 2. フラグ更新
+        # 2. フラグ更新 (チャンク分割処理)
         asin_list = df['asin'].tolist()
-        # 更新クエリの構築
-        placeholders = ','.join(['?' for _ in asin_list])
-        update_query = text(f"""
-            UPDATE trx.amazon_cross_market_asin
-            SET ATS = :today_str 
-            WHERE asin IN ({placeholders});
-        """)
         
-        # パラメータの準備
-        params = {"today_str": today_str}
-        for i, val in enumerate(asin_list):
-            update_query = update_query.bindparams(**{f"p{i}": val})
-        
-        # Note: 簡易的なIN句更新のため、生のpyodbc接続を併用するのが確実な場合もあります
-        # ここではSQLAlchemyでの一貫性を優先
+        # SQLAlchemyのトランザクション内で生コネクションを利用
         with engine.begin() as conn:
-            # 大量のIN句はDB制限に注意が必要ですが、1万件なら通常分割検討が必要です
-            # 今回は既存ロジックを尊重し、SQLAlchemyの接続で実行します
             raw_conn = conn.connection
             cursor = raw_conn.cursor()
-            cursor.execute(f"UPDATE trx.amazon_cross_market_asin SET ATS = '{today_str}' WHERE asin IN ({placeholders})", asin_list)
-            raw_conn.commit()
+            
+            # SQL Serverのパラメータ上限(2100)を回避するため、2000件ずつ分割して処理
+            chunk_size = 2000
+            for i in range(0, len(asin_list), chunk_size):
+                chunk = asin_list[i:i + chunk_size]
+                placeholders = ','.join(['?' for _ in chunk])
+                
+                # ATS (today_str) 用の '?' を先頭に1つ用意し、IN句用の '?' を続ける
+                update_query = f"""
+                    UPDATE trx.amazon_cross_market_asin
+                    SET ATS = ? 
+                    WHERE asin IN ({placeholders});
+                """
+                
+                # パラメータのリストを作成 (先頭が today_str、以降が ASINのリスト)
+                params = [today_str] + chunk
+                
+                cursor.execute(update_query, params)
 
-        # 3. CSV保存
+        # 3. CSV保存 (10,000件を一括で保存)
         save_path = get_unique_filepath(BASE_DIR, today_str)
         df['asin'].to_csv(save_path, index=False, header=False, encoding='utf-8')
         
@@ -129,7 +130,6 @@ def check_count_and_run():
     except Exception as e:
         print(f"件数チェック中にエラー: {e}")
 
-# (以下スケジュール登録とメインループは同様)
 schedule.every(5).minutes.do(check_count_and_run)
 schedule.every().day.at("08:30").do(execute_extraction, trigger_reason="定刻実行(08:30)")
 

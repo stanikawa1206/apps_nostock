@@ -48,7 +48,6 @@ if str(_PROJECT_ROOT) not in sys.path:
 # =========================
 from apps.common.utils import (
     compute_start_price_usd,
-    compute_cost_range_jpy_from_usd_range,
     generate_ebay_description,
     get_sql_server_connection,
     send_mail,
@@ -1021,8 +1020,19 @@ JSON format:
 # heavy_check_detail / post_to_ebay（あなたが貼った版のまま）
 # =========================
 def heavy_check_detail(
-    conn, driver, item_url, sku, preset, vendor_name,
-    p, debug_unavailable_dump, writes_since_commit,
+    conn,
+    driver,
+    item_url,
+    sku,
+    preset,
+    vendor_name,
+    mode,
+    default_brand_en,
+    category_id_ebay,   # ★追加
+    department,         # ★追加
+    type_ebay,          # ★追加
+    debug_unavailable_dump,
+    writes_since_commit,
 ):
     """
     ✅ ここでは「詳細解析」「NG判定」「翻訳生成」まで。
@@ -1110,18 +1120,6 @@ def heavy_check_detail(
         writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
         return None, debug_unavailable_dump, writes_since_commit, 1, 0
 
-    # === 4) 計算価格（NG） ===
-    start_price_usd = compute_start_price_usd(
-        rec.get("price"), p["mode"], p["low_usd_target"], p["high_usd_target"]
-    )
-    if not start_price_usd:
-        rec["listing_head"] = "計算価格が範囲外"
-        rec["listing_detail"] = f"{p['low_usd_target']}–{p['high_usd_target']}USD"
-        upsert_vendor_item(conn, rec)
-        writes_since_commit += 1
-        writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
-        return None, debug_unavailable_dump, writes_since_commit, 1, 0
-
     # === 4.5) セラー判定 ===
     rating_count = rec.get("rating_count")
     threshold = 20 if vendor_name == "メルカリshops" else 50
@@ -1172,27 +1170,44 @@ def heavy_check_detail(
     # =========================
     # GA 補色・修復チェック
     # =========================
-    if p["mode"] == "GA":
+    cost_jpy = rec["price"]
+    start_price_usd = compute_start_price_usd(cost_jpy, mode)
+    if not start_price_usd:
+        # print(f"  └─ [NG] compute_start_price_usd が None を返しました")
+        return None, debug_unavailable_dump, writes_since_commit, 1, 0
+    price_decimal = Decimal(start_price_usd)
+    # print(f"  └─ [INFO] 出品計算価格: {price_decimal} USD")
+
+    # 実際にGA対象か？
+    is_ga_actual = price_decimal >= Decimal("500.00")
+
+    if is_ga_actual:
+
         is_ng, reason = has_color_touchup_or_repair(
             jp_title=jp_title,
             jp_description=desc_jp,
         )
+
         if is_ng:
+            print(f"  └─ [NG] GA補色/修復判定により却下: {reason}")
             rec["listing_head"] = "NG(GA補色)"
             rec["listing_detail"] = reason or "Color touch-up / repair indicated"
+
             upsert_vendor_item(conn, rec)
+
             writes_since_commit += 1
             writes_since_commit = _maybe_commit(
                 conn, writes_since_commit, BATCH_COMMIT
             )
-            return None, debug_unavailable_dump, writes_since_commit, 1, 0
+
+            return None, debug_unavailable_dump, writes_since_commit, 1, 0   
 
     # === 6) 翻訳/整形（OKルート） ===
     existing_en = fetch_existing_title_en(conn, vendor_name, sku)
     if existing_en:
         rec["title_en"] = clean_for_ebay(existing_en)
     else:
-        expected_brand_en = p.get("default_brand_en")
+        expected_brand_en = default_brand_en
         title_en_raw = translate_to_english(
             rec.get("title_jp") or "",
             rec.get("description") or "",
@@ -1220,7 +1235,7 @@ def heavy_check_detail(
     desc_en = ""
     if desc_jp:
         try:
-            expected_brand_en = p.get("default_brand_en")
+            expected_brand_en = default_brand_en
             desc_en_raw = generate_ebay_description(
                 rec.get("title_en") or "",
                 desc_jp,
@@ -1237,13 +1252,17 @@ def heavy_check_detail(
             "Ships from Japan with tracking."
         )
     rec["description_en"] = desc_en
-
     heavy = {
         "vendor_name": vendor_name,
         "sku": sku,
         "rec": rec,
         "start_price_usd": start_price_usd,
+        "category_id_ebay": category_id_ebay,
+        "default_brand_en": default_brand_en,
+        "department": department,
+        "type_ebay": type_ebay,
     }
+
     return heavy, debug_unavailable_dump, writes_since_commit, 0, 0
 
 def post_to_ebay(
@@ -1280,6 +1299,10 @@ def post_to_ebay(
     sku = heavy["sku"]
     rec = heavy["rec"]
     start_price_usd = heavy["start_price_usd"]
+    category_id_ebay = heavy["category_id_ebay"]
+    default_brand_en = heavy["default_brand_en"]
+    department = heavy["department"]
+    type_ebay = heavy["type_ebay"]
 
     fail_other_delta = 0
 
@@ -1302,13 +1325,14 @@ def post_to_ebay(
             "*Quantity": 1,
             "PicURL": "|".join(pic_urls),
             "*Description": rec.get("description_en") or "",
-            "category_id": p["category_id_ebay"],
-            "C:Brand": p["default_brand_en"],
-            "department": p["department"],
+            "category_id": category_id_ebay,
+            "C:Brand": default_brand_en,
+            "department": department,
             "C:Color": "Multicolor",
-            "C:Type": p["type_ebay"],
+            "C:Type": type_ebay,
             "C:Country of Origin": "France",
         }
+
         return post_one_item(payload, acct, acct_policies_map[acct])
 
     # 1回目（現モード）
@@ -1557,66 +1581,61 @@ class PublishState:
     cdn_mode_until: object
     cdn_cache: dict
 
-def take_one_vendor_item_by_preset(
-    conn,
-    preset,
-    processing_by,
-    low_cost,
-    high_cost,
-):
-    """
-    preset単位で1件確保（古い順）
-    """
+def take_one_vendor_item(conn, preset_group, processing_by):
+    # SET句でのダミー更新を避け、OUTPUT句で直接マスタのカラムを指定します
     sql = """
-    ;WITH cte AS (
-        SELECT TOP (1) vendor_item_id
-        FROM dbo.vw_vendor_item_ready
-        WHERE preset = ?
-          AND price BETWEEN ? AND ?
-        AND processing_at IS NULL
-        ORDER BY created_at ASC
-    )
-    UPDATE v
-    SET processing_by = ?,
+    UPDATE TargetTable
+    SET
+        processing_by = ?,
         processing_at = SYSDATETIME()
-    OUTPUT inserted.vendor_item_id,
-           inserted.vendor_name,
-           inserted.price,
-           inserted.shipping_region,
-           inserted.shipping_days,
-           inserted.preset
-    FROM trx.vendor_item v
-    JOIN cte ON v.vendor_item_id = cte.vendor_item_id;
+    OUTPUT
+        inserted.vendor_item_id,
+        inserted.vendor_name,
+        inserted.price,
+        inserted.shipping_region,
+        inserted.shipping_days,
+        inserted.preset,
+        -- マスタ(mst.v_presets)側の値を直接出力
+        mst.v_presets.mode,
+        mst.v_presets.default_brand_en,
+        mst.v_presets.category_id_ebay,
+        mst.v_presets.department,
+        mst.v_presets.type_ebay
+    FROM trx.vendor_item AS TargetTable
+    INNER JOIN (
+        SELECT TOP (1)
+            V.vendor_item_id
+        FROM dbo.vw_vendor_item_ready AS V WITH (UPDLOCK, READPAST)
+        INNER JOIN nostock.mst.presets_price_ranges AS R
+            ON R.category_group = V.category_group
+        WHERE R.preset_group = ?
+          AND V.price BETWEEN R.low_jpy_target AND R.high_jpy_target
+          AND V.processing_at IS NULL
+        ORDER BY V.created_at ASC, V.vendor_page ASC
+    ) AS SubQuery ON TargetTable.vendor_item_id = SubQuery.vendor_item_id
+    INNER JOIN mst.v_presets
+        ON mst.v_presets.preset = TargetTable.preset
     """
 
-    params = (
-        preset,
-        low_cost,
-        high_cost,
-        processing_by,
-    )
-
-
-    # 👇 ここ追加
-    print("----- DEBUG SQL -----")
-    print(debug_render_sql(sql, list(params)))
-    print("---------------------")
-
-
+    t_start = time.time() # 追記
     with conn.cursor() as cur:
-        cur.execute(
-            sql,
-            preset,
-            low_cost,
-            high_cost,
-            processing_by,
-        )
+        # パラメータ順序: (1)processing_by, (2)preset_group
+        cur.execute(sql, processing_by, preset_group)
         row = cur.fetchone()
+        
+        conn.commit()
+
+        elapsed = time.time() - t_start # 追記
+        print(f"  [DB_TIME] take_one_sql: {elapsed:.3f}s") # 追記
+
         if not row:
             return None
-        return row
 
-
+        # pyodbc の description からカラム名を取得して dict 化
+        columns = [col[0] for col in cur.description]
+        return dict(zip(columns, row))
+    
+    
 def main():
 
     # --- 修正ポイント1: .env の場所を絶対パスで指定 ---
@@ -1628,6 +1647,7 @@ def main():
     
     from dotenv import load_dotenv
     load_dotenv(dotenv_path=env_path, override=True)
+    print("[DEBUG] .env 読み込み完了")
 
     current_pc = socket.gethostname().strip()
     processing_by = get_processing_by()
@@ -1671,8 +1691,13 @@ def main():
     MAX_LISTINGS = 10**9
     stop_all = False
 
+    print("[DEBUG] DB接続を開始します...")
     conn = get_sql_server_connection()
+    print("[DEBUG] DB接続成功")
+
+    print("[DEBUG] ブラウザを起動します...")
     driver = build_driver()
+    print("[DEBUG] ブラウザ起動成功")
 
     try:
         # ===== アカウント取得 =====
@@ -1708,8 +1733,6 @@ def main():
         # このPCに割り当てられた複数アカウントを順番に処理する
         for acct in accounts:
 
-            print(f"[ACCOUNT START] {acct.account}")
-
             # --- quota判定（acct_targets を参照）---
             def has_quota(a: Account) -> bool:
                 t = acct_targets.get(a.account)
@@ -1717,50 +1740,29 @@ def main():
                     return True
                 return t > 0
 
-            group_presets = [
-                p for p in presets
-                if (p.get("preset_group") or "").strip() == acct.preset_group
-            ]
-
-            if not group_presets:
-                continue
-
             # ===== 第二階層 アカウント内ループ =====
-            # そのアカウントで「何件出品するか」を管理
             while has_quota(acct) and not stop_all:
+                # ★ ここが修正ポイント
+                print(f"[DEBUG] {acct.account} 用の最初のアイテムを取得します...")
+                row = take_one_vendor_item(
+                    conn,
+                    acct.preset_group,   # ← presetではなく preset_group
+                    processing_by,
+                )
+                print(f"[DEBUG] アイテム取得結果: {'あり' if row else 'なし'}")
 
-                vendor_row = None
-                selected_preset = None
-
-                # ===== preset順次探索 =====
-                for preset_obj in group_presets:
-
-                    preset = preset_obj["preset"]
-
-                    low_cost, high_cost = compute_cost_range_jpy_from_usd_range(
-                        preset_obj["mode"],
-                        preset_obj["low_usd_target"],
-                        preset_obj["high_usd_target"],
-                    )
-
-                    row = take_one_vendor_item_by_preset(
-                        conn,
-                        preset,
-                        processing_by,
-                        low_cost,
-                        high_cost,
-                    )
-
-                    if row:
-                        vendor_row = row
-                        selected_preset = preset_obj
-                        break
-
-                if not vendor_row:
+                if not row:
                     print(f"[INFO] {acct.account} 在庫枯渇")
                     break
 
-                vendor_item_id, vendor_name, price, shipping_region, shipping_days, preset = vendor_row
+
+                vendor_item_id = row["vendor_item_id"]
+                vendor_name    = row["vendor_name"]
+                price          = row["price"]
+                shipping_region = row["shipping_region"]
+                shipping_days   = row["shipping_days"]
+                preset         = row["preset"]
+                mode         = row["mode"]
                 sku = vendor_item_id.strip()
 
                 if vendor_name == "メルカリshops":
@@ -1777,7 +1779,11 @@ def main():
                         sku,
                         preset,
                         vendor_name,
-                        selected_preset,
+                        mode,
+                        row["default_brand_en"],
+                        row["category_id_ebay"],      # ★追加
+                        row["department"],            # ★追加
+                        row["type_ebay"],             # ★追加
                         {},
                         writes_since_commit
                     )
@@ -1788,10 +1794,14 @@ def main():
                     driver = build_driver()
                     continue
 
+                status_str = "OK (Proceeding to post)" if heavy else "NG (Skip / Upserted failure status)"
+                # print(f"[HEAVY CHECK] SKU: {sku} | Result: {status_str}")
+
                 if not heavy:
                     continue
 
-                # ===== 出品 =====
+                # print(f"[PostPost] SKU: {sku} ")
+
                 (
                     acct_targets,
                     acct_success,
@@ -1804,7 +1814,7 @@ def main():
                     cdn_mode_until,
                 ) = post_to_ebay(
                     conn=conn,
-                    p=selected_preset,
+                    p=None,  # ここも設計に応じて整理
                     acct=acct.account,
                     heavy=heavy,
                     acct_targets=acct_targets,
@@ -1824,8 +1834,6 @@ def main():
                     cdn_cache=cdn_cache,
                     now_dt=datetime.now(),
                 )
-
- 
 
         if writes_since_commit > 0:
             conn.commit()
@@ -1852,93 +1860,6 @@ def main():
         driver.quit()
         conn.close()
 
-
-
-
-def main_test():
-    print("=== TAKE_ONE_VENDOR_ITEM_SQL テスト開始 ===")
-
-    preset = "ヴィトン長財布MS"
-    worker_name = "TEST_WORKER"
-
-    from datetime import datetime, timedelta
-    lock_timeout = datetime.now() - timedelta(minutes=10)
-
-    conn = get_sql_server_connection()
-    cur = conn.cursor()
-
-    # --------------------------------------
-    # ① preset情報取得
-    # --------------------------------------
-    cur.execute("""
-        SELECT mode, low_usd_target, high_usd_target
-        FROM mst.v_presets
-        WHERE preset = ?
-    """, preset)
-
-    row = cur.fetchone()
-    if not row:
-        print("presetが見つかりません")
-        return
-
-    p = {
-        "mode": row[0],
-        "low_usd_target": row[1],
-        "high_usd_target": row[2],
-    }
-
-    # --------------------------------------
-    # ② 本番と同じ価格レンジ算出
-    # --------------------------------------
-    low_cost, high_cost = compute_cost_range_jpy_from_usd_range(
-        p["mode"],
-        p["low_usd_target"],
-        p["high_usd_target"],
-    )
-
-    print(f"価格レンジ: {low_cost} ～ {high_cost}")
-
-    # --------------------------------------
-    # ③ ready view 件数確認
-    # --------------------------------------
-    TEST_SQL = """
-    SELECT COUNT(*)
-    FROM vw_vendor_item_ready v
-    WHERE
-        v.preset = ?
-        AND v.price BETWEEN ? AND ?
-        AND (
-            v.processing_at IS NULL
-            OR v.processing_at < ?
-            OR (
-                v.processing_by = ?
-                AND v.processing_at < ?
-            )
-        )
-    """
-
-    cur.execute(
-        TEST_SQL,
-        preset,
-        low_cost,
-        high_cost,
-        lock_timeout,
-        worker_name,
-        lock_timeout,
-    )
-
-    count = cur.fetchone()[0]
-
-    print(f"取得可能件数 = {count}")
-
-    cur.close()
-    conn.close()
-
-    print("=== テスト終了 ===")
-
-
-
-
 if __name__ == "__main__":
+    print("--- Python Program Started ---")
     main()
-    #main_test()

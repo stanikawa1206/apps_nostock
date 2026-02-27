@@ -4,7 +4,7 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 
 # ★ publish_ebay.py から関数を import
-from apps.publish.publish_ebay import (
+from apps.publish.publish_ebay_260227 import (
     parse_detail_personal,
     parse_detail_shops,
 )

@@ -123,8 +123,8 @@ def compute_cost_range_jpy_from_usd_range(
 def compute_start_price_usd(
     cost_jpy: int,
     mode: str,
-    low_usd_target: float,
-    high_usd_target: float
+    low_usd_target: Optional[float] = None,
+    high_usd_target: Optional[float] = None,
 ) -> Optional[str]:
     """
     新ロジック版 start price 計算
@@ -158,8 +158,9 @@ def compute_start_price_usd(
     p = Decimal(str(PROFIT_RATE))
     f = Decimal(str(EBAY_FEE_RATE))
 
-    low = Decimal(str(low_usd_target))
-    high = Decimal(str(high_usd_target))
+    # レンジは optional
+    low = Decimal(str(low_usd_target)) if low_usd_target is not None else None
+    high = Decimal(str(high_usd_target)) if high_usd_target is not None else None
 
     # ---------------------------------------------------------
     # 内部ヘルパー：計算ロジック本体
@@ -191,13 +192,7 @@ def compute_start_price_usd(
         duty = Decimal(str(DUTY_RATE))
 
         usd_ddp = calc_usd(ship, duty)
-
-        # レンジ外は出品しない
-        if usd_ddp < low or usd_ddp > high:
-            return None
-
-        return f"{usd_ddp:.2f}"
-
+ 
     # =========================================================
     # mode = GA の場合（新ロジック）
     # =========================================================
@@ -232,19 +227,17 @@ def compute_start_price_usd(
         else:
             final_price = usd_ga
 
-        # -------------------------
-        # 最終レンジチェック
-        # -------------------------
+    # -------------------------
+    # 最終レンジチェック
+    # -------------------------
+    if low is not None and high is not None:
         if final_price < low or final_price > high:
             return None
+        # ここにあった return を外に出す
 
-        return f"{final_price:.2f}"
+    # low, high が None の場合でも、ここを通るようにする
+    return f"{final_price:.2f}"
 
-    # =========================================================
-    # 不明モード
-    # =========================================================
-    else:
-        raise ValueError(f"未知のmodeです: {mode}")
 
 # ============================================================
 # OpenAI（遅延初期化）
@@ -383,27 +376,22 @@ def translate_to_english(
 """.strip()
 
     prompt = f"""
-You are an expert eBay SEO title writer.
+You are translating a Japanese product title for eBay.
 
-Create a concise, highly optimized eBay title (max 80 characters)
-using BOTH the Japanese title and the product description.
+Translate the Japanese title into natural English.
 
-{brand_rule}
+STRICT RULES:
+- Do NOT add any information.
+- Do NOT infer missing details.
+- Do NOT add color unless explicitly written in Japanese.
+- Do NOT add model names, materials, or accessories that are not written.
+- If information is not present, omit it.
 
-### IMPORTANT FILTER RULE
-Ignore any content related to:
-- Returns / Refunds
-- Shipping / Packaging
-- Cleaning
-- Notes / Disclaimers
-These must NOT influence the generated title.
+You may slightly rearrange wording to sound natural in English,
+but you must only use information explicitly written in Japanese.
 
-### TITLE STRUCTURE (in this order if possible)
-BRAND + Line/Model + Size + Material + Color + Key Motif + Condition + Accessories
-
-### OUTPUT RULES
-- Output only the final English title (no quotes).
-- Never output nonsense words (e.g., "Kale90").
+Output only the final English title (max 80 characters).
+No quotes. No explanations.
 
 Japanese title:
 {jp_title}

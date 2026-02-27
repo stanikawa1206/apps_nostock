@@ -1,0 +1,69 @@
+--- 2026-02-27 12:26:25 ---
+Trigger : 件数超過(26842件)
+Output  : 260227_1.csv
+Total   : 10000 rows
+Category Breakdown (jp_category_id):
+  - ID 2229202051: 2132 items
+  - ID 2123629051: 2067 items
+  - ID 2127209051: 1454 items
+  - ID 3445393051: 722 items
+  - ID 14304371: 639 items
+  - ID 2017304051: 627 items
+  - ID 2016929051: 607 items
+  - ID 13299531: 397 items
+  - ID 86731051: 340 items
+  - ID 2127212051: 318 items
+  - ID 2277721051: 270 items
+  - ID 3828871: 135 items
+  - ID 344845011: 134 items
+  - ID 160384011: 86 items
+  - ID 52033011: 65 items
+  - ID 561956: 7 items
+
+--- 2026-02-27 12:41:43 ---
+Trigger : 件数超過(16842件)
+Output  : 260227_2.csv
+Total   : 10000 rows
+Category Breakdown (jp_category_id):
+  - ID 2229202051: 2470 items
+  - ID 2123629051: 1894 items
+  - ID 2127209051: 1506 items
+  - ID 2017304051: 871 items
+  - ID 2016929051: 645 items
+  - ID 3445393051: 590 items
+  - ID 13299531: 408 items
+  - ID 86731051: 357 items
+  - ID 2127212051: 308 items
+  - ID 2277721051: 289 items
+  - ID 14304371: 178 items
+  - ID 3828871: 152 items
+  - ID 344845011: 146 items
+  - ID 160384011: 115 items
+  - ID 52033011: 59 items
+  - ID 561956: 11 items
+  - ID 465392: 1 items
+
+--- 2026-02-27 19:42:48 ---
+Trigger : 件数超過(10157件)
+Output  : 260227_3.csv
+Total   : 10000 rows
+Category Breakdown (jp_category_id):
+  - ID 14304371: 1948 items
+  - ID 2123629051: 1432 items
+  - ID 3828871: 1407 items
+  - ID 2229202051: 1163 items
+  - ID 2127209051: 878 items
+  - ID 13299531: 625 items
+  - ID 3445393051: 489 items
+  - ID 2016929051: 367 items
+  - ID 2017304051: 365 items
+  - ID 2277721051: 258 items
+  - ID 86731051: 251 items
+  - ID 2127212051: 207 items
+  - ID 3210981: 190 items
+  - ID 52033011: 154 items
+  - ID 344845011: 153 items
+  - ID 160384011: 77 items
+  - ID 561956: 20 items
+  - ID 465392: 16 items
+
