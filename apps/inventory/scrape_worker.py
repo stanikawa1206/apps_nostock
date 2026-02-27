@@ -477,62 +477,53 @@ def run_fetch_sold_ebay(payload: dict) -> Tuple[int, int]:
             low_usd_target=low_usd_target,
             high_usd_target=high_usd_target,
         )
-        print(f"🔍 Base URL: {base_url}", flush=True)
+        print(f"🔍 {base_url}", flush=True)
 
         page_idx = 0
         seen_ids: set[str] = set()
 
-        while page_idx < MAX_PAGES:
+        while True:
+            if page_idx >= MAX_PAGES:
+                print(f"[STOP] reached MAX_PAGES={MAX_PAGES}", flush=True)
+                break
+
             target_url = page_url(base_url, page_idx)
             print(f"[PAGE {page_idx+1}] GET {target_url}", flush=True)
 
-            # 1ページごとにドライバーを生成（メモリリーク対策）
             driver = build_driver()
             try:
-                # ページ読み込み
                 driver.get(target_url)
-                
-                # body要素が出るまで待機
-                WebDriverWait(driver, 15).until(
+                WebDriverWait(driver, 10).until(
                     EC.presence_of_element_located((By.TAG_NAME, "body"))
                 )
 
-                # 「結果なし」バナーのチェック
                 if has_no_results_banner(driver):
-                    print(f"[PAGE {page_idx+1}] no-results banner detected. stopping.", flush=True)
+                    print(f"[PAGE {page_idx+1}] no-results banner -> stop", flush=True)
                     break
 
-                # スクロールとアイテム回収
                 if vendor_name == "メルカリshops":
                     items = scroll_until_stagnant_collect_shops(driver, PAUSE)
                 else:
                     items = scroll_until_stagnant_collect_items(driver, PAUSE)
 
-                if not items:
-                    print(f"[PAGE {page_idx+1}] No items found on page. stopping.", flush=True)
-                    break
-
-                print(f"[PAGE {page_idx+1}] Scraped items count: {len(items)}", flush=True)
+                print(f"[PAGE {page_idx+1}] scraped={len(items)}", flush=True)
                 fetched_pages += 1
 
-                # 重複排除と新規リスト作成
-                new_items_to_process = []
+                new_items = []
                 for iid, title, price in items:
                     iid = (iid or "").strip()
                     if not iid or iid in seen_ids:
                         continue
                     seen_ids.add(iid)
-                    new_items_to_process.append((iid, (title or "").strip()))
+                    new_items.append((iid, (title or "").strip()))
 
-                if not new_items_to_process:
-                    print(f"[PAGE {page_idx+1}] All items on this page were already seen. stopping.", flush=True)
+                if not new_items:
+                    print(f"[PAGE {page_idx+1}] all seen -> stop", flush=True)
                     break
 
-                # DB更新処理
-                for iid, title in new_items_to_process:
+                for iid, title in new_items:
                     fetched_items += 1
-                    
-                    # 個別UPSERT
+
                     upsert_vendor_item(
                         conn,
                         vendor_name,
@@ -543,41 +534,31 @@ def run_fetch_sold_ebay(payload: dict) -> Tuple[int, int]:
                         now_str,
                     )
 
-                    # eBay在庫削除連携
                     handle_listing_delete(conn, iid, vendor_name)
 
-            except (TimeoutException, WebDriverException) as e:
-                print(f"[PAGE ERROR] {type(e).__name__} on page {page_idx+1}: {e}", flush=True)
-                # ページエラーが起きても、次のページを試すかループを抜けるかは状況次第。
-                # 基本的には1度エラーが出ると安定しないため break が安全。
-                break 
+            except Exception as e:
+                print(f"[WARN] page error page={page_idx+1}: {e}", flush=True)
 
             finally:
-                # 1ページごとに確実にブラウザを閉じる
                 safe_quit(driver)
 
             page_idx += 1
-            # サーバー負荷と検知回避のためのインターバル
-            time.sleep(PAUSE + random.uniform(0.5, 1.5))
+            time.sleep(1)
 
         print(
             f"[SCRAPE END][SOLD] preset='{preset_name}' "
-            f"total_pages={fetched_pages} total_items={fetched_items}",
+            f"pages={fetched_pages} items={fetched_items}",
             flush=True
         )
         return fetched_pages, fetched_items
 
-    except Exception:
-        print(f"[FATAL ERROR] in run_fetch_sold_ebay:\n{traceback.format_exc()}", flush=True)
-        return fetched_pages, fetched_items
-
     finally:
-        if conn:
-            try:
+        try:
+            if conn:
                 conn.close()
-                print("[INFO] Database connection closed.", flush=True)
-            except Exception:
-                pass
+        except Exception:
+            pass
+
 # ============================================================
 # fetch_active_ebay scrape 本体（1 preset 分）
 # ============================================================
