@@ -16,15 +16,15 @@ else
     echo "Session already exists."
 fi
 
-# --- 修正ポイント：while true ループで実行 ---
+# --- 修正ポイント：画面表示(tee)を追加 ---
 # 1. cd でディレクトリ移動
 # 2. whileループ内でpythonを実行
-# 3. pythonが終了(exit)しても、すぐまた実行される
-# 4. 念のため実行の合間に 3秒待機してゾンビプロセスを落ち着かせる
+# 3. 2>&1 | tee -a で画面表示とログ追記を同時に行う
+# 4. python終了後に3秒待機
 COMMAND="cd $PROJECT_DIR && while true; do 
-    echo \"[\$(date)] Starting Python Worker...\" >> $LOG_FILE;
-    python3 -m apps.inventory.scrape_worker >> $LOG_FILE 2>&1;
-    echo \"[\$(date)] Worker exited. Refreshing memory and restarting in 3s...\" >> $LOG_FILE;
+    echo \"[\$(date)] Starting Python Worker...\" | tee -a $LOG_FILE;
+    python3 -m apps.inventory.scrape_worker 2>&1 | tee -a $LOG_FILE;
+    echo \"[\$(date)] Worker exited. Refreshing memory and restarting in 3s...\" | tee -a $LOG_FILE;
     sleep 3;
 done"
 
