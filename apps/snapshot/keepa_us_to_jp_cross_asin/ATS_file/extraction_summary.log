@@ -93,3 +93,27 @@ Category Breakdown (jp_category_id):
   - ID 160384011: 36 items
   - ID 637392: 1 items
 
+--- 2026-02-28 08:30:00 ---
+Trigger : 定刻実行(08:30)
+Output  : 260228_2.csv
+Total   : 3016 rows
+Category Breakdown (jp_category_id):
+  - ID 2229202051: 600 items
+  - ID 2123629051: 586 items
+  - ID 2127209051: 485 items
+  - ID 14304371: 281 items
+  - ID 2127212051: 171 items
+  - ID 3210981: 138 items
+  - ID 2017304051: 127 items
+  - ID 561958: 105 items
+  - ID 3445393051: 100 items
+  - ID 3828871: 93 items
+  - ID 86731051: 82 items
+  - ID 2016929051: 81 items
+  - ID 637394: 68 items
+  - ID 2277721051: 47 items
+  - ID 13299531: 20 items
+  - ID 160384011: 18 items
+  - ID 344845011: 10 items
+  - ID 561956: 4 items
+

@@ -293,7 +293,7 @@ def upsert_vendor_items(conn, rows: List[Dict[str, Any]], now) -> int:
         return 0
 
     sql = """
-MERGE [trx].[vendor_item] AS T
+MERGE [trx].[vendor_item] WITH (HOLDLOCK) AS T
 USING (SELECT ? AS vendor_name, ? AS vendor_item_id) AS S
 ON (T.[vendor_name] = S.vendor_name AND T.[vendor_item_id] = S.vendor_item_id)
 
@@ -332,38 +332,62 @@ WHEN NOT MATCHED THEN
       ?, NULL
   );
 """
-    cursor = conn.cursor()
 
-    for r in rows:
-        params = (
-            r["vendor_name"],
-            r["vendor_item_id"],
+    MAX_RETRY = 3
 
-            r["status"],
-            r["preset"],
-            r["title_jp"],
-            r["vendor_page"],
-            now,
-            r["price"], r["price"], r["price"],
-            r["price"],
+    for attempt in range(1, MAX_RETRY + 1):
 
-            # insert
-            r["vendor_name"],
-            r["vendor_item_id"],
-            r["status"],
-            r["preset"],
-            r["title_jp"],
-            r["vendor_page"],
-            now,
-            now,
-            r["price"],
-        )
+        cursor = conn.cursor()
+        BATCH_SIZE = 25
+        count = 0
 
-        cursor.execute(sql, params)
+        try:
+            for r in rows:
+                params = (
+                    r["vendor_name"],
+                    r["vendor_item_id"],
 
-    conn.commit()
-    print(f"[UPSERT] done rows={len(rows)}", flush=True)
-    return len(rows)
+                    r["status"],
+                    r["preset"],
+                    r["title_jp"],
+                    r["vendor_page"],
+                    now,
+                    r["price"], r["price"], r["price"],
+                    r["price"],
+
+                    # insert
+                    r["vendor_name"],
+                    r["vendor_item_id"],
+                    r["status"],
+                    r["preset"],
+                    r["title_jp"],
+                    r["vendor_page"],
+                    now,
+                    now,
+                    r["price"],
+                )
+
+                cursor.execute(sql, params)
+                count += 1
+
+                if count % BATCH_SIZE == 0:
+                    conn.commit()
+
+            conn.commit()
+            print(f"[UPSERT] done rows={len(rows)}", flush=True)
+            return len(rows)
+
+        except pyodbc.Error as e:
+            if "1205" in str(e):
+                print(f"[DEADLOCK RETRY] attempt={attempt}", flush=True)
+                conn.rollback()
+                time.sleep(0.5 * attempt)
+                continue
+            else:
+                conn.rollback()
+                raise
+
+    raise RuntimeError("upsert_vendor_items failed after retries")
 
 
 # =========================

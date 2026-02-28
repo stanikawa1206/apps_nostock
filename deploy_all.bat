@@ -11,5 +11,9 @@ echo === DEPLOY TO VPS ===
 start "" cmd /k ssh root@162.43.15.160 -t "cd /opt/apps_nostock && git reset --hard && git pull; bash"
 start "" cmd /k ssh root@162.43.29.154 -t "cd /opt/apps_nostock && git reset --hard && git pull; bash"
 start "" cmd /k ssh root@162.43.42.135 -t "cd /opt/apps_nostock && git reset --hard && git pull; bash"
+start "" cmd /k ssh root@210.131.209.103 -t "cd /opt/apps_nostock && git reset --hard && git pull; bash"
+start "" cmd /k ssh root@162.43.39.209 -t "cd /opt/apps_nostock && git reset --hard && git pull; bash"
+start "" cmd /k ssh root@85.131.251.127 -t "cd /opt/apps_nostock && git reset --hard && git pull; bash"
+start "" cmd /k ssh root@210.131.209.232 -t "cd /opt/apps_nostock && git reset --hard && git pull; bash"
 
 pause

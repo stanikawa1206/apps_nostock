@@ -69,7 +69,7 @@ from apps.adapters.mercari_item_status import (
 
 # ========= 固定値／運用設定 =========
 IMG_LIMIT     = 10
-BATCH_COMMIT  = 100
+BATCH_COMMIT  = 10
 
 # ========= NG打刻・スキップ関連定義 =========
 NG_HEADS_FOR_TIMESTAMP: Set[str] = {
@@ -518,7 +518,7 @@ def _none_if_blank(s: Any) -> Optional[str]:
     return s if s else None
 
 UPSERT_VENDOR_ITEM_SQL = """
-MERGE INTO [trx].[vendor_item] AS tgt
+MERGE INTO [trx].[vendor_item] WITH (HOLDLOCK) AS tgt
 USING (
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ) AS src (
@@ -1744,11 +1744,14 @@ def main():
             while has_quota(acct) and not stop_all:
                 # ★ ここが修正ポイント
                 print(f"[DEBUG] {acct.account} 用の最初のアイテムを取得します...")
+
+                
                 row = take_one_vendor_item(
                     conn,
                     acct.preset_group,   # ← presetではなく preset_group
                     processing_by,
                 )
+
                 print(f"[DEBUG] アイテム取得結果: {'あり' if row else 'なし'}")
 
                 if not row:
@@ -1834,6 +1837,7 @@ def main():
                     cdn_cache=cdn_cache,
                     now_dt=datetime.now(),
                 )
+
 
         if writes_since_commit > 0:
             conn.commit()

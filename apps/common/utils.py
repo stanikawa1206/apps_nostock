@@ -589,67 +589,67 @@ def build_driver(
     from selenium.webdriver.chrome.service import Service
     from webdriver_manager.chrome import ChromeDriverManager
 
-    opts = Options()
+def build_driver(
+    *,
+    headless: bool = True,
+    page_load_strategy: str = "eager",
+):
+    import os
+    import time
+    from selenium import webdriver
+    from selenium.webdriver.chrome.options import Options
+    from selenium.webdriver.chrome.service import Service
+    from webdriver_manager.chrome import ChromeDriverManager
 
-    # ───────── headless ─────────
-    if headless:
-        opts.add_argument("--headless=new")
+    last_error = None
 
-    # ───────── VPS必須 ─────────
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-dev-shm-usage")
+    for attempt in range(2):  # 最大2回（= retry 1回）
+        try:
+            opts = Options()
 
-    # ───────── 共通 ─────────
-    opts.add_argument("--disable-notifications")
-    opts.add_argument("--lang=ja-JP,ja")
+            if headless:
+                opts.add_argument("--headless=new")
 
-    # 軽量化
+            opts.add_argument("--no-sandbox")
+            opts.add_argument("--disable-dev-shm-usage")
+            opts.add_argument("--disable-notifications")
+            opts.add_argument("--lang=ja-JP,ja")
+            opts.add_argument("--blink-settings=imagesEnabled=false")
+            opts.add_argument("--disable-gpu")
+            opts.add_argument("--disable-software-rasterizer")
+            opts.add_argument("--disable-blink-features=AutomationControlled")
 
-    # 目的：バックグラウンドになっても処理を止めない（スクリプトが止まらない）
-    # 副作用：CPU/メモリ消費が増え、rendererが詰まりやすくなる場合がある（特に重いSPA）
-    # ※ headless だと「そもそも常にバックグラウンド扱いっぽい挙動」になり、ここが妙に効いたり悪さしたりします。
-    # opts.add_argument("--disable-renderer-backgrounding")
+            opts.add_argument(
+                "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/145.0.0.0 Safari/537.36"
+            )
 
+            opts.page_load_strategy = page_load_strategy
 
-    # 目的：ウィンドウが見えてなくても処理速度を落とさない
-    # 副作用：同様に負荷が上がる／挙動が変わる
-    # opts.add_argument("--disable-backgrounding-occluded-windows")
+            if os.name == "posix":
+                service = Service("/usr/bin/chromedriver")
+            else:
+                opts.binary_location = os.getenv(
+                    "CHROME_BINARY",
+                    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                )
+                service = Service(ChromeDriverManager().install())
 
-    opts.add_argument("--blink-settings=imagesEnabled=false")
+            driver = webdriver.Chrome(service=service, options=opts)
 
-    opts.add_argument("--disable-gpu")
-    opts.add_argument("--disable-software-rasterizer")
-    opts.add_argument("--disable-blink-features=AutomationControlled")
+            driver.set_window_size(1400, 1000)
+            driver.set_page_load_timeout(30)
+            driver.set_script_timeout(30)
 
-    # UA固定（145系）
-    opts.add_argument(
-        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/145.0.0.0 Safari/537.36"
-    )
+            return driver
 
-    opts.page_load_strategy = page_load_strategy
-
-    # ───────── OS別 ─────────
-    if os.name == "posix":
-        # VPS (Ubuntu)
-        service = Service("/usr/bin/chromedriver")
-    else:
-        # Windows
-        opts.binary_location = os.getenv(
-            "CHROME_BINARY",
-            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        )
-        service = Service(ChromeDriverManager().install())
-
-    driver = webdriver.Chrome(service=service, options=opts)
-
-    driver.set_window_size(1400, 1000)
-    driver.set_page_load_timeout(30)
-    driver.set_script_timeout(30)
-
-    return driver
-
+        except Exception as e:
+            last_error = e
+            if attempt == 0:
+                time.sleep(0.5)  # Windows初期化競合対策
+            else:
+                raise last_error
 
 
 
