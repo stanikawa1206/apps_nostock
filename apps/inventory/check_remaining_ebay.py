@@ -392,6 +392,8 @@ def pull_one_remaining_target(conn, worker_name: str):
 
         row = cur.fetchone()
 
+        conn.commit()  
+
     if not row:
         return None
 
