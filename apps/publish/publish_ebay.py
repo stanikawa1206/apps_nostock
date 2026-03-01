@@ -1634,16 +1634,6 @@ def take_one_vendor_item(conn, preset_group, processing_by):
     )
     OPTION (MAXDOP 1);
 
-    -- ①で1件も取れなかった場合は終了（結果0行）
-    IF NOT EXISTS (SELECT 1 FROM @picked)
-    BEGIN
-        SELECT
-            CAST(NULL AS nvarchar(200)) AS vendor_item_id,
-            CAST(0 AS bit) AS ok_flag
-        WHERE 1=0;
-        RETURN;
-    END
-
     -- =========================================
     -- ② ロック後にフルロジック判定（🔴 presets/seller依存）
     --    ※ NGなら ok_flag=0 で vendor_item_id だけ返す
@@ -1736,6 +1726,13 @@ def take_one_vendor_item(conn, preset_group, processing_by):
     with conn.cursor() as cur:
 
         cur.execute(sql, processing_by)
+
+        while True:
+            if cur.description is not None:
+                break
+            if not cur.nextset():
+                return None
+
         row = cur.fetchone()
         conn.commit()
 
@@ -1860,14 +1857,6 @@ def main():
                 if not row:
                     print(f"[INFO] {acct.account} 在庫枯渇")
                     break
-
-
-                print(f"[DEBUG] アイテム取得結果: {'あり' if row else 'なし'}")
-
-                if not row:
-                    print(f"[INFO] {acct.account} 在庫枯渇")
-                    break
-
 
                 vendor_item_id = row["vendor_item_id"]
                 vendor_name    = row["vendor_name"]
