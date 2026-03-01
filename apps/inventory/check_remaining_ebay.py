@@ -185,6 +185,13 @@ def pull_one_remaining_target(conn, worker_name: str):
                         AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')
                         AND v.remaining_check_at IS NULL
                         AND v.remaining_check_by IS NULL
+                        AND EXISTS (
+                            SELECT 1
+                            FROM trx.listings l
+                            WHERE l.vendor_name = v.vendor_name
+                            AND l.vendor_item_id = v.vendor_item_id
+                            AND l.is_deleted = 0
+                        )
                     ORDER BY v.vendor_item_id
                 )
                 UPDATE v
@@ -192,10 +199,10 @@ def pull_one_remaining_target(conn, worker_name: str):
                 OUTPUT
                     inserted.vendor_name,
                     inserted.vendor_item_id
-                FROM trx.vendor_item AS v
+                FROM trx.vendor_item v
                 INNER JOIN target
-                    ON v.vendor_name = target.vendor_name
-                   AND v.vendor_item_id = target.vendor_item_id;
+                ON v.vendor_name = target.vendor_name
+                AND v.vendor_item_id = target.vendor_item_id;
             """, (worker_name,))
 
             row = cur.fetchone()
@@ -269,7 +276,7 @@ def run_remaining_worker(worker_name: str):
     driver = None
     conn = None
 
-    print("ver 20260301_7 暫定安定板  start")
+    print("ver 20260301_7 暫定安定板２  start")
 
     N = 10000  # ★ 最大処理件数
 
