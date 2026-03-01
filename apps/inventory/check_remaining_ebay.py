@@ -192,7 +192,7 @@ def pull_one_remaining_target(conn, worker_name: str):
                             AND l.vendor_item_id = v.vendor_item_id
                             AND l.is_deleted = 0
                         )
-                    ORDER BY v.vendor_item_id + ABS(CHECKSUM(NEWID()))
+                    ORDER BY NEWID()                        
                 )
                 UPDATE v
                 SET remaining_check_by = ?
@@ -275,7 +275,7 @@ def pull_one_remaining_target(conn, worker_name: str):
 def run_remaining_worker(worker_name: str):
     driver = None
 
-    print("ver 20260301_B2 接続分離版 start")
+    print("ver 20260301_B3 接続分離版 start")
 
     N = 10000  # ★ 最大処理件数
 
