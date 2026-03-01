@@ -152,6 +152,106 @@ def exists_remaining_target(conn):
         """)
         return cur.fetchone() is not None
 
+import time
+import pyodbc
+
+
+def pull_one_remaining_target(conn, worker_name: str):
+    """
+    出品中（is_deleted=false）かつ
+    vendor_item.status 未確定 のものを 1件だけ確保
+
+    ・remaining_check_at は「処理完了時刻」なのでここでは触らない
+    ・remaining_check_by だけをロック用途でセットする
+    ・1205（deadlock）のときだけ最大5回まで再実行
+    """
+
+    sql = """
+        ;WITH cte AS (
+            SELECT TOP (1)
+                v.vendor_name,
+                v.vendor_item_id,
+                l.account,
+                l.listing_id,
+                v.preset,
+                p.mode,
+                p.low_usd_target,
+                p.high_usd_target
+            FROM trx.vendor_item AS v WITH (UPDLOCK, READPAST, ROWLOCK)
+            INNER JOIN trx.listings AS l WITH (READPAST, ROWLOCK)
+                ON l.vendor_name    = v.vendor_name
+               AND l.vendor_item_id = v.vendor_item_id
+            INNER JOIN mst.v_presets AS p
+                ON p.preset = v.preset
+            WHERE
+                l.is_deleted = 0
+                AND v.vendor_name IN (N'メルカリ', N'メルカリshops')
+                AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')
+                AND v.remaining_check_at IS NULL
+                AND v.remaining_check_by IS NULL
+            ORDER BY
+                v.vendor_item_id
+        )
+        UPDATE v
+        SET remaining_check_by = ?
+        OUTPUT
+            inserted.vendor_name,
+            inserted.vendor_item_id,
+            cte.account,
+            cte.listing_id,
+            cte.preset,
+            cte.mode,
+            cte.low_usd_target,
+            cte.high_usd_target
+        FROM trx.vendor_item AS v
+        INNER JOIN cte
+            ON v.vendor_name    = cte.vendor_name
+           AND v.vendor_item_id = cte.vendor_item_id;
+    """
+
+    max_retry = 5
+
+    for attempt in range(1, max_retry + 1):
+        try:
+            cur = conn.cursor()
+            cur.execute(sql, (worker_name,))
+            row = cur.fetchone()
+            conn.commit()  # ロック解放
+
+            if not row:
+                return None
+
+            return {
+                "vendor_name": row[0],
+                "vendor_item_id": row[1],
+                "account": row[2],
+                "listing_id": row[3],
+                "preset": row[4],
+                "mode": row[5],
+                "low_usd_target": float(row[6]),
+                "high_usd_target": float(row[7]),
+            }
+
+        except pyodbc.Error as e:
+            msg = str(e)
+
+            # 1205 = deadlock victim
+            if "1205" in msg or "deadlock" in msg.lower():
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
+                print(f"[DEADLOCK] pull retry {attempt}/{max_retry}")
+                time.sleep(0.2 * attempt)  # 0.2 → 1.0秒程度まで
+                continue
+
+            # それ以外は即死（設計どおり）
+            raise
+
+    print("[DEADLOCK] max retry exceeded")
+    return None
+
 def run_remaining_worker(worker_name: str):
     driver = None
     conn = None
@@ -345,78 +445,6 @@ def process_status_and_sync(
         """, (worker_name, vendor_name,  sku))
 
     conn.commit()
-
-def pull_one_remaining_target(conn, worker_name: str):
-    """
-    出品中（is_deleted=false）かつ
-    vendor_item.status 未確定 のものを 1件だけ確保
-
-    ・remaining_check_at は「処理完了時刻」なのでここでは触らない
-    ・remaining_check_by だけをロック用途でセットする
-    """
-    with conn.cursor() as cur:
-        cur.execute("""
-            ;WITH cte AS (
-                SELECT TOP (1)
-                    v.vendor_name,
-                    v.vendor_item_id,
-                    l.account,
-                    l.listing_id,
-                    v.preset,
-                    p.mode,
-                    p.low_usd_target,
-                    p.high_usd_target
-                FROM trx.listings AS l WITH (READPAST, ROWLOCK)
-                INNER JOIN trx.vendor_item AS v
-                    ON v.vendor_name    = l.vendor_name
-                AND v.vendor_item_id = l.vendor_item_id
-                INNER JOIN mst.v_presets AS p
-                    ON p.preset = v.preset
-                WHERE
-                    l.is_deleted = 0
-                    AND l.vendor_name IN (N'メルカリ', N'メルカリshops')
-                    AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')
-                    AND v.remaining_check_at IS NULL
-                    AND v.remaining_check_by IS NULL
-                ORDER BY
-                    v.vendor_item_id
-            )
-            UPDATE v
-            SET remaining_check_by = ?
-            OUTPUT
-                inserted.vendor_name,
-                inserted.vendor_item_id,
-                cte.account,
-                cte.listing_id,
-                cte.preset,
-                cte.mode,
-                cte.low_usd_target,
-                cte.high_usd_target
-            FROM trx.vendor_item AS v
-            INNER JOIN cte
-                ON v.vendor_name    = cte.vendor_name
-            AND v.vendor_item_id = cte.vendor_item_id;                   
-        """, (worker_name,))
-
-        row = cur.fetchone()
-
-        conn.commit()  
-
-    if not row:
-        return None
-
-    return {
-        "vendor_name": row[0],
-        "vendor_item_id": row[1],
-        "account": row[2],
-        "listing_id": row[3],
-        "preset": row[4],
-        "mode": row[5],
-        "low_usd_target": float(row[6]),
-        "high_usd_target": float(row[7]),
-    }
-
-
 
 import socket
 
