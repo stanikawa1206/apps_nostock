@@ -1582,12 +1582,110 @@ class PublishState:
     cdn_cache: dict
 
 def take_one_vendor_item(conn, preset_group, processing_by):
-    # SET句でのダミー更新を避け、OUTPUT句で直接マスタのカラムを指定します
+
     sql = """
-    UPDATE TargetTable
+    ;WITH target_item AS (
+        SELECT TOP (1)
+            trx_vendor_item.vendor_item_id
+        FROM
+            trx.vendor_item AS trx_vendor_item WITH (UPDLOCK, READPAST, ROWLOCK)
+            INNER JOIN mst.v_presets AS mst_v_presets
+                ON mst_v_presets.preset = trx_vendor_item.preset
+            LEFT OUTER JOIN mst.seller AS mst_seller
+                ON mst_seller.vendor_name = trx_vendor_item.vendor_name
+            AND mst_seller.seller_id   = trx_vendor_item.seller_id
+            LEFT OUTER JOIN trx.listings AS trx_listings
+                ON trx_listings.vendor_name    = trx_vendor_item.vendor_name
+            AND trx_listings.vendor_item_id = trx_vendor_item.vendor_item_id
+            AND trx_listings.is_deleted     = 0
+        WHERE
+            -- processing（最重要）
+            trx_vendor_item.processing_at IS NULL
+
+            -- status / 出品不可
+            AND (trx_vendor_item.status = N'販売中' OR trx_vendor_item.status IS NULL)
+            AND ISNULL(trx_vendor_item.出品不可flg, 0) = 0
+
+            -- 出品日判定 = OK
+            AND NOT (
+                trx_vendor_item.last_updated_str LIKE N'%ヶ月前%'
+                OR trx_vendor_item.last_updated_str LIKE N'%か月前%'
+                OR trx_vendor_item.last_updated_str LIKE N'%半年以上前%'
+            )
+
+            -- 出品 = 未出品
+            AND trx_listings.vendor_item_id IS NULL
+
+            -- 素材判定 = OK（NG(GA補色)/NG(危険素材) を除外）
+            AND ISNULL(trx_vendor_item.[出品状況], N'') NOT IN (N'NG(GA補色)', N'NG(危険素材)')
+
+            -- 配送条件判定 = OK
+            AND ISNULL(trx_vendor_item.shipping_days, N'') NOT IN (
+                N'4~7日で発送', N'4〜7日で発送', N'8〜14日で発送', N'90日以内で発送'
+            )
+
+            -- is_listing_target = 1
+            AND mst_v_presets.is_listing_target = 1
+
+            -- 価格帯（v_presets の low/high を使うならこれ）
+            AND trx_vendor_item.price BETWEEN mst_v_presets.low_jpy_target AND mst_v_presets.high_jpy_target
+
+            -- 評価判定 = OK or 評価未判定（_base 定義ロジックを WHERE に展開）
+            AND (
+                mst_seller.seller_id IS NULL
+                OR (
+                    trx_vendor_item.vendor_name = N'メルカリ'
+                    AND (
+                        mst_seller.rating_count >= 50
+                        OR (
+                            mst_seller.rating_count < 50
+                            AND (
+                                trx_vendor_item.last_ng_at IS NULL
+                                OR DATEADD(
+                                    DAY,
+                                    CASE
+                                        WHEN mst_seller.rating_count >= 45 THEN 1
+                                        WHEN mst_seller.rating_count >= 30 THEN 7
+                                        WHEN mst_seller.rating_count >= 10 THEN 14
+                                        ELSE 30
+                                    END,
+                                    trx_vendor_item.last_ng_at
+                                ) <= SYSDATETIME()
+                            )
+                        )
+                    )
+                )
+                OR (
+                    trx_vendor_item.vendor_name = N'メルカリshops'
+                    AND (
+                        mst_seller.rating_count >= 20
+                        OR (
+                            mst_seller.rating_count < 20
+                            AND (
+                                trx_vendor_item.last_ng_at IS NULL
+                                OR DATEADD(
+                                    DAY,
+                                    CASE
+                                        WHEN mst_seller.rating_count >= 18 THEN 1
+                                        WHEN mst_seller.rating_count >= 12 THEN 7
+                                        WHEN mst_seller.rating_count >= 5  THEN 14
+                                        ELSE 30
+                                    END,
+                                    trx_vendor_item.last_ng_at
+                                ) <= SYSDATETIME()
+                            )
+                        )
+                    )
+                )
+            )
+        ORDER BY
+            trx_vendor_item.created_at ASC,
+            trx_vendor_item.vendor_page ASC
+    )
+    UPDATE trx_vendor_item
     SET
-        processing_by = ?,
-        processing_at = SYSDATETIME()
+        trx_vendor_item.processing_by = ?,
+        trx_vendor_item.processing_at = SYSDATETIME()
     OUTPUT
         inserted.vendor_item_id,
         inserted.vendor_name,
@@ -1595,47 +1693,35 @@ def take_one_vendor_item(conn, preset_group, processing_by):
         inserted.shipping_region,
         inserted.shipping_days,
         inserted.preset,
-        -- マスタ(mst.v_presets)側の値を直接出力
-        mst.v_presets.mode,
-        mst.v_presets.default_brand_en,
-        mst.v_presets.category_id_ebay,
-        mst.v_presets.department,
-        mst.v_presets.type_ebay
-    FROM trx.vendor_item AS TargetTable
-    INNER JOIN (
-        SELECT TOP (1)
-            V.vendor_item_id
-        FROM dbo.vw_vendor_item_ready AS V WITH (UPDLOCK, READPAST)
-        INNER JOIN nostock.mst.presets_price_ranges AS R
-            ON R.category_group = V.category_group
-        WHERE R.preset_group = ?
-          AND V.price BETWEEN R.low_jpy_target AND R.high_jpy_target
-          AND V.processing_at IS NULL
-        ORDER BY V.created_at ASC, V.vendor_page ASC
-    ) AS SubQuery ON TargetTable.vendor_item_id = SubQuery.vendor_item_id
-    INNER JOIN mst.v_presets
-        ON mst.v_presets.preset = TargetTable.preset
+        mst_v_presets.mode,
+        mst_v_presets.default_brand_en,
+        mst_v_presets.category_id_ebay,
+        mst_v_presets.department,
+        mst_v_presets.type_ebay
+    FROM
+        trx.vendor_item AS trx_vendor_item
+        INNER JOIN target_item
+            ON target_item.vendor_item_id = trx_vendor_item.vendor_item_id
+        INNER JOIN mst.v_presets AS mst_v_presets
+            ON mst_v_presets.preset = trx_vendor_item.preset;
     """
 
-    t_start = time.time() # 追記
+    t_start = time.time()
+
     with conn.cursor() as cur:
-        # パラメータ順序: (1)processing_by, (2)preset_group
-        cur.execute(sql, processing_by, preset_group)
+        cur.execute(sql, processing_by)
         row = cur.fetchone()
-        
         conn.commit()
 
-        elapsed = time.time() - t_start # 追記
-        print(f"  [DB_TIME] take_one_sql: {elapsed:.3f}s") # 追記
+        elapsed = time.time() - t_start
+        print(f"  [DB_TIME] take_one_sql: {elapsed:.3f}s")
 
         if not row:
             return None
 
-        # pyodbc の description からカラム名を取得して dict 化
         columns = [col[0] for col in cur.description]
         return dict(zip(columns, row))
-    
-    
+
 def main():
 
     # --- 修正ポイント1: .env の場所を絶対パスで指定 ---
@@ -1751,6 +1837,11 @@ def main():
                     acct.preset_group,   # ← presetではなく preset_group
                     processing_by,
                 )
+
+                if not row:
+                    print(f"[INFO] {acct.account} 在庫枯渇")
+                    break
+
 
                 print(f"[DEBUG] アイテム取得結果: {'あり' if row else 'なし'}")
 

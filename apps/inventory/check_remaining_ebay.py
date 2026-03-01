@@ -136,6 +136,22 @@ def build_mercari_url(vendor_name: str, sku: str) -> str:
         return f"https://jp.mercari.com/shops/product/{sku}"
     return f"https://jp.mercari.com/item/{sku}"
 
+def exists_remaining_target(conn):
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT TOP (1) 1
+            FROM trx.listings AS l
+            INNER JOIN trx.vendor_item AS v
+                ON v.vendor_name = l.vendor_name
+               AND v.vendor_item_id = l.vendor_item_id
+            WHERE l.is_deleted = 0
+              AND l.vendor_name IN (N'メルカリ', N'メルカリshops')
+              AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')
+              AND v.remaining_check_at IS NULL
+              AND v.remaining_check_by IS NULL
+        """)
+        return cur.fetchone() is not None
+
 def run_remaining_worker(worker_name: str):
     driver = None
     conn = None
@@ -147,10 +163,32 @@ def run_remaining_worker(worker_name: str):
         conn = get_sql_server_connection()
 
         for i in range(N):
-            row = pull_one_remaining_target(conn, worker_name)
-            if not row:
-                print("[INFO] remaining queue empty")
-                break
+            
+            retry_count = 0
+            MAX_RETRY = 5   # 最初は5でOK。後で無限でもいい
+
+            while True:
+                row = pull_one_remaining_target(conn, worker_name)
+
+                if row:
+                    retry_count = 0
+                    break
+
+                # ---- ここからが新ロジック ----
+                retry_count += 1
+                print(f"[WAIT] no row fetched. retry={retry_count}/{MAX_RETRY}")
+
+                # ロックなしで存在確認
+                if exists_remaining_target(conn):
+                    print("[INFO] targets exist. retrying...")
+                    time.sleep(2)
+                    if retry_count >= MAX_RETRY:
+                        print("[INFO] max retry reached. stopping.")
+                        return
+                    continue
+                else:
+                    print("[INFO] truly empty.")
+                    return
 
             print(f"\n[INFO] remaining processing {i+1}/{N} "
                   f"vendor={row['vendor_name']} sku={row['vendor_item_id']}")
