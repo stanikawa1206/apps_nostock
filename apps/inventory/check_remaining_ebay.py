@@ -354,44 +354,39 @@ def pull_one_remaining_target(conn, worker_name: str):
     """
     with conn.cursor() as cur:
         cur.execute("""
-            ;WITH cte AS (
+            ;WITH target AS (
                 SELECT TOP (1)
-                    l.listing_id,
-                    l.account,
-                    l.vendor_name,
-                    l.vendor_item_id,
-                    v.preset,
-                    p.mode,
-                    p.low_usd_target,
-                    p.high_usd_target
-                FROM trx.listings AS l WITH (UPDLOCK, READPAST, ROWLOCK)
-                INNER JOIN trx.vendor_item AS v
-                    ON v.vendor_name    = l.vendor_name
-                AND v.vendor_item_id = l.vendor_item_id
-                INNER JOIN mst.v_presets AS p
-                    ON p.preset = v.preset
-                WHERE l.is_deleted = 0
-                AND l.vendor_name IN (N'メルカリ', N'メルカリshops')
-                AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')
-                AND v.remaining_check_at IS NULL
-                AND v.remaining_check_by IS NULL
-                ORDER BY l.start_time DESC
+                    v.vendor_name,
+                    v.vendor_item_id
+                FROM trx.vendor_item AS v WITH (UPDLOCK, READPAST, ROWLOCK)
+                WHERE
+                    v.vendor_name IN (N'メルカリ', N'メルカリshops')
+                    AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')
+                    AND v.remaining_check_at IS NULL
+                    AND v.remaining_check_by IS NULL
+                ORDER BY v.created_at DESC
             )
             UPDATE v
             SET remaining_check_by = ?
             OUTPUT
                 inserted.vendor_name,
                 inserted.vendor_item_id,
-                cte.account,
-                cte.listing_id,
-                cte.preset,
-                cte.mode,
-                cte.low_usd_target,
-                cte.high_usd_target
+                l.account,
+                l.listing_id,
+                inserted.preset,
+                p.mode,
+                p.low_usd_target,
+                p.high_usd_target
             FROM trx.vendor_item AS v
-            INNER JOIN cte
-            ON v.vendor_name    = cte.vendor_name
-            AND v.vendor_item_id = cte.vendor_item_id;                    
+            INNER JOIN target
+                ON v.vendor_name = target.vendor_name
+            AND v.vendor_item_id = target.vendor_item_id
+            INNER JOIN trx.listings AS l
+                ON l.vendor_name = v.vendor_name
+            AND l.vendor_item_id = v.vendor_item_id
+            INNER JOIN mst.v_presets AS p
+                ON p.preset = v.preset
+            WHERE l.is_deleted = 0;
         """, (worker_name,))
 
         row = cur.fetchone()
