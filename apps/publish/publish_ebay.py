@@ -1589,7 +1589,7 @@ def take_one_vendor_item(conn, preset_group, processing_by):
             trx_vendor_item.vendor_item_id
         FROM
             trx.vendor_item AS trx_vendor_item WITH (UPDLOCK, READPAST, ROWLOCK)
-            INNER JOIN mst.v_presets AS mst_v_presets
+            INNER JOIN mst.presets_materialized AS mst_v_presets
                 ON mst_v_presets.preset = trx_vendor_item.preset
             LEFT OUTER JOIN mst.seller AS mst_seller
                 ON mst_seller.vendor_name = trx_vendor_item.vendor_name
@@ -1702,13 +1702,15 @@ def take_one_vendor_item(conn, preset_group, processing_by):
         trx.vendor_item AS trx_vendor_item
         INNER JOIN target_item
             ON target_item.vendor_item_id = trx_vendor_item.vendor_item_id
-        INNER JOIN mst.v_presets AS mst_v_presets
-            ON mst_v_presets.preset = trx_vendor_item.preset;
+        INNER JOIN mst.presets_materialized AS mst_v_presets
+            ON mst_v_presets.preset = trx_vendor_item.preset
+    OPTION (MAXDOP 1);
     """
 
     t_start = time.time()
 
     with conn.cursor() as cur:
+
         cur.execute(sql, processing_by)
         row = cur.fetchone()
         conn.commit()
@@ -1777,13 +1779,9 @@ def main():
     MAX_LISTINGS = 10**9
     stop_all = False
 
-    print("[DEBUG] DB接続を開始します...")
     conn = get_sql_server_connection()
-    print("[DEBUG] DB接続成功")
 
-    print("[DEBUG] ブラウザを起動します...")
     driver = build_driver()
-    print("[DEBUG] ブラウザ起動成功")
 
     try:
         # ===== アカウント取得 =====
@@ -1828,15 +1826,13 @@ def main():
 
             # ===== 第二階層 アカウント内ループ =====
             while has_quota(acct) and not stop_all:
-                # ★ ここが修正ポイント
-                print(f"[DEBUG] {acct.account} 用の最初のアイテムを取得します...")
-
-                
+                 
                 row = take_one_vendor_item(
                     conn,
                     acct.preset_group,   # ← presetではなく preset_group
                     processing_by,
                 )
+
 
                 if not row:
                     print(f"[INFO] {acct.account} 在庫枯渇")
@@ -1956,5 +1952,5 @@ def main():
         conn.close()
 
 if __name__ == "__main__":
-    print("--- Python Program Started ---")
+    print("--- Python Program Started ver MAXDOP 1 ---")
     main()

@@ -254,6 +254,15 @@ def wait_until_remaining_exhausted(conn):
         print(f"… remaining対象={cnt} 件")
         time.sleep(30)
 
+def refresh_presets_materialized(conn):
+    with conn.cursor() as cur:
+        cur.execute("TRUNCATE TABLE mst.presets_materialized;")
+        cur.execute("""
+            INSERT INTO mst.presets_materialized
+            SELECT *
+            FROM mst.v_presets;
+        """)
+    conn.commit()
 
 
 # ======================
@@ -451,6 +460,7 @@ def main():
             # ------------------------------------------------
             print("\n=== 🚀 publish_ebay.py 実行 ===")
 
+            refresh_presets_materialized(conn)
             cur.execute("""
                 UPDATE trx.vendor_item
                 SET
