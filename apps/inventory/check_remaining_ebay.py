@@ -156,7 +156,7 @@ def run_remaining_worker(worker_name: str):
     driver = None
     conn = None
 
-    print("ver 20260301_4start")
+    print("ver 20260301_5 READPAST を外す。 start")
 
     N = 10000  # ★ 最大処理件数
 
@@ -360,7 +360,7 @@ def pull_one_remaining_target(conn, worker_name: str):
                 SELECT TOP (1)
                     v.vendor_name,
                     v.vendor_item_id
-                FROM trx.vendor_item AS v WITH (UPDLOCK, READPAST, ROWLOCK)
+                FROM trx.vendor_item AS v 
                 WHERE
                     v.vendor_name IN (N'メルカリ', N'メルカリshops')
                     AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')
