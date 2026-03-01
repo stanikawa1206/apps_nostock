@@ -1583,128 +1583,141 @@ class PublishState:
 
 def take_one_vendor_item(conn, preset_group, processing_by):
 
-    sql = """
-    ;WITH target_item AS (
-        SELECT TOP (1)
-            trx_vendor_item.vendor_item_id
-        FROM
-            trx.vendor_item AS trx_vendor_item WITH (UPDLOCK, READPAST, ROWLOCK)
-            INNER JOIN mst.presets_materialized AS mst_v_presets
-                ON mst_v_presets.preset = trx_vendor_item.preset
-            LEFT OUTER JOIN mst.seller AS mst_seller
-                ON mst_seller.vendor_name = trx_vendor_item.vendor_name
-            AND mst_seller.seller_id   = trx_vendor_item.seller_id
-            LEFT OUTER JOIN trx.listings AS trx_listings
-                ON trx_listings.vendor_name    = trx_vendor_item.vendor_name
-            AND trx_listings.vendor_item_id = trx_vendor_item.vendor_item_id
-            AND trx_listings.is_deleted     = 0
-        WHERE
-            -- processing（最重要）
-            trx_vendor_item.processing_at IS NULL
+    sql = r"""
+    /*
+    take_one_vendor_item (deadlock-resistant)
+    1) trx.vendor_item の1行だけを UPDATE で確保（ここがロックの本体）
+    2) 確保できた1行に対して、マスターを JOIN して返す
+    */
 
-            -- status / 出品不可
-            AND (trx_vendor_item.status = N'販売中' OR trx_vendor_item.status IS NULL)
-            AND ISNULL(trx_vendor_item.出品不可flg, 0) = 0
+    DECLARE @picked TABLE (
+        vendor_item_id nvarchar(200) NOT NULL
+    );
 
-            -- 出品日判定 = OK
-            AND NOT (
-                trx_vendor_item.last_updated_str LIKE N'%ヶ月前%'
-                OR trx_vendor_item.last_updated_str LIKE N'%か月前%'
-                OR trx_vendor_item.last_updated_str LIKE N'%半年以上前%'
-            )
-
-            -- 出品 = 未出品
-            AND trx_listings.vendor_item_id IS NULL
-
-            -- 素材判定 = OK（NG(GA補色)/NG(危険素材) を除外）
-            AND ISNULL(trx_vendor_item.[出品状況], N'') NOT IN (N'NG(GA補色)', N'NG(危険素材)')
-
-            -- 配送条件判定 = OK
-            AND ISNULL(trx_vendor_item.shipping_days, N'') NOT IN (
-                N'4~7日で発送', N'4〜7日で発送', N'8〜14日で発送', N'90日以内で発送'
-            )
-
-            -- is_listing_target = 1
-            AND mst_v_presets.is_listing_target = 1
-
-            -- 価格帯（v_presets の low/high を使うならこれ）
-            AND trx_vendor_item.price BETWEEN mst_v_presets.low_jpy_target AND mst_v_presets.high_jpy_target
-
-            -- 評価判定 = OK or 評価未判定（_base 定義ロジックを WHERE に展開）
-            AND (
-                mst_seller.seller_id IS NULL
-                OR (
-                    trx_vendor_item.vendor_name = N'メルカリ'
-                    AND (
-                        mst_seller.rating_count >= 50
-                        OR (
-                            mst_seller.rating_count < 50
-                            AND (
-                                trx_vendor_item.last_ng_at IS NULL
-                                OR DATEADD(
-                                    DAY,
-                                    CASE
-                                        WHEN mst_seller.rating_count >= 45 THEN 1
-                                        WHEN mst_seller.rating_count >= 30 THEN 7
-                                        WHEN mst_seller.rating_count >= 10 THEN 14
-                                        ELSE 30
-                                    END,
-                                    trx_vendor_item.last_ng_at
-                                ) <= SYSDATETIME()
-                            )
-                        )
-                    )
-                )
-                OR (
-                    trx_vendor_item.vendor_name = N'メルカリshops'
-                    AND (
-                        mst_seller.rating_count >= 20
-                        OR (
-                            mst_seller.rating_count < 20
-                            AND (
-                                trx_vendor_item.last_ng_at IS NULL
-                                OR DATEADD(
-                                    DAY,
-                                    CASE
-                                        WHEN mst_seller.rating_count >= 18 THEN 1
-                                        WHEN mst_seller.rating_count >= 12 THEN 7
-                                        WHEN mst_seller.rating_count >= 5  THEN 14
-                                        ELSE 30
-                                    END,
-                                    trx_vendor_item.last_ng_at
-                                ) <= SYSDATETIME()
-                            )
-                        )
-                    )
-                )
-            )
-        ORDER BY
-            trx_vendor_item.created_at ASC,
-            trx_vendor_item.vendor_page ASC
-    )
-    UPDATE trx_vendor_item
+    -- ① まずは vendor_item の1行だけを確保する（JOINしない）
+    UPDATE TOP (1) trx.vendor_item WITH (UPDLOCK, READPAST, ROWLOCK)
     SET
-        trx_vendor_item.processing_by = ?,
-        trx_vendor_item.processing_at = SYSDATETIME()
-    OUTPUT
-        inserted.vendor_item_id,
-        inserted.vendor_name,
-        inserted.price,
-        inserted.shipping_region,
-        inserted.shipping_days,
-        inserted.preset,
-        mst_v_presets.mode,
-        mst_v_presets.default_brand_en,
-        mst_v_presets.category_id_ebay,
-        mst_v_presets.department,
-        mst_v_presets.type_ebay
-    FROM
-        trx.vendor_item AS trx_vendor_item
-        INNER JOIN target_item
-            ON target_item.vendor_item_id = trx_vendor_item.vendor_item_id
-        INNER JOIN mst.presets_materialized AS mst_v_presets
-            ON mst_v_presets.preset = trx_vendor_item.preset
+        processing_by = ?,
+        processing_at = SYSDATETIME()
+    OUTPUT inserted.vendor_item_id
+    INTO @picked(vendor_item_id)
+    WHERE
+        trx.vendor_item.processing_at IS NULL
+
+        -- status / 出品不可
+        AND (trx.vendor_item.status = N'販売中' OR trx.vendor_item.status IS NULL)
+        AND ISNULL(trx.vendor_item.出品不可flg, 0) = 0
+
+        -- 出品日判定 = OK
+        AND NOT (
+            trx.vendor_item.last_updated_str LIKE N'%ヶ月前%'
+            OR trx.vendor_item.last_updated_str LIKE N'%か月前%'
+            OR trx.vendor_item.last_updated_str LIKE N'%半年以上前%'
+        )
+
+        -- 素材判定 = OK
+        AND ISNULL(trx.vendor_item.[出品状況], N'') NOT IN (N'NG(GA補色)', N'NG(危険素材)')
+
+        -- 配送条件判定 = OK
+        AND ISNULL(trx.vendor_item.shipping_days, N'') NOT IN (
+            N'4~7日で発送', N'4〜7日で発送', N'8〜14日で発送', N'90日以内で発送'
+        )
+
+        -- 出品 = 未出品（JOINしないで NOT EXISTS）
+        AND NOT EXISTS (
+            SELECT 1
+            FROM trx.listings
+            WHERE
+                trx.listings.vendor_name    = trx.vendor_item.vendor_name
+                AND trx.listings.vendor_item_id = trx.vendor_item.vendor_item_id
+                AND trx.listings.is_deleted     = 0
+        )
+    ORDER BY
+        trx.vendor_item.created_at ASC,
+        trx.vendor_item.vendor_page ASC
     OPTION (MAXDOP 1);
+
+    -- ② 確保できた行の情報を返す（ここでJOIN。ロック競合の根っこにはならない）
+    SELECT
+        vendor_item.vendor_item_id,
+        vendor_item.vendor_name,
+        vendor_item.price,
+        vendor_item.shipping_region,
+        vendor_item.shipping_days,
+        vendor_item.preset,
+
+        presets.mode,
+        presets.default_brand_en,
+        presets.category_id_ebay,
+        presets.department,
+        presets.type_ebay
+
+    FROM @picked AS picked
+    INNER JOIN trx.vendor_item AS vendor_item
+        ON vendor_item.vendor_item_id = picked.vendor_item_id
+    INNER JOIN mst.presets_materialized AS presets
+        ON presets.preset = vendor_item.preset
+
+    -- sellerは判定に使うなら本当は①に入れたいが、デッドロック回避を優先して②で参照だけ
+    LEFT OUTER JOIN mst.seller AS seller
+        ON seller.vendor_name = vendor_item.vendor_name
+    AND seller.seller_id   = vendor_item.seller_id
+
+    WHERE
+        -- is_listing_target（物理マスタ）
+        presets.is_listing_target = 1
+
+        -- 価格帯（物理マスタ）
+        AND vendor_item.price BETWEEN presets.low_jpy_target AND presets.high_jpy_target
+
+        -- 評価判定（元ロジック：ここで足切り）
+        AND (
+            seller.seller_id IS NULL
+            OR (
+                vendor_item.vendor_name = N'メルカリ'
+                AND (
+                    seller.rating_count >= 50
+                    OR (
+                        seller.rating_count < 50
+                        AND (
+                            vendor_item.last_ng_at IS NULL
+                            OR DATEADD(
+                                DAY,
+                                CASE
+                                    WHEN seller.rating_count >= 45 THEN 1
+                                    WHEN seller.rating_count >= 30 THEN 7
+                                    WHEN seller.rating_count >= 10 THEN 14
+                                    ELSE 30
+                                END,
+                                vendor_item.last_ng_at
+                            ) <= SYSDATETIME()
+                        )
+                    )
+                )
+            )
+            OR (
+                vendor_item.vendor_name = N'メルカリshops'
+                AND (
+                    seller.rating_count >= 20
+                    OR (
+                        seller.rating_count < 20
+                        AND (
+                            vendor_item.last_ng_at IS NULL
+                            OR DATEADD(
+                                DAY,
+                                CASE
+                                    WHEN seller.rating_count >= 18 THEN 1
+                                    WHEN seller.rating_count >= 12 THEN 7
+                                    WHEN seller.rating_count >= 5  THEN 14
+                                    ELSE 30
+                                END,
+                                vendor_item.last_ng_at
+                            ) <= SYSDATETIME()
+                        )
+                    )
+                )
+            )
+        );
     """
 
     t_start = time.time()
@@ -1952,5 +1965,5 @@ def main():
         conn.close()
 
 if __name__ == "__main__":
-    print("--- Python Program Started ver MAXDOP 1 ---")
+    print("--- Python Program Started ver 置き換え後SQL ---")
     main()
