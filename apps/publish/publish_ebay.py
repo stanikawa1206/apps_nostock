@@ -1603,6 +1603,13 @@ def take_one_vendor_item(conn, preset_group, processing_by):
         FROM trx.vendor_item WITH (UPDLOCK, READPAST, ROWLOCK)
         WHERE
             -- 🔵 vendor_item単体判定
+            -- processing_at
+            -- status
+            -- 出品不可flg
+            -- 出品状況
+            -- shipping_days
+            -- last_updated_str
+
             trx.vendor_item.processing_at IS NULL
             AND (trx.vendor_item.status = N'販売中' OR trx.vendor_item.status IS NULL)
             AND ISNULL(trx.vendor_item.出品不可flg, 0) = 0
@@ -1635,89 +1642,25 @@ def take_one_vendor_item(conn, preset_group, processing_by):
     OPTION (MAXDOP 1);
 
     -- =========================================
-    -- ② ロック後にフルロジック判定（🔴 presets/seller依存）
-    --    ※ NGなら ok_flag=0 で vendor_item_id だけ返す
+    -- ② view で完全判定（価格OKのみ）
     -- =========================================
     SELECT
-        vendor_item.vendor_item_id,
-        vendor_item.vendor_name,
-        vendor_item.price,
-        vendor_item.shipping_region,
-        vendor_item.shipping_days,
-        vendor_item.preset,
-
-        presets.mode,
-        presets.default_brand_en,
-        presets.category_id_ebay,
-        presets.department,
-        presets.type_ebay,
-
-        CAST(
-            CASE
-                WHEN presets.preset IS NULL THEN 0
-                WHEN presets.is_listing_target <> 1 THEN 0
-                WHEN vendor_item.price NOT BETWEEN presets.low_jpy_target AND presets.high_jpy_target THEN 0
-
-                -- 評価判定（元ロジック）
-                WHEN (
-                    seller.seller_id IS NULL
-                    OR (
-                        vendor_item.vendor_name = N'メルカリ'
-                        AND (
-                            seller.rating_count >= 50
-                            OR (
-                                seller.rating_count < 50
-                                AND (
-                                    vendor_item.last_ng_at IS NULL
-                                    OR DATEADD(
-                                        DAY,
-                                        CASE
-                                            WHEN seller.rating_count >= 45 THEN 1
-                                            WHEN seller.rating_count >= 30 THEN 7
-                                            WHEN seller.rating_count >= 10 THEN 14
-                                            ELSE 30
-                                        END,
-                                        vendor_item.last_ng_at
-                                    ) <= SYSDATETIME()
-                                )
-                            )
-                        )
-                    )
-                    OR (
-                        vendor_item.vendor_name = N'メルカリshops'
-                        AND (
-                            seller.rating_count >= 20
-                            OR (
-                                seller.rating_count < 20
-                                AND (
-                                    vendor_item.last_ng_at IS NULL
-                                    OR DATEADD(
-                                        DAY,
-                                        CASE
-                                            WHEN seller.rating_count >= 18 THEN 1
-                                            WHEN seller.rating_count >= 12 THEN 7
-                                            WHEN seller.rating_count >= 5  THEN 14
-                                            ELSE 30
-                                        END,
-                                        vendor_item.last_ng_at
-                                    ) <= SYSDATETIME()
-                                )
-                            )
-                        )
-                    )
-                ) THEN 1
-                ELSE 0
-            END
-        AS bit) AS ok_flag
-
-    FROM @picked AS picked
-    INNER JOIN trx.vendor_item AS vendor_item
-        ON vendor_item.vendor_item_id = picked.vendor_item_id
-    LEFT OUTER JOIN mst.presets_materialized AS presets
-        ON presets.preset = vendor_item.preset
-    LEFT OUTER JOIN mst.seller AS seller
-        ON seller.vendor_name = vendor_item.vendor_name
-    AND seller.seller_id   = vendor_item.seller_id
+        v.vendor_item_id,
+        v.vendor_name,
+        v.price,
+        v.shipping_region,
+        v.shipping_days,
+        v.preset,
+        v.mode,
+        v.default_brand_en,
+        v.category_id_ebay,
+        v.department,
+        v.type_ebay,
+        CAST(1 AS bit) AS ok_flag
+    FROM @picked p
+    INNER JOIN dbo.vw_vendor_item_ready v
+        ON v.vendor_item_id = p.vendor_item_id
+    AND v.価格判定 = N'価格OK'
     OPTION (MAXDOP 1);
     """
 
@@ -1972,5 +1915,5 @@ def main():
         conn.close()
 
 if __name__ == "__main__":
-    print("--- Python Program Started ver “抜けを全部埋めた” SQL 全体 ---")
+    print("--- Python Program Started ver ready対応  ---")
     main()
