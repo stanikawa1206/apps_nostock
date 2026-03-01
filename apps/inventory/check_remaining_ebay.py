@@ -156,7 +156,7 @@ def run_remaining_worker(worker_name: str):
     driver = None
     conn = None
 
-    print("ver 20260301_5 READPAST を外す。 start")
+    print("ver 20260301_6 target の選定を JOIN込み  start")
 
     N = 10000  # ★ 最大処理件数
 
@@ -356,39 +356,46 @@ def pull_one_remaining_target(conn, worker_name: str):
     """
     with conn.cursor() as cur:
         cur.execute("""
-            ;WITH target AS (
+            ;WITH cte AS (
                 SELECT TOP (1)
                     v.vendor_name,
-                    v.vendor_item_id
-                FROM trx.vendor_item AS v 
+                    v.vendor_item_id,
+                    l.account,
+                    l.listing_id,
+                    v.preset,
+                    p.mode,
+                    p.low_usd_target,
+                    p.high_usd_target
+                FROM trx.listings AS l WITH (READPAST, ROWLOCK)
+                INNER JOIN trx.vendor_item AS v
+                    ON v.vendor_name    = l.vendor_name
+                AND v.vendor_item_id = l.vendor_item_id
+                INNER JOIN mst.v_presets AS p
+                    ON p.preset = v.preset
                 WHERE
-                    v.vendor_name IN (N'メルカリ', N'メルカリshops')
+                    l.is_deleted = 0
+                    AND l.vendor_name IN (N'メルカリ', N'メルカリshops')
                     AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')
                     AND v.remaining_check_at IS NULL
                     AND v.remaining_check_by IS NULL
-                ORDER BY v.vendor_item_id
+                ORDER BY
+                    v.vendor_item_id
             )
             UPDATE v
             SET remaining_check_by = ?
             OUTPUT
                 inserted.vendor_name,
                 inserted.vendor_item_id,
-                l.account,
-                l.listing_id,
-                inserted.preset,
-                p.mode,
-                p.low_usd_target,
-                p.high_usd_target
+                cte.account,
+                cte.listing_id,
+                cte.preset,
+                cte.mode,
+                cte.low_usd_target,
+                cte.high_usd_target
             FROM trx.vendor_item AS v
-            INNER JOIN target
-                ON v.vendor_name = target.vendor_name
-            AND v.vendor_item_id = target.vendor_item_id
-            INNER JOIN trx.listings AS l
-                ON l.vendor_name = v.vendor_name
-            AND l.vendor_item_id = v.vendor_item_id
-            INNER JOIN mst.v_presets AS p
-                ON p.preset = v.preset
-            WHERE l.is_deleted = 0;
+            INNER JOIN cte
+                ON v.vendor_name    = cte.vendor_name
+            AND v.vendor_item_id = cte.vendor_item_id;                   
         """, (worker_name,))
 
         row = cur.fetchone()
