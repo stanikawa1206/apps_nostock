@@ -156,7 +156,7 @@ def run_remaining_worker(worker_name: str):
     driver = None
     conn = None
 
-    print("ver 20260301start")
+    print("ver 20260301_2start")
 
     N = 10000  # ★ 最大処理件数
 
@@ -366,7 +366,6 @@ def pull_one_remaining_target(conn, worker_name: str):
                     AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')
                     AND v.remaining_check_at IS NULL
                     AND v.remaining_check_by IS NULL
-                ORDER BY v.created_at DESC
             )
             UPDATE v
             SET remaining_check_by = ?
