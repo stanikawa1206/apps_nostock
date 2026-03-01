@@ -156,7 +156,7 @@ def run_remaining_worker(worker_name: str):
     driver = None
     conn = None
 
-    print("ver 20260301_2start")
+    print("ver 20260301_3start")
 
     N = 10000  # ★ 最大処理件数
 
