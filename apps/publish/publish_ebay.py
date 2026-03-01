@@ -1975,5 +1975,5 @@ def main():
         conn.close()
 
 if __name__ == "__main__":
-    print("--- Python Program Started ver 置き換え後SQL ---")
+    print("--- Python Program Started ver “抜けを全部埋めた” SQL 全体 ---")
     main()
