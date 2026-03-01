@@ -165,7 +165,7 @@ def run_remaining_worker(worker_name: str):
         for i in range(N):
             
             retry_count = 0
-            MAX_RETRY = 5   # 最初は5でOK。後で無限でもいい
+            MAX_RETRY = 10   # 最初は5でOK。後で無限でもいい
 
             while True:
                 row = pull_one_remaining_target(conn, worker_name)
@@ -181,7 +181,7 @@ def run_remaining_worker(worker_name: str):
                 # ロックなしで存在確認
                 if exists_remaining_target(conn):
                     print("[INFO] targets exist. retrying...")
-                    time.sleep(2)
+                    time.sleep(5)
                     if retry_count >= MAX_RETRY:
                         print("[INFO] max retry reached. stopping.")
                         return
