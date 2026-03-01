@@ -251,85 +251,39 @@ def pull_one_remaining_target(conn, worker_name: str):
 def run_remaining_worker(worker_name: str):
     driver = None
 
-    print("ver 20260301 hassh版 start")
+    print("ver HASH_FIXED start")
 
-    N = 10000  # ★ 最大処理件数
+    N = 10000
+
+    pull_conn = None
+    work_conn = None
 
     try:
         driver = build_driver()
 
+        # 🔥 接続は1回だけ作る
+        pull_conn = get_sql_server_connection()
+        work_conn = get_sql_server_connection()
+
         for i in range(N):
 
-            retry_count = 0
-            MAX_RETRY = 10
+            row = pull_one_remaining_target(pull_conn, worker_name)
 
-            while True:
-                # =========================
-                # ① pull専用接続
-                # =========================
-                pull_conn = get_sql_server_connection()
-                try:
-                    row = pull_one_remaining_target(pull_conn, worker_name)
-                finally:
-                    pull_conn.close()  # ← ロック即解放
-
-                if row:
-                    retry_count = 0
-                    break
-
-                # ---- retryロジック ----
-                retry_count += 1
-                print(f"[WAIT] no row fetched. retry={retry_count}/{MAX_RETRY}")
-
-                # 存在確認も専用接続でやる
-                check_conn = get_sql_server_connection()
-                try:
-                    exists = exists_remaining_target(check_conn)
-                finally:
-                    check_conn.close()
-
-                if exists:
-                    print("[INFO] targets exist. retrying...")
-                    time.sleep(5)
-
-                    if retry_count >= MAX_RETRY:
-                        print("[INFO] max retry reached. stopping.")
-                        return
-                    continue
-                else:
-                    print("[INFO] truly empty.")
-                    return
+            if not row:
+                print("[INFO] no more targets.")
+                return
 
             print(
                 f"\n[INFO] remaining processing {i+1}/{N} "
                 f"vendor={row['vendor_name']} sku={row['vendor_item_id']}"
             )
 
-            # =========================
-            # ② 処理専用接続
-            # =========================
-            work_conn = get_sql_server_connection()
-
-            try:
-                process_status_and_sync(
-                    work_conn,
-                    driver,
-                    row,
-                    worker_name,
-                )
-
-            except Exception:
-                import traceback
-                traceback.print_exc()
-                safe_quit(driver)
-                sys.exit(1)
-
-            finally:
-                if work_conn:
-                    try:
-                        work_conn.close()
-                    except:
-                        pass
+            process_status_and_sync(
+                work_conn,
+                driver,
+                row,
+                worker_name,
+            )
 
             time.sleep(random.uniform(2.0, 5.0))
 
@@ -337,6 +291,12 @@ def run_remaining_worker(worker_name: str):
 
     finally:
         safe_quit(driver)
+
+        if pull_conn:
+            pull_conn.close()
+
+        if work_conn:
+            work_conn.close()
 
 
 def process_status_and_sync(
