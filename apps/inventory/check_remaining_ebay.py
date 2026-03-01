@@ -275,7 +275,7 @@ def pull_one_remaining_target(conn, worker_name: str):
 def run_remaining_worker(worker_name: str):
     driver = None
 
-    print("ver 20260301_B3 接続分離版 start")
+    print("ver 20260301_B4 接続分離版 start")
 
     N = 10000  # ★ 最大処理件数
 
@@ -341,14 +341,19 @@ def run_remaining_worker(worker_name: str):
                     row,
                     worker_name,
                 )
+
             except Exception:
                 import traceback
                 traceback.print_exc()
                 safe_quit(driver)
-                work_conn.close()
                 sys.exit(1)
+
             finally:
-                work_conn.close()
+                if work_conn:
+                    try:
+                        work_conn.close()
+                    except:
+                        pass
 
             time.sleep(random.uniform(2.0, 5.0))
 
