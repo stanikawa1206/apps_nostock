@@ -1737,7 +1737,15 @@ def take_one_vendor_item(conn, preset_group, processing_by):
         conn.commit()
 
         elapsed = time.time() - t_start
-        print(f"  [DB_TIME] take_one_sql: {elapsed:.3f}s")
+        if row:
+            columns = [col[0] for col in cur.description]
+            result = dict(zip(columns, row))
+            sku = result.get("vendor_item_id")
+            print(f"  [DB_TIME] take_one_sql: {elapsed:.3f}s SKU={sku}")
+            return result
+        else:
+            print(f"  [DB_TIME] take_one_sql: {elapsed:.3f}s SKU=None")
+            return None
 
         if not row:
             return None
