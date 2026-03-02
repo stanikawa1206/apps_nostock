@@ -1583,22 +1583,21 @@ class PublishState:
 
 def take_one_vendor_item(conn, preset_group, processing_by, account_name):
     """
-    【本来の処理ロジック】
-    1. 処理①：未処理の商品を1件確保 (UPDATE ... OUTPUT)
-    2. 処理②：確保した商品に対し、現在のアカウントの preset_group と商品の category_group を用いて
-       mst.presets_price_ranges から許容価格レンジ(low_jpy_target, high_jpy_target)を取得し、
-       商品の価格(v.price)がその範囲内であり、かつ View の価格判定が '価格OK' であるかを確認する。
-    3. 判定が合致するまで内部でループし、条件に合う商品が見つかるか、在庫が尽きるまで継続する。
+    【在庫死蔵防止ロジック：物理マスタ参照版】
+    1. 処理①（UPDATE）：
+       物理テーブル mst.presets_lookup を結合し、現在のアカウント(preset_group)が
+       担当する価格レンジ内の商品だけを TOP 1 でロック。
+    2. 処理②（SELECT）：
+       確保した1件に対してのみ、vw_vendor_item_ready を結合して最終判定を行う。
     """
 
-    # SQL文：preset_group パラメータを外部から受け取る形式に変更
     sql = r"""
     DECLARE @picked TABLE (
         vendor_item_id nvarchar(200) NOT NULL
     );
 
     -- =========================================
-    -- ① 1件確保：未処理かつ基本的な出品NG条件に該当しないものをロック
+    -- ① 狙い撃ち確保：物理マスタ(presets_lookup)をJOINして自分の担当分だけをロック
     -- =========================================
     UPDATE trx.vendor_item
     SET
@@ -1608,127 +1607,105 @@ def take_one_vendor_item(conn, preset_group, processing_by, account_name):
     INTO @picked(vendor_item_id)
     WHERE vendor_item_id = (
         SELECT TOP (1)
-            trx.vendor_item.vendor_item_id
-        FROM trx.vendor_item WITH (UPDLOCK, READPAST, ROWLOCK)
+            v.vendor_item_id
+        FROM trx.vendor_item v WITH (UPDLOCK, READPAST, ROWLOCK)
+        -- ★物理テーブルをJOIN。presetカラムをキーにして価格レンジを取得
+        INNER JOIN mst.presets_lookup pl ON pl.preset = v.preset
+        INNER JOIN mst.presets_price_ranges r 
+            ON r.preset_group = ? 
+            AND r.category_group = pl.category_group
         WHERE
-            trx.vendor_item.processing_at IS NULL
-            AND (trx.vendor_item.status = N'販売中' OR trx.vendor_item.status IS NULL)
-            AND ISNULL(trx.vendor_item.出品不可flg, 0) = 0
+            v.processing_at IS NULL
+            AND (v.status = N'販売中' OR v.status IS NULL)
+            AND ISNULL(v.出品不可flg, 0) = 0
+            
+            -- 自分のアカウントの担当レンジ内か判定（物理テーブル経由）
+            AND v.price >= r.low_jpy_target
+            AND v.price <= r.high_jpy_target
 
-            -- 古い更新の除外
+            -- 基本的なNG条件の除外
             AND NOT (
-                trx.vendor_item.last_updated_str LIKE N'%ヶ月前%'
-                OR trx.vendor_item.last_updated_str LIKE N'%か月前%'
-                OR trx.vendor_item.last_updated_str LIKE N'%半年以上前%'
+                v.last_updated_str LIKE N'%ヶ月前%'
+                OR v.last_updated_str LIKE N'%か月前%'
+                OR v.last_updated_str LIKE N'%半年以上前%'
             )
-
-            -- 過去のNG判定(GA補色/危険素材)の除外
-            AND ISNULL(trx.vendor_item.[出品状況], N'') NOT IN (N'NG(GA補色)', N'NG(危険素材)')
-
-            -- 発送日数が遅すぎるものの除外
-            AND ISNULL(trx.vendor_item.shipping_days, N'') NOT IN (
+            AND ISNULL(v.[出品状況], N'') NOT IN (N'NG(GA補色)', N'NG(危険素材)')
+            AND ISNULL(v.shipping_days, N'') NOT IN (
                 N'4~7日で発送', N'4〜7日で発送', N'8〜14日で発送', N'90日以内で発送'
             )
-
-            -- 重複出品防止 (listingsテーブルに有効なデータがある場合は除外)
             AND NOT EXISTS (
-                SELECT 1
-                FROM trx.listings
-                WHERE
-                    trx.listings.vendor_name = trx.vendor_item.vendor_name
-                    AND trx.listings.vendor_item_id = trx.vendor_item.vendor_item_id
-                    AND trx.listings.is_deleted = 0
+                SELECT 1 FROM trx.listings l
+                WHERE l.vendor_name = v.vendor_name
+                  AND l.vendor_item_id = v.vendor_item_id
+                  AND l.is_deleted = 0
             )
         ORDER BY
-            trx.vendor_item.created_at ASC,
-            trx.vendor_item.vendor_page ASC
+            v.created_at ASC,
+            v.vendor_page ASC
     )
     OPTION (MAXDOP 1);
 
     -- =========================================
-    -- ② 詳細判定：preset_group × category_group による価格レンジ照合
+    -- ② 最終判定：確保した1件に対し View の詳細ロジックを適用
     -- =========================================
     SELECT
-        v.vendor_item_id,
-        v.vendor_name,
-        v.price,
-        v.shipping_region,
-        v.shipping_days,
-        v.preset,
-        v.mode,
-        v.default_brand_en,
-        v.category_id_ebay,
-        v.department,
-        v.type_ebay,
-        v.category_group,
-        r.low_jpy_target,
-        r.high_jpy_target,
-        -- 価格判定とレンジ判定をまとめたフラグ
-        CASE WHEN v.価格判定 = N'価格OK' 
-                  AND v.price >= ISNULL(r.low_jpy_target, 0) 
-                  AND v.price <= ISNULL(r.high_jpy_target, 9999999) 
-             THEN CAST(1 AS bit) ELSE CAST(0 AS bit) END AS is_ok_logic
+        v.vendor_item_id, v.vendor_name, v.price, v.shipping_region, v.shipping_days,
+        v.preset, v.mode, v.default_brand_en, v.category_id_ebay, v.department,
+        v.type_ebay, pl.category_group,
+        r.low_jpy_target, r.high_jpy_target,
+        -- Viewの価格判定がOKか最終確認
+        CASE WHEN v.価格判定 = N'価格OK' THEN CAST(1 AS bit) ELSE CAST(0 AS bit) END AS is_ok_logic
     FROM @picked p
     INNER JOIN dbo.vw_vendor_item_ready v ON v.vendor_item_id = p.vendor_item_id
+    -- ②でも価格レンジ情報をログ出力用に取得
+    INNER JOIN mst.presets_lookup pl ON pl.preset = v.preset
     LEFT JOIN mst.presets_price_ranges r 
         ON r.preset_group = ? 
-        AND r.category_group = v.category_group
+        AND r.category_group = pl.category_group
     OPTION (MAXDOP 1);
     """
-# 判定OKな商品が見つかるまで無限ループ（①が空になるまで）
+
     while True:
         t_start = time.time()
-        
         with conn.cursor() as cur:
-            # 引数1: processing_by, 引数2: preset_group
-            cur.execute(sql, (processing_by, preset_group))
+            # 引数：処理PC名, 判定用プリセットグループ(①), 判定用プリセットグループ(②)
+            cur.execute(sql, (processing_by, preset_group, preset_group))
 
-            # SELECT結果セットに到達するまでスキップ
+            # SELECT結果セットへの到達
             select_reached = False
             while True:
                 if cur.description is not None:
                     select_reached = True
                     break
-                if not cur.nextset():
-                    break
+                if not cur.nextset(): break
             
-            # ①のUPDATEで1件も確保できなかった場合 ＝ 本当の在庫枯渇
+            # ①で対象が取れなかった場合 = 本当の枯渇
             if not select_reached:
-                print(f"  [DB_INFO] 現在のPC・条件に合致する未処理データが枯渇しました。")
+                print(f"  [DB_INFO] account={account_name} 担当範囲の在庫が枯渇しました。")
                 conn.commit()
                 return None
 
             row = cur.fetchone()
             conn.commit()
-
             elapsed = time.time() - t_start
 
             if row:
-                # カラム定義と辞書化
                 columns = [col[0] for col in cur.description]
                 result = dict(zip(columns, row))
-                
                 sku = result.get("vendor_item_id")
                 price = result.get("price")
                 category_grp = result.get('category_group', '不明')
-                low_target = result.get('low_jpy_target')
-                high_target = result.get('high_jpy_target')
+                low_target = result.get('low_jpy_target', 0)
+                high_target = result.get('high_jpy_target', 0)
 
-                # マスタ表示用の補助変数（None対策）
-                low_disp = low_target if low_target is not None else "未設定"
-                high_disp = high_target if high_target is not None else "未設定"
-
-                # SQL側で計算した判定フラグをチェック
                 if result.get("is_ok_logic") == 1:
-                    # 判定YES: 全条件クリア
-                    print(f"[価格OK] account={account_name} SKU={sku} 価格={price} 価格range {low_disp}～{high_disp} {preset_group}-{category_grp} (Time: {elapsed:.3f}s)")
+                    print(f"[〇価格OK] account={account_name} SKU={sku} 価格={price} 価格range {low_target}～{high_target} {preset_group}-{category_grp} (Time: {elapsed:.3f}s)")
                     return result
                 else:
-                    # 判定NO: レンジ外、またはViewで価格NG
-                    print(f"[価格NG] account={account_name} SKU={sku} 価格={price} 価格range {low_disp}～{high_disp} {preset_group}-{category_grp} (Time: {elapsed:.3f}s)")
+                    # ①を通過したが②のView側判定（利益率等）で落ちた場合
+                    print(f"[×価格NG] account={account_name} SKU={sku} 価格={price} (View判定NG) {preset_group}-{category_grp} (Time: {elapsed:.3f}s)")
                     continue
             else:
-                # 万が一1段目で確保したのに行が取れなかった場合はループ継続
                 continue
 
          
