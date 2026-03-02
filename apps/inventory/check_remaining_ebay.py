@@ -239,25 +239,32 @@ def run_remaining_worker(worker_name: str):
         pull_conn = get_sql_server_connection()
         work_conn = get_sql_server_connection()
 
-        for i in range(N):
+        # 仕事が見つからなかった時の連続空振り回数      
+        empty_count = 0
+        max_retries = 10  # 10回連続で空だったら本当に終了
 
+        for i in range(N):
             row = pull_one_remaining_target(pull_conn, worker_name)
 
             if not row:
-                print("[INFO] no more targets.")
-                return
+                empty_count += 1
+                if empty_count >= max_retries:
+                    print(f"[INFO] No more targets after {max_retries} retries. Finishing.")
+                    return
+                
+                # 遊び人を働かせるための「粘り」
+                wait_sec = 5
+                print(f"[INFO] No target visible (locked by others?). Retry {empty_count}/{max_retries} in {wait_sec}s...")
+                time.sleep(wait_sec)
+                continue # 次のループ（再試行）へ
 
-            print(
-                f"\n[INFO] remaining processing {i+1}/{N} "
-                f"vendor={row['vendor_name']} sku={row['vendor_item_id']}"
-            )
+            # 仕事が見つかったら空振りカウントをリセット
+            empty_count = 0
 
-            process_status_and_sync(
-                work_conn,
-                driver,
-                row,
-                worker_name,
-            )
+            print(f"\n[INFO] remaining processing {i+1}/{N} ...")
+            
+            # (実処理を実行)
+            process_status_and_sync(work_conn, driver, row, worker_name)
 
             time.sleep(random.uniform(2.0, 5.0))
 
