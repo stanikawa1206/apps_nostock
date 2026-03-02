@@ -1581,7 +1581,7 @@ class PublishState:
     cdn_mode_until: object
     cdn_cache: dict
 
-def take_one_vendor_item(conn, preset_group, processing_by):
+def take_one_vendor_item(conn, preset_group, processing_by, account_name):
     """
     【本来の処理ロジック】
     1. 処理①：未処理の商品を1件確保 (UPDATE ... OUTPUT)
@@ -1721,11 +1721,11 @@ def take_one_vendor_item(conn, preset_group, processing_by):
                 # SQL側で計算した判定フラグをチェック
                 if result.get("is_ok_logic") == 1:
                     # 判定YES: 全条件クリア
-                    print(f"[価格OK] account={processing_by} SKU={sku} 価格={price} 価格range {low_disp}～{high_disp} {preset_group}-{category_grp} (Time: {elapsed:.3f}s)")
+                    print(f"[価格OK] account={account_name} SKU={sku} 価格={price} 価格range {low_disp}～{high_disp} {preset_group}-{category_grp} (Time: {elapsed:.3f}s)")
                     return result
                 else:
                     # 判定NO: レンジ外、またはViewで価格NG
-                    print(f"[価格NG] account={processing_by} SKU={sku} 価格={price} 価格range {low_disp}～{high_disp} {preset_group}-{category_grp} (Time: {elapsed:.3f}s)")
+                    print(f"[価格NG] account={account_name} SKU={sku} 価格={price} 価格range {low_disp}～{high_disp} {preset_group}-{category_grp} (Time: {elapsed:.3f}s)")
                     continue
             else:
                 # 万が一1段目で確保したのに行が取れなかった場合はループ継続
@@ -1838,6 +1838,7 @@ def main():
                     conn,
                     acct.preset_group,   # ← presetではなく preset_group
                     processing_by,
+                    acct.account  
                 )
 
 
