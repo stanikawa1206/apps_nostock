@@ -460,17 +460,6 @@ def main():
             # ------------------------------------------------
             print("\n=== 🚀 publish_ebay.py 実行 ===")
 
-            refresh_presets_materialized(conn)
-            cur.execute("""
-                UPDATE trx.vendor_item
-                SET
-                    processing_by = NULL,
-                    processing_at = NULL
-                WHERE processing_by IS NOT NULL
-                   OR processing_at IS NOT NULL
-
-            """)
-            conn.commit()
             pub_start = datetime.now()
             pub_code, _ = run_script(PUBLISH_SCRIPT)
             pub_end = datetime.now()
