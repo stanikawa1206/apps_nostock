@@ -78,6 +78,27 @@ RATE = {
 }
 
 
+WORKER_COUNT = 7
+
+HOST_INDEX_MAP = {
+    "x162-43-42-135": 0,
+    "x162-43-15-160": 1,
+    "x162-43-29-154": 2,
+    "x210-131-209-103": 3,
+    "x85-131-251-127": 4,
+    "x162-43-39-209": 5,
+    "x210-131-209-232": 6,
+    # mouse は今日は未使用
+}
+
+def get_worker_index():
+    hostname = socket.gethostname()
+
+    if hostname not in HOST_INDEX_MAP:
+        raise RuntimeError(f"Unknown host: {hostname}")
+
+    return HOST_INDEX_MAP[hostname]
+
 # ===================== ユーティリティ =====================
 def human_sleep(a: float, b: float):
     time.sleep(random.uniform(a, b))
@@ -138,6 +159,9 @@ def build_mercari_url(vendor_name: str, sku: str) -> str:
     return f"https://jp.mercari.com/item/{sku}"
 
 def exists_remaining_target(conn):
+    worker_index = get_worker_index()
+    worker_count = WORKER_COUNT
+
     with conn.cursor() as cur:
         cur.execute("""
             SELECT TOP (1) 1
@@ -149,7 +173,8 @@ def exists_remaining_target(conn):
               AND v.vendor_name IN (N'メルカリ', N'メルカリshops')
               AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')
               AND v.remaining_check_at IS NULL
-        """)
+              AND ABS(CHECKSUM(v.vendor_item_id)) % ? = ?
+        """, (worker_count, worker_index))
         return cur.fetchone() is not None
 
 import time
@@ -157,7 +182,10 @@ import pyodbc
 
 
 def pull_one_remaining_target(conn, worker_name: str):
-    # worker_count, worker_index の引数は不要になります
+
+    worker_index = get_worker_index()
+    worker_count = WORKER_COUNT
+
     sql = """
         ;WITH cte AS (
             SELECT TOP (1)
@@ -169,8 +197,7 @@ def pull_one_remaining_target(conn, worker_name: str):
                 p.mode,
                 p.low_usd_target,
                 p.high_usd_target
-            -- READPAST を追加して、他者がロック中の行をスキップ
-            FROM trx.vendor_item AS v WITH (UPDLOCK, ROWLOCK, READPAST)
+            FROM trx.vendor_item AS v WITH (UPDLOCK, ROWLOCK)
             INNER JOIN trx.listings AS l
                 ON l.vendor_name    = v.vendor_name
                AND l.vendor_item_id = v.vendor_item_id
@@ -181,7 +208,7 @@ def pull_one_remaining_target(conn, worker_name: str):
                 AND v.vendor_name IN (N'メルカリ', N'メルカリshops')
                 AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')
                 AND v.remaining_check_at IS NULL
-            ORDER BY v.last_checked_at ASC -- 古いものから順に、などの指定も可能
+                AND ABS(CHECKSUM(v.vendor_item_id)) % ? = ?
         )
         UPDATE v
         SET
@@ -203,8 +230,7 @@ def pull_one_remaining_target(conn, worker_name: str):
     """
 
     cur = conn.cursor()
-    # 引数は worker_name だけ
-    cur.execute(sql, (worker_name,))
+    cur.execute(sql, (worker_count, worker_index, worker_name))
     row = cur.fetchone()
     conn.commit()
 

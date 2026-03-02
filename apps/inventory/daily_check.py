@@ -186,6 +186,10 @@ def launch_remaining_workers():
         "162.43.42.135",
         "162.43.15.160",
         "162.43.29.154",
+        "210.131.209.103",
+        "162.43.39.209",
+        "85.131.251.127",
+        "210.131.209.232",
     ]
 
     for idx, ip in enumerate(VPS_LIST, start=1):
@@ -264,6 +268,46 @@ def refresh_presets_materialized(conn):
         """)
     conn.commit()
 
+def refresh_presets_and_clear_locks(conn):
+    """
+    1. mst.v_presets (View) を物理テーブル mst.presets_lookup にコピー
+    2. インデックスを再構築して高速化
+    3. 前日の残りなどの processing_at / processing_by を一括クリア
+    """
+    print("--- [MAINTENANCE] Start Refreshing Presets and Clearing Locks ---")
+    
+    # 実行するSQLをリストにまとめる（トランザクション制御のため）
+    queries = [
+        # --- 1. 物理テーブルの再作成 ---
+        "IF OBJECT_ID('mst.presets_lookup', 'U') IS NOT NULL DROP TABLE mst.presets_lookup;",
+        "SELECT * INTO mst.presets_lookup FROM mst.v_presets;",
+        
+        # --- 2. インデックスの付与（検索高速化の要） ---
+        "ALTER TABLE mst.presets_lookup ADD CONSTRAINT PK_presets_lookup PRIMARY KEY CLUSTERED (preset);",
+        "CREATE INDEX IX_presets_lookup_cat_group ON mst.presets_lookup (category_group);",
+        
+        # --- 3. 幽霊ジョブ・ロックの掃除 ---
+        # 全ての処理中フラグを落とし、新しい1日の実行に備える
+        "UPDATE trx.vendor_item SET processing_by = NULL, processing_at = NULL WHERE processing_at IS NOT NULL;"
+    ]
+
+    try:
+        # 自動コミットをオフにして一括処理
+        conn.autocommit = False
+        with conn.cursor() as cur:
+            for sql in queries:
+                print(f"  Executing: {sql[:50]}...") # ログ出力
+                cur.execute(sql)
+            
+            conn.commit()
+            print("--- [MAINTENANCE] Successfully updated presets and cleared all locks. ---")
+            
+    except Exception as e:
+        conn.rollback()
+        print(f"--- [ERROR] Maintenance failed. Rolled back. Detail: {e} ---")
+        raise
+    finally:
+        conn.autocommit = True
 
 # ======================
 # メイン処理
@@ -453,12 +497,15 @@ def main():
             time.sleep(WAIT_SECONDS)
 
             print("[STOP] delete までで処理終了（publish は意図的にスキップ）")
-            return
+            
 
             # ------------------------------------------------
             # ④ publish_ebay.py を 1 回実行
             # ------------------------------------------------
             print("\n=== 🚀 publish_ebay.py 実行 ===")
+
+            refresh_presets_and_clear_locks(conn)
+            return
 
             pub_start = datetime.now()
             pub_code, _ = run_script(PUBLISH_SCRIPT)

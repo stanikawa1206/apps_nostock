@@ -16,10 +16,15 @@ tmux new-session -d -s $SESSION_NAME
 # 1. 確実に PROJECT_DIR に移動
 # 2. その場所で python3 -m を実行
 COMMAND="cd $PROJECT_DIR && while true; do 
+    echo \"[\$(date)] --- Cleaning up old processes ---\" | tee -a $LOG_FILE;
+    pkill -f chrome || true;
+    pkill -f chromedriver || true;
+    
     echo \"[\$(date)] --- Starting Python Worker ---\" | tee -a $LOG_FILE;
     python3 -m apps.inventory.scrape_worker 2>&1 | tee -a $LOG_FILE;
-    echo \"[\$(date)] --- Worker exited. Restarting in 3s ---\" | tee -a $LOG_FILE;
-    sleep 3;
+    
+    echo \"[\$(date)] --- Worker exited. Restarting in 10s ---\" | tee -a $LOG_FILE;
+    sleep 10;
 done"
 
 # セッション内でコマンド実行

@@ -484,105 +484,104 @@ def run_fetch_sold_ebay(payload: dict) -> Tuple[int, int]:
         flush=True
     )
 
-    # ★ conn = get_sql_server_connection() は外側では行わない
+    conn = None
     fetched_pages = 0
     fetched_items = 0
 
-    base_url = make_search_url(
-        vendor_name=vendor_name,
-        brand_id=brand_id,
-        category_id=category_id,
-        status="sold_out|trading",
-        mode=mode,
-        low_usd_target=low_usd_target,
-        high_usd_target=high_usd_target,
-    )
-    print(f"🔍 {base_url}", flush=True)
+    try:
+        conn = get_sql_server_connection()
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    page_idx = 0
-    seen_ids: set[str] = set()
+        base_url = make_search_url(
+            vendor_name=vendor_name,
+            brand_id=brand_id,
+            category_id=category_id,
+            status="sold_out|trading",
+            mode=mode,
+            low_usd_target=low_usd_target,
+            high_usd_target=high_usd_target,
+        )
+        print(f"🔍 {base_url}", flush=True)
 
-    while True:
-        if page_idx >= MAX_PAGES:
-            print(f"[STOP] reached MAX_PAGES={MAX_PAGES}", flush=True)
-            break
+        page_idx = 0
+        seen_ids: set[str] = set()
 
-        target_url = page_url(base_url, page_idx)
-        print(f"[PAGE {page_idx+1}] GET {target_url}", flush=True)
-
-        driver = build_driver()
-        conn = None # ★ ページごとに初期化
-        
-        try:
-            # ★ このページのためだけにDB接続を開く
-            conn = get_sql_server_connection()
-            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-            driver.get(target_url)
-            WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.TAG_NAME, "body"))
-            )
-
-            if has_no_results_banner(driver):
-                print(f"[PAGE {page_idx+1}] no-results banner -> stop", flush=True)
+        while True:
+            if page_idx >= MAX_PAGES:
+                print(f"[STOP] reached MAX_PAGES={MAX_PAGES}", flush=True)
                 break
 
-            if vendor_name == "メルカリshops":
-                items = scroll_until_stagnant_collect_shops(driver, PAUSE)
-            else:
-                items = scroll_until_stagnant_collect_items(driver, PAUSE)
+            target_url = page_url(base_url, page_idx)
+            print(f"[PAGE {page_idx+1}] GET {target_url}", flush=True)
 
-            print(f"[PAGE {page_idx+1}] scraped={len(items)}", flush=True)
-            fetched_pages += 1
-
-            new_items = []
-            for iid, title, price in items:
-                iid = (iid or "").strip()
-                if not iid or iid in seen_ids:
-                    continue
-                seen_ids.add(iid)
-                new_items.append((iid, (title or "").strip()))
-
-            if not new_items:
-                print(f"[PAGE {page_idx+1}] all seen -> stop", flush=True)
-                break
-
-            # ★ この conn は今開いたばかりなので、絶対に生きています
-            for iid, title in new_items:
-                fetched_items += 1
-
-                upsert_vendor_item(
-                    conn,
-                    vendor_name,
-                    iid,
-                    title,
-                    page_idx + 1,
-                    preset_name,
-                    now_str,
+            driver = build_driver()
+            try:
+                driver.get(target_url)
+                WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.TAG_NAME, "body"))
                 )
 
-                handle_listing_delete(conn, iid, vendor_name)
+                if has_no_results_banner(driver):
+                    print(f"[PAGE {page_idx+1}] no-results banner -> stop", flush=True)
+                    break
 
-        except Exception as e:
-            print(f"[WARN] page error page={page_idx+1}: {e}", flush=True)
-            # ページ内でエラーが起きても、次のページのリトライへ進めるようにする
-        
-        finally:
-            # ★ ページが終わるたびにDBを閉じ、ブラウザも終了させる
+                if vendor_name == "メルカリshops":
+                    items = scroll_until_stagnant_collect_shops(driver, PAUSE)
+                else:
+                    items = scroll_until_stagnant_collect_items(driver, PAUSE)
+
+                print(f"[PAGE {page_idx+1}] scraped={len(items)}", flush=True)
+                fetched_pages += 1
+
+                new_items = []
+                for iid, title, price in items:
+                    iid = (iid or "").strip()
+                    if not iid or iid in seen_ids:
+                        continue
+                    seen_ids.add(iid)
+                    new_items.append((iid, (title or "").strip()))
+
+                if not new_items:
+                    print(f"[PAGE {page_idx+1}] all seen -> stop", flush=True)
+                    break
+
+                for iid, title in new_items:
+                    fetched_items += 1
+
+                    upsert_vendor_item(
+                        conn,
+                        vendor_name,
+                        iid,
+                        title,
+                        page_idx + 1,
+                        preset_name,
+                        now_str,
+                    )
+
+                    handle_listing_delete(conn, iid, vendor_name)
+
+            except Exception as e:
+                print(f"[WARN] page error page={page_idx+1}: {e}", flush=True)
+
+            finally:
+                safe_quit(driver)
+
+            page_idx += 1
+            time.sleep(1)
+
+        print(
+            f"[SCRAPE END][SOLD] preset='{preset_name}' "
+            f"pages={fetched_pages} items={fetched_items}",
+            flush=True
+        )
+        return fetched_pages, fetched_items
+
+    finally:
+        try:
             if conn:
-                try: conn.close()
-                except: pass
-            safe_quit(driver)
-
-        page_idx += 1
-        time.sleep(1)
-
-    print(
-        f"[SCRAPE END][SOLD] preset='{preset_name}' "
-        f"pages={fetched_pages} items={fetched_items}",
-        flush=True
-    )
-    return fetched_pages, fetched_items
+                conn.close()
+        except Exception:
+            pass
 
 # ============================================================
 # fetch_active_ebay scrape 本体（1 preset 分）
@@ -598,134 +597,150 @@ def run_fetch_active_ebay(payload: dict) -> Tuple[int, int]:
 
     print(f"[SCRAPE START] preset={preset} vendor={vendor_name} mode={mode}", flush=True)
 
-    # ★ conn = get_sql_server_connection() はここでは行わない
+    conn = None
     driver = None
     total_items = 0
 
-    base_url = make_search_url(
-        vendor_name=vendor_name,
-        brand_id=payload["brand_id"],
-        category_id=payload["category_id"],
-        status="on_sale",
-        mode=mode,
-        low_usd_target=low_usd_target,
-        high_usd_target=high_usd_target,
-    )
-    print(f"🔍 {base_url}", flush=True)
+    try:
+        conn = get_sql_server_connection()
 
-    page_idx = 0
-    while True:
-        page_start = time.time()
-        driver = build_driver() 
-        
-        # ★ ページごとに新しいDB接続を作成し、スコープを限定する
-        conn = None 
-        try:
-            # 1. このページのためだけにDBに接続
-            conn = get_sql_server_connection()
+        # (7) 1 job = 1 driver
+        # driver = build_driver() #　ここをやめる
 
-            url = page_url(base_url, page_idx)
-            print(f"[PAGE] {page_idx+1} {url}", flush=True)
+        base_url = make_search_url(
+            vendor_name=vendor_name,
+            brand_id=payload["brand_id"],
+            category_id=payload["category_id"],
+            status="on_sale",
+            mode=mode,
+            low_usd_target=low_usd_target,
+            high_usd_target=high_usd_target,
+        )
+        print(f"🔍 {base_url}", flush=True)
 
-            # --- [ロジック維持] renderer timeout リトライ ---
-            for attempt in range(1, MAX_RENDER_RETRY_PER_PAGE + 1):
-                try:
-                    print(f"[C] driver.get start page={page_idx+1} attempt={attempt}", flush=True)
-                    driver.get(url)
-                    print(f"[C] driver.get done page={page_idx+1}", flush=True)
+        page_idx = 0
+        while True:
+            page_start = time.time()
+            driver = build_driver() # ここで毎回作る
+            try:
+                url = page_url(base_url, page_idx)
+                print(f"[PAGE] {page_idx+1} {url}", flush=True)
 
-                    print("[D] wait body start", flush=True)
-                    WebDriverWait(driver, 15).until(
-                        EC.presence_of_element_located((By.TAG_NAME, "body"))
-                    )
-                    print("[D] wait body done", flush=True)
-                    break 
-                except (TimeoutException, WebDriverException) as e:
-                    if is_renderer_timeout(e):
-                        print(f"[RENDERER TIMEOUT] page={page_idx+1} attempt={attempt} -> rebuild driver", flush=True)
-                        try:
-                            safe_quit(driver)
-                        except Exception: pass
-                        driver = build_driver()
-                        if attempt >= MAX_RENDER_RETRY_PER_PAGE: raise
-                        continue
-                    raise 
+                # (8) renderer timeout は即捨てて作り直してリトライ
+                for attempt in range(1, MAX_RENDER_RETRY_PER_PAGE + 1):
+                    try:
+                        print(f"[C] driver.get start page={page_idx+1} attempt={attempt}", flush=True)
+                        driver.get(url)
+                        print(f"[C] driver.get done page={page_idx+1}", flush=True)
 
-            if has_no_results_banner(driver):
-                break
+                        print("[D] wait body start", flush=True)
+                        WebDriverWait(driver, 15).until(
+                            EC.presence_of_element_located((By.TAG_NAME, "body"))
+                        )
+                        print("[D] wait body done", flush=True)
+                        break  # 成功
+                    except (TimeoutException, WebDriverException) as e:
+                        if is_renderer_timeout(e):
+                            print(f"[RENDERER TIMEOUT] page={page_idx+1} attempt={attempt} -> rebuild driver", flush=True)
+                            try:
+                                safe_quit(driver)
+                            except Exception:
+                                pass
+                            driver = build_driver()
+                            if attempt >= MAX_RENDER_RETRY_PER_PAGE:
+                                raise
+                            continue
+                        raise  # renderer以外はそのまま上へ
 
-            # --- [ロジック維持] スクレイピング実行 ---
-            print("[E] scroll start", flush=True)
-            if vendor_name == "メルカリshops":
-                items = scroll_until_stagnant_collect_shops(driver, pause=0.6)
-            else:
-                items = scroll_until_stagnant_collect_items(driver, pause=0.6)
-            print(f"[E] scroll done items={len(items)}", flush=True)
+                if has_no_results_banner(driver):
+                    break
 
-            total_items += len(items)
-            print(f"[PAGE {page_idx+1}] items={len(items)} sample={items[:2]}", flush=True)
-            if not items:
-                break
-
-            # --- [ロジック維持] DB操作 (フレッシュなconnを使用) ---
-            item_ids = [iid for iid, _, _ in items]
-            print(f"[F] old_price select start n={len(item_ids)}", flush=True)
-            old_price_map = get_vendor_item_prices_batch(conn, vendor_name, item_ids)
-            print(f"[F] old_price select done got={len(old_price_map)}", flush=True)
-
-            cnt_skip = cnt_changed = cnt_unchanged = 0
-            for iid, title, price in items:
-                if price is None:
-                    cnt_skip += 1
-                    continue
-
-                old_price = old_price_map.get(iid)
-                if old_price is not None and old_price != price:
-                    cnt_changed += 1
-                    handle_price_change_side_effects(
-                        conn, iid, vendor_name, old_price, price,
-                        mode=mode, low_usd_target=low_usd_target, high_usd_target=high_usd_target,
-                    )
+                print("[E] scroll start", flush=True)
+                if vendor_name == "メルカリshops":
+                    items = scroll_until_stagnant_collect_shops(driver, pause=0.6)
                 else:
-                    cnt_unchanged += 1
+                    items = scroll_until_stagnant_collect_items(driver, pause=0.6)
+                print(f"[E] scroll done items={len(items)}", flush=True)
 
-            rows = [{
-                "vendor_name": vendor_name,
-                "vendor_item_id": iid,
-                "status": "販売中",
-                "preset": preset,
-                "title_jp": title,
-                "vendor_page": page_idx,
-                "price": price,
-            } for iid, title, price in items]
+                total_items += len(items)
+                print(f"[PAGE {page_idx+1}] items={len(items)} sample={items[:2]}", flush=True)
+                if not items:
+                    break
 
-            now = now_jst()
-            print(f"[G] upsert start rows={len(rows)} now={now}", flush=True)
-            upsert_vendor_items(conn, rows, now)
-            print("[G] upsert done", flush=True)
+                item_ids = [iid for iid, _, _ in items]
+                print(f"[F] old_price select start n={len(item_ids)}", flush=True)
+                old_price_map = get_vendor_item_prices_batch(conn, vendor_name, item_ids)
+                print(f"[F] old_price select done got={len(old_price_map)}", flush=True)
 
-            print(f"[PAGE {page_idx+1} RESULT] upserted={len(rows)} skip={cnt_skip} changed={cnt_changed} unchanged={cnt_unchanged}", flush=True)
+                cnt_skip = cnt_changed = cnt_unchanged = 0
+                for iid, title, price in items:
+                    if price is None:
+                        cnt_skip += 1
+                        continue
 
-            # --- [ロジック維持] 待機時間 ---
-            elapsed = time.time() - page_start
-            TARGET = 35.0
-            if elapsed < TARGET:
-                time.sleep((TARGET - elapsed) + random.uniform(0.0, 3.0))
+                    old_price = old_price_map.get(iid)
+                    if old_price is not None and old_price != price:
+                        cnt_changed += 1
+                        handle_price_change_side_effects(
+                            conn,
+                            iid,
+                            vendor_name,
+                            old_price,
+                            price,
+                            mode=mode,
+                            low_usd_target=low_usd_target,
+                            high_usd_target=high_usd_target,
+                        )
+                    else:
+                        cnt_unchanged += 1
 
-        finally:
-            # ★ ページが終わるたびに、このページのDB接続を確実に閉じる
-            if conn:
-                try: conn.close()
-                except: pass
-            # ★ ブラウザも確実に終了させる
-            if driver:
+                rows = [{
+                    "vendor_name": vendor_name,
+                    "vendor_item_id": iid,
+                    "status": "販売中",
+                    "preset": preset,
+                    "title_jp": title,
+                    "vendor_page": page_idx,
+                    "price": price,
+                } for iid, title, price in items]
+
+                now = now_jst()
+                print(f"[G] upsert start rows={len(rows)} now={now}", flush=True)
+                upsert_vendor_items(conn, rows, now)
+                print("[G] upsert done", flush=True)
+
+                print(
+                    f"[PAGE {page_idx+1} RESULT] upserted={len(rows)} "
+                    f"skip={cnt_skip} changed={cnt_changed} unchanged={cnt_unchanged}",
+                    flush=True
+                )
+
+                elapsed = time.time() - page_start
+                TARGET = 35.0
+                if elapsed < TARGET:
+                    time.sleep((TARGET - elapsed) + random.uniform(0.0, 3.0))
+
+            finally:
+                safe_quit(driver)   # ★ 必ず終了させる               
+
+            page_idx += 1
+            time.sleep(1)
+
+    finally:
+        if driver:
+            try:
                 safe_quit(driver)
-
-        page_idx += 1
-        time.sleep(1)
+            except Exception:
+                pass
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     print(f"[SCRAPE END] preset={preset}", flush=True)
     return page_idx, total_items
+
 
 # =========================
 # Worker main loop
