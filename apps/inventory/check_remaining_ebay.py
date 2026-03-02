@@ -222,6 +222,22 @@ def pull_one_remaining_target(conn, worker_name: str):
         "high_usd_target": float(row[7]),
     }
 
+def count_total_remaining(conn):
+    """DB全体で、まだ処理が必要な件数が何件あるかを確認する"""
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT COUNT(*)
+            FROM trx.listings AS l
+            INNER JOIN trx.vendor_item AS v
+                ON v.vendor_name = l.vendor_name
+               AND v.vendor_item_id = l.vendor_item_id
+            WHERE l.is_deleted = 0
+              AND v.vendor_name IN (N'メルカリ', N'メルカリshops')
+              AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')
+              AND v.remaining_check_at IS NULL
+        """)
+        return cur.fetchone()[0]
+
 def run_remaining_worker(worker_name: str):
     driver = None
 
@@ -247,16 +263,19 @@ def run_remaining_worker(worker_name: str):
             row = pull_one_remaining_target(pull_conn, worker_name)
 
             if not row:
-                empty_count += 1
-                if empty_count >= max_retries:
-                    print(f"[INFO] No more targets after {max_retries} retries. Finishing.")
-                    return
+                # 📢 ここが強化ポイント！
+                total_left = count_total_remaining(pull_conn)
                 
-                # 遊び人を働かせるための「粘り」
-                wait_sec = 5
-                print(f"[INFO] No target visible (locked by others?). Retry {empty_count}/{max_retries} in {wait_sec}s...")
-                time.sleep(wait_sec)
-                continue # 次のループ（再試行）へ
+                if total_left > 0:
+                    # 仕事はあるはずなのに取れなかった（ロック衝突など）
+                    print(f"[RETRY] DB says {total_left} items left. I'll wait 10s...")
+                    time.sleep(10)
+                    continue # 終わらずにループの最初に戻る
+                else:
+                    # 本当に仕事がゼロになった
+                    print("[INFO] DB is empty. Good job everyone!")
+                    return
+
 
             # 仕事が見つかったら空振りカウントをリセット
             empty_count = 0
