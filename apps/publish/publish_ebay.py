@@ -1666,27 +1666,34 @@ def take_one_vendor_item(conn, preset_group, processing_by, account_name):
     """
 
     while True:
-        t_start = time.time()
-        with conn.cursor() as cur:
-            # 引数：処理PC名, 判定用プリセットグループ(①), 判定用プリセットグループ(②)
-            cur.execute(sql, (processing_by, preset_group, preset_group))
+            t_start = time.time()
+            print(f"  [DEBUG] account={account_name} 検索開始...") # ★追加
+            with conn.cursor() as cur:
+                cur.execute(sql, (processing_by, preset_group, preset_group))
 
-            # SELECT結果セットへの到達
-            select_reached = False
-            while True:
-                if cur.description is not None:
-                    select_reached = True
-                    break
-                if not cur.nextset(): break
-            
-            # ①で対象が取れなかった場合 = 本当の枯渇
-            if not select_reached:
-                print(f"  [DB_INFO] account={account_name} 担当範囲の在庫が枯渇しました。")
+                print(f"  [DEBUG] account={account_name} SQL実行完了。結果セットを確認中...") # ★追加
+
+                select_reached = False
+                while True:
+                    if cur.description is not None:
+                        select_reached = True
+                        break
+                    if not cur.nextset(): break
+                
+                if not select_reached:
+                    print(f"  [DB_INFO] account={account_name} 担当範囲の在庫が枯渇しました。(Result set not reached)")
+                    conn.commit()
+                    return None
+
+                print(f"  [DEBUG] account={account_name} 結果セット到達。fetchを試みます...") # ★追加
+                row = cur.fetchone()
                 conn.commit()
-                return None
+                
+                if row is None: # ★追加：行が取れなかった場合
+                    print(f"  [DEBUG] account={account_name} 行が取得できませんでした(None)。再試行します。")
+                    time.sleep(1) # 無限ループで負荷をかけないよう少し待つ
+                    continue
 
-            row = cur.fetchone()
-            conn.commit()
             elapsed = time.time() - t_start
 
             if row:
