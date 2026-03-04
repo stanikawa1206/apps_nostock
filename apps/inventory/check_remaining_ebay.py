@@ -178,6 +178,7 @@ def pull_one_remaining_target(conn, worker_name: str):
             WHERE
                 l.is_deleted = 0
                 AND v.vendor_name IN (N'メルカリ', N'メルカリshops')
+                AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')                               
                 AND v.remaining_check_at IS NULL -- 完了していない
                 AND (
                     v.remaining_check_lock IS NULL -- 未着手

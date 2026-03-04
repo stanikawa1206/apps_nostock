@@ -330,73 +330,73 @@ def main():
             # ------------------------------------------------
             # ① 事前 sold チェック（分散版）
             # ------------------------------------------------
-            print("\n=== ⭐ 事前 sold チェック（分散版）開始 ===")
+            #print("\n=== ⭐ 事前 sold チェック（分散版）開始 ===")
 
-            pre_sold_start = datetime.now()
-            pre_sold_code, _ = run_script(FETCH_SOLD)  # job投入
+            #pre_sold_start = datetime.now()
+            #pre_sold_code, _ = run_script(FETCH_SOLD)  # job投入
 
-            if pre_sold_code != 0:
-                pre_sold_end = datetime.now()
-                send_script_mail(
-                    FETCH_SOLD,
-                    pre_sold_start,
-                    pre_sold_end,
-                    pre_sold_code,
-                    round_no=set_no,
-                    conn=conn,
-                )
-                print("[STOP] 事前 fetch_sold job投入失敗")
-                continue
+            #if pre_sold_code != 0:
+            #    pre_sold_end = datetime.now()
+            #    send_script_mail(
+            #        FETCH_SOLD,
+            #        pre_sold_start,
+            #        pre_sold_end,
+            #        pre_sold_code,
+            #        round_no=set_no,
+            #        conn=conn,
+            #    )
+            #    print("[STOP] 事前 fetch_sold job投入失敗")
+            #    continue
 
             # worker完了待ち
-            wait_until_no_pending(conn, phase_name="pre_sold")
+            #wait_until_no_pending(conn, phase_name="pre_sold")
 
-            pre_sold_end = datetime.now()
+            #pre_sold_end = datetime.now()
 
-            send_script_mail(
-                FETCH_SOLD,
-                pre_sold_start,
-                pre_sold_end,
-                0,
-                round_no=set_no,
-                conn=conn,
-            )
+            #send_script_mail(
+            #    FETCH_SOLD,
+            #    pre_sold_start,
+            #    pre_sold_end,
+            #    0,
+            #    round_no=set_no,
+            #    conn=conn,
+            #)
 
             # ------------------------------------------------
             # ② フル在庫チェック（fetch_active だけ分散）
             # ------------------------------------------------
-            print("\n=== 📦 フル在庫チェック（分散版）開始 ===")
+            #print("\n=== 📦 フル在庫チェック（分散版）開始 ===")
 
             # ②-1 job投入
-            active_start = datetime.now()
-            active_code, _ = run_script(FETCH_ACTIVE)
+            #active_start = datetime.now()
+            #active_code, _ = run_script(FETCH_ACTIVE)
 
-            if active_code != 0:
-                active_end = datetime.now()
-                send_script_mail(
-                    FETCH_ACTIVE,
-                    active_start,
-                    active_end,
-                    active_code,
-                    round_no=set_no,
-                    conn=conn,
-                )
-                print("[STOP] fetch_active job投入失敗")
-                continue
+            #if active_code != 0:
+            #    active_end = datetime.now()
+            #    send_script_mail(
+            #        FETCH_ACTIVE,
+            #        active_start,
+            #        active_end,
+            #        active_code,
+            #        round_no=set_no,
+            #        conn=conn,
+            #    )
+            #    print("[STOP] fetch_active job投入失敗")
+            #    continue
 
             # ②-2 worker 完了待ち（ここが本体）
-            wait_until_no_pending(conn, phase_name="active")
+            #wait_until_no_pending(conn, phase_name="active")
 
             # ★ ここで active フェーズ完了
-            active_end = datetime.now()
-            send_script_mail(
-                FETCH_ACTIVE,
-                active_start,
-                active_end,
-                0,
-                round_no=set_no,
-                conn=conn,
-            )
+            #active_end = datetime.now()
+            #send_script_mail(
+            #    FETCH_ACTIVE,
+            #    active_start,
+            #    active_end,
+            #    0,
+            #    round_no=set_no,
+            #    conn=conn,
+            #)
 
             # ------------------------------------------------
             # ②-3 sold（分散版：job投入 → worker完了待ち）
