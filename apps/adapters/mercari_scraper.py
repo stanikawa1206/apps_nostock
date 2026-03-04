@@ -44,6 +44,8 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
 
 
 # =========================
@@ -109,12 +111,32 @@ def build_driver(
     driver._tmp_user_data_dir = str(tmp_dir) if tmp_dir else None
     return driver
 
+
 def safe_quit(driver) -> None:
     """
-    driver.quit() と、必要なら一時 user-data-dir の削除も行う。
+    driver.quit() を試み、失敗した場合は chromedriver を kill する。
+    その後 user-data-dir を削除。
     """
+
+    if driver is None:
+        return
+
     try:
         driver.quit()
+
+    except Exception:
+
+        # ★ quit失敗 → chromedriver kill
+        try:
+            service = getattr(driver, "service", None)
+            process = getattr(service, "process", None)
+
+            if process and process.pid:
+                os.kill(process.pid, 9)
+
+        except Exception:
+            pass
+
     finally:
         tmp = getattr(driver, "_tmp_user_data_dir", None)
         if tmp:
@@ -135,8 +157,6 @@ def extract_item_listings(driver):
         WebDriverException,
         TimeoutException,
     )
-    from selenium.webdriver.common.by import By
-    from selenium.webdriver.support.ui import WebDriverWait
 
     items, seen = [], set()
 
@@ -240,9 +260,7 @@ def extract_shops_listings(driver):
         WebDriverException,
         TimeoutException,
     )
-    from selenium.webdriver.common.by import By
-    from selenium.webdriver.support.ui import WebDriverWait
-
+ 
     items, seen = [], set()
 
     MAX_ANCHORS = 200

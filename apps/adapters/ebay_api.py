@@ -253,6 +253,7 @@ def register_inventory_item(row: Dict[str, Any], token: str) -> Dict[str, Any]:
     r = requests.put(url, headers=_ebay_json_headers(token), json=payload, timeout=45)
     if r.status_code >= 400:
         err = _safe_json(r)
+        print(f"DEBUG [Register]: {err}")  # ★この行を追加
         code, msg = _extract_error(err)
         if _is_listing_limit(code, msg):
             raise ListingLimitError(f"Listing limit (register): {code} {msg}")
@@ -285,6 +286,10 @@ def create_offer(row: Dict[str, Any], token: str, acct_policies: Dict[str, Any])
 
     if r.status_code == 201:
         return _safe_json(r).get("offerId") or ""
+    
+        # エラー時のログ追加
+        err = _safe_json(r)
+        print(f"DEBUG [Create Offer]: {err}")  # ★この行を追加
 
     if r.status_code == 400:
         err = _safe_json(r)
@@ -337,6 +342,7 @@ def publish_offer(offer_id: str, token: str) -> Dict[str, Any]:
     if r.status_code == 200:
         return _safe_json(r)
     err = _safe_json(r)
+    print(f"DEBUG [Publish Offer]: {err}")
     code, msg = _extract_error(err)
     if _is_listing_limit(code, msg):
         raise ListingLimitError(f"Listing limit (publish): {code} {msg}")
