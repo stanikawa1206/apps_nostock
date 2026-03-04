@@ -1556,16 +1556,16 @@ def fetch_accounts_for_pc(conn, current_pc):
             ORDER BY account
         """, (current_pc,))
 
-        #rows = cur.fetchall()
+        rows = cur.fetchall()
 
-        rows = list(cur.fetchall())   # ← listにしておく  一時変更
+        #rows = list(cur.fetchall())   # ← listにしておく  一時変更
 
         # ここで一時的に追加
-        rows.extend([
-            ("川島", "x210-131-209-103", 1000),
-            ("川島", "x85-131-251-127", 1000),
-            ("谷川③","x162-43-39-209", 1000),
-        ])
+        #rows.extend([
+        #    ("川島", "x210-131-209-103", 1000),
+        #    ("川島", "x85-131-251-127", 1000),
+        #    ("谷川③","x162-43-39-209", 1000),
+        #])
 
 
     return [
