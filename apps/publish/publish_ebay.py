@@ -1564,7 +1564,7 @@ def fetch_accounts_for_pc(conn, current_pc):
         rows.extend([
             ("川島", "x210-131-209-103", 1000),
             ("川島", "x85-131-251-127", 1000),
-            ("x162-43-39-209", "谷川③", 1000),
+            ("谷川③","x162-43-39-209", 1000),
         ])
 
 
@@ -1761,7 +1761,7 @@ def main():
                            return_policy_id
                     FROM mst.ebay_accounts
                     WHERE account = ?
-                """, acct.account)
+                """, (acct.account,))
                 row = cur.fetchone()
                 if not row:
                     raise RuntimeError(f"policy未設定: {acct.account}")
