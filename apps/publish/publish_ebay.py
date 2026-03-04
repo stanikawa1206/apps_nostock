@@ -1546,7 +1546,7 @@ class Account:
     post_target: Optional[int]
 
 
-def fetch_accounts_for_pc(conn, current_pc):
+def fetch_accounts_for_pc_bk(conn, current_pc):
     with conn.cursor() as cur:
         cur.execute("""
             SELECT account, preset_group, post_target
@@ -1558,16 +1558,6 @@ def fetch_accounts_for_pc(conn, current_pc):
 
         rows = cur.fetchall()
 
-        #rows = list(cur.fetchall())   # ← listにしておく  一時変更
-
-        # ここで一時的に追加
-        #rows.extend([
-        #    ("川島", "x210-131-209-103", 1000),
-        #    ("川島", "x85-131-251-127", 1000),
-        #    ("谷川③","x162-43-39-209", 1000),
-        #])
-
-
     return [
         Account(
             account=r[0].strip(),
@@ -1576,6 +1566,39 @@ def fetch_accounts_for_pc(conn, current_pc):
         )
         for r in rows
     ]
+
+def fetch_accounts_for_pc(conn, current_pc):
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT account, preset_group, post_target
+            FROM mst.ebay_accounts
+            WHERE execute_pc = ?
+              AND ISNULL(is_excluded,0) = 0
+            ORDER BY account
+        """, (current_pc,))
+
+        rows = list(cur.fetchall())
+
+    # ===== 一時追加アカウント =====
+    extra = [
+        ("川島", "x210-131-209-103", 1000),
+        ("川島", "x85-131-251-127", 1000),
+        ("谷川③", "x162-43-39-209", 1000),
+    ]
+
+    for account, pc, target in extra:
+        if pc == current_pc:
+            rows.append((account, None, target))
+
+    return [
+        Account(
+            account=r[0].strip(),
+            preset_group=(r[1].strip() if r[1] else None),
+            post_target=r[2]
+        )
+        for r in rows
+    ]
+
 
 @dataclass
 class PublishState:
