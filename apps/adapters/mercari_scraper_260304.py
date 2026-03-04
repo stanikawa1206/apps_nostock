@@ -153,6 +153,7 @@ def extract_item_listings(driver):
     VPS / headless でも「必ず戻る」安全版。
     """
     import time, re
+    from urllib3.exceptions import MaxRetryError
     from selenium.common.exceptions import (
         StaleElementReferenceException,
         WebDriverException,
@@ -166,17 +167,15 @@ def extract_item_listings(driver):
 
     start = time.time()
 
-    # ★ 最大の修正ポイント（shops と同じ）
     try:
         anchors = WebDriverWait(driver, 10).until(
             lambda d: d.find_elements(By.CSS_SELECTOR, "a[href*='/item/m']")
         )
-    except (TimeoutException, WebDriverException):
+    except (TimeoutException, WebDriverException, MaxRetryError, ConnectionResetError):
         return items
 
     for a in anchors[:MAX_ANCHORS]:
 
-        # 時間上限
         if time.time() - start > TIMEOUT_SEC:
             break
 
@@ -185,13 +184,13 @@ def extract_item_listings(driver):
             m = re.search(r"/item/(m\d{8,})", href)
             if not m:
                 continue
+
             iid = m.group(1)
             if iid in seen:
                 continue
             seen.add(iid)
 
-            raw_title = (a.get_attribute("aria-label") or a.text or "").strip()
-            # ¥, SG$, $ などの通貨表記 + 数字 を削除
+            raw_title = (a.get_attribute("aria-label") or "").strip()
             clean_title = re.sub(r"^(?:¥|SG\$|\$)\s?[\d,.]+\s*", "", raw_title).strip()
 
             price = None
@@ -207,8 +206,11 @@ def extract_item_listings(driver):
 
             items.append((iid, clean_title, price))
 
-        except (StaleElementReferenceException, WebDriverException):
+        except StaleElementReferenceException:
             continue
+
+        except (WebDriverException, MaxRetryError, ConnectionResetError):
+            return items
 
     return items
 
@@ -256,26 +258,24 @@ def extract_shops_listings(driver):
     ・必ず list を返す（None は返さない）
     """
     import time, re
+    from urllib3.exceptions import MaxRetryError
     from selenium.common.exceptions import (
         StaleElementReferenceException,
         WebDriverException,
         TimeoutException,
     )
- 
+
     items, seen = [], set()
 
     MAX_ANCHORS = 200
     TIMEOUT_SEC = 10  # 無進捗タイムアウト
-
-    last_progress = time.time()   # ★最後に items が増えた時刻
+    last_progress = time.time()
 
     try:
         anchors = WebDriverWait(driver, 10).until(
-            lambda d: d.find_elements(
-                By.CSS_SELECTOR, "a[href*='/shops/product/']"
-            )
+            lambda d: d.find_elements(By.CSS_SELECTOR, "a[href*='/shops/product/']")
         )
-    except (TimeoutException, WebDriverException):
+    except (TimeoutException, WebDriverException, MaxRetryError, ConnectionResetError):
         return items
 
     for a in anchors[:MAX_ANCHORS]:
@@ -288,10 +288,10 @@ def extract_shops_listings(driver):
             pid = m.group(1)
             if pid in seen:
                 continue
-
             seen.add(pid)
 
-            raw_title = (a.get_attribute("aria-label") or a.text or "").strip()
+            # ★ a.text は重いので使わない
+            raw_title = (a.get_attribute("aria-label") or "").strip()
             clean_title = re.sub(r"^(?:¥|SG\$|\$)\s?[\d,.]+\s*", "", raw_title).strip()
 
             price = None
@@ -306,14 +306,15 @@ def extract_shops_listings(driver):
                     price = int(txt)
 
             items.append((pid, clean_title, price))
-
-            # ★進捗があったので時刻を更新
             last_progress = time.time()
 
-        except (StaleElementReferenceException, WebDriverException):
-            pass
+        except StaleElementReferenceException:
+            continue
 
-        # ★無進捗 TIMEOUT 判定
+        except (WebDriverException, MaxRetryError, ConnectionResetError):
+            # ★ driverが死んだ系は続けても無駄なのでここで返す
+            return items
+
         if time.time() - last_progress > TIMEOUT_SEC:
             break
 
