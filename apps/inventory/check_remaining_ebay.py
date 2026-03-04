@@ -182,7 +182,7 @@ def pull_one_remaining_target(conn, worker_name: str):
                 AND v.remaining_check_at IS NULL -- 完了していない
                 AND (
                     v.remaining_check_lock IS NULL -- 未着手
-                    OR v.remaining_check_lock < DATEADD(MINUTE, -15, SYSDATETIME()) -- 15分以上放置
+                    OR v.remaining_check_lock < DATEADD(MINUTE, -5, SYSDATETIME()) -- 15分以上放置
                 )
             ORDER BY v.remaining_check_lock ASC -- 古いロックから優先
         )
