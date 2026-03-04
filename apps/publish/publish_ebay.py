@@ -1579,26 +1579,25 @@ def fetch_accounts_for_pc(conn, current_pc):
 
         rows = list(cur.fetchall())
 
-    # ===== 一時追加アカウント =====
+    # ===== 一時追加データ =====
     extra = [
-        ("川島", "x210-131-209-103", 1000),
-        ("川島", "x85-131-251-127", 1000),
-        ("谷川③", "x162-43-39-209", 1000),
+        ("川島", "x210-131-209-103", "C", 1000),
+        ("川島", "x85-131-251-127", "C", 1000),
+        ("谷川③", "x162-43-39-209", "A", 1000),
     ]
 
-    for account, pc, target in extra:
+    for account, pc, preset_group, target in extra:
         if pc == current_pc:
-            rows.append((account, None, target))
+            rows.append((account, preset_group, target))
 
     return [
         Account(
             account=r[0].strip(),
-            preset_group=(r[1].strip() if r[1] else None),
+            preset_group=r[1].strip(),
             post_target=r[2]
         )
         for r in rows
     ]
-
 
 @dataclass
 class PublishState:
