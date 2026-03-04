@@ -9,7 +9,7 @@ import random
 import traceback
 import socket
 import pyodbc
-import urllib3
+from urllib3.exceptions import ReadTimeoutError
 
 from typing import Any, Dict, List, Tuple, Optional
 from urllib.parse import urlencode, urlparse, parse_qsl, urlunparse
@@ -191,19 +191,24 @@ def handle_price_change_side_effects(
     high_usd_target: float,
 ) -> None:
 
-    cursor = conn.cursor()
-
     # ─────────────────────────────
     # ① クリア前の状態取得
     # ─────────────────────────────
-    select_sql = """
-    SELECT 出品状況, 出品状況詳細, last_updated_str, last_ng_at
-    FROM trx.vendor_item
-    WHERE vendor_name = ?
-    AND vendor_item_id = ?
-    """
-    cursor.execute(select_sql, vendor_name, sku)
-    row = cursor.fetchone()
+    try:
+        with conn.cursor() as cursor:
+            select_sql = """
+            SELECT 出品状況, 出品状況詳細, last_updated_str, last_ng_at
+            FROM trx.vendor_item
+            WHERE vendor_name = ?
+            AND vendor_item_id = ?
+            """
+            cursor.execute(select_sql, vendor_name, sku)
+            row = cursor.fetchone()
+    finally:
+        try:
+            cursor.close()
+        except Exception:
+            pass
 
     if row is None:
         raise RuntimeError(f"vendor_item not found: {vendor_name} / {sku}")
@@ -238,7 +243,8 @@ def handle_price_change_side_effects(
             WHERE vendor_name = ?
             AND vendor_item_id = ?
             """
-            cursor.execute(update_sql, vendor_name, sku)
+            with conn.cursor() as cursor:
+                cursor.execute(update_sql, vendor_name, sku)
             conn.commit()
 
             print(f"[CLEAR DONE] sku={sku}", flush=True)
@@ -386,6 +392,12 @@ WHEN NOT MATCHED THEN
             else:
                 conn.rollback()
                 raise
+        finally:
+            try:
+                cursor.close()
+            except Exception:
+                pass
+
 
     raise RuntimeError("upsert_vendor_items failed after retries")
 
@@ -422,7 +434,7 @@ def has_no_results_banner(driver) -> bool:
     try:
         txt = driver.execute_script("return document.body ? document.body.innerText : ''") or ""
         return "出品された商品がありません" in txt
-    except Exception:
+    except (Exception, ReadTimeoutError, socket.timeout):
         return False
 
 
@@ -527,10 +539,14 @@ def run_fetch_sold_ebay(payload: dict) -> Tuple[int, int]:
                 print(f"[PAGE {page_idx+1}] no-results banner -> stop", flush=True)
                 break
 
-            if vendor_name == "メルカリshops":
-                items = scroll_until_stagnant_collect_shops(driver, PAUSE)
-            else:
-                items = scroll_until_stagnant_collect_items(driver, PAUSE)
+            try:
+                if vendor_name == "メルカリshops":
+                    items = scroll_until_stagnant_collect_shops(driver, PAUSE)
+                else:
+                    items = scroll_until_stagnant_collect_items(driver, PAUSE)
+            except Exception as e:
+                print(f"[SCROLL ERROR] {type(e).__name__}: {e}", flush=True)
+                items = []
 
             print(f"[PAGE {page_idx+1}] scraped={len(items)}", flush=True)
             fetched_pages += 1
@@ -566,13 +582,18 @@ def run_fetch_sold_ebay(payload: dict) -> Tuple[int, int]:
         except Exception as e:
             print(f"[WARN] page error page={page_idx+1}: {e}", flush=True)
             # ページ内でエラーが起きても、次のページのリトライへ進めるようにする
-        
+
         finally:
-            # ★ ページが終わるたびにDBを閉じ、ブラウザも終了させる
             if conn:
-                try: conn.close()
-                except: pass
-            safe_quit(driver)
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+            try:
+                safe_quit(driver)
+            except Exception:
+                pass
 
         page_idx += 1
         time.sleep(1)
@@ -616,11 +637,11 @@ def run_fetch_active_ebay(payload: dict) -> Tuple[int, int]:
     page_idx = 0
     while True:
         page_start = time.time()
-        driver = build_driver() 
-        
-        # ★ ページごとに新しいDB接続を作成し、スコープを限定する
-        conn = None 
+        driver = None
+        conn = None        
+ 
         try:
+            driver = build_driver() 
             # 1. このページのためだけにDBに接続
             conn = get_sql_server_connection()
 
@@ -640,7 +661,7 @@ def run_fetch_active_ebay(payload: dict) -> Tuple[int, int]:
                     )
                     print("[D] wait body done", flush=True)
                     break 
-                except (TimeoutException, WebDriverException) as e:
+                except (TimeoutException, WebDriverException, ReadTimeoutError, socket.timeout) as e:
                     if is_renderer_timeout(e):
                         print(f"[RENDERER TIMEOUT] page={page_idx+1} attempt={attempt} -> rebuild driver", flush=True)
                         try:
@@ -656,10 +677,14 @@ def run_fetch_active_ebay(payload: dict) -> Tuple[int, int]:
 
             # --- [ロジック維持] スクレイピング実行 ---
             print("[E] scroll start", flush=True)
-            if vendor_name == "メルカリshops":
-                items = scroll_until_stagnant_collect_shops(driver, pause=0.6)
-            else:
-                items = scroll_until_stagnant_collect_items(driver, pause=0.6)
+            try:
+                if vendor_name == "メルカリshops":
+                    items = scroll_until_stagnant_collect_shops(driver, pause=0.6)
+                else:
+                    items = scroll_until_stagnant_collect_items(driver, pause=0.6)
+            except Exception as e:
+                print(f"[SCROLL ERROR] {type(e).__name__}: {e}", flush=True)
+                items = []
             print(f"[E] scroll done items={len(items)}", flush=True)
 
             total_items += len(items)
@@ -713,13 +738,16 @@ def run_fetch_active_ebay(payload: dict) -> Tuple[int, int]:
                 time.sleep((TARGET - elapsed) + random.uniform(0.0, 3.0))
 
         finally:
-            # ★ ページが終わるたびに、このページのDB接続を確実に閉じる
             if conn:
-                try: conn.close()
-                except: pass
-            # ★ ブラウザも確実に終了させる
-            if driver:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+            try:
                 safe_quit(driver)
+            except Exception:
+                pass
 
         page_idx += 1
         time.sleep(1)

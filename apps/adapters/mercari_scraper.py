@@ -47,7 +47,9 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from urllib3.exceptions import MaxRetryError
-
+from urllib3.exceptions import ReadTimeoutError
+import socket
+from selenium.common.exceptions import WebDriverException
 
 # =========================
 # WebDriver
@@ -171,7 +173,7 @@ def extract_item_listings(driver):
         anchors = WebDriverWait(driver, 10).until(
             lambda d: d.find_elements(By.CSS_SELECTOR, "a[href*='/item/m']")
         )
-    except (TimeoutException, WebDriverException):
+    except (TimeoutException, WebDriverException,ReadTimeoutError, socket.timeout):
         return items
 
     for a in anchors[:MAX_ANCHORS]:
@@ -207,8 +209,8 @@ def extract_item_listings(driver):
 
             items.append((iid, clean_title, price))
 
-        except (StaleElementReferenceException, WebDriverException):
-            continue
+        except (TimeoutException, WebDriverException, ReadTimeoutError, socket.timeout):
+            return items
 
     return items
 
@@ -224,7 +226,10 @@ def scroll_until_stagnant_collect_items(driver, pause: float, stagnant_times: in
     while True:
         print("[E] scrolling...", flush=True)
         time.sleep(pause + random.uniform(0.15, 0.35))
-        items = extract_item_listings(driver)
+        try:
+            items = extract_item_listings(driver)
+        except (WebDriverException, ReadTimeoutError, socket.timeout):
+            return []
         cur_len = len(items)
 
         if cur_len <= last_len:
@@ -275,7 +280,7 @@ def extract_shops_listings(driver):
                 By.CSS_SELECTOR, "a[href*='/shops/product/']"
             )
         )
-    except (TimeoutException, WebDriverException):
+    except (TimeoutException, WebDriverException,ReadTimeoutError, socket.timeout):
         return items
 
     for a in anchors[:MAX_ANCHORS]:
@@ -310,8 +315,8 @@ def extract_shops_listings(driver):
             # ★進捗があったので時刻を更新
             last_progress = time.time()
 
-        except (StaleElementReferenceException, WebDriverException):
-            pass
+        except (TimeoutException, WebDriverException, ReadTimeoutError, socket.timeout):
+            return items
 
         # ★無進捗 TIMEOUT 判定
         if time.time() - last_progress > TIMEOUT_SEC:
@@ -342,8 +347,12 @@ def scroll_until_stagnant_collect_shops(driver, pause: float, stagnant_times: in
     for i in range(MAX_SCROLL):
         print("[E] scrolling...", flush=True)
         time.sleep(pause + random.uniform(0.15, 0.35))
+        try:
+            items = extract_shops_listings(driver)
+        except (WebDriverException, ReadTimeoutError, socket.timeout):
+            return items
 
-        items = extract_shops_listings(driver)
+
         print(f"[E] extracted items={len(items)}", flush=True)
 
 

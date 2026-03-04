@@ -209,54 +209,7 @@ def launch_remaining_workers():
     print("🚀 remaining worker を全VPSで起動しました")
 
 
-def reset_remaining_flags(conn):
-    """
-    remaining フェーズ開始前に
-    trx.vendor_item の remaining_check_by / at をクリア
-    """
 
-    print("🧹 remaining_check フラグを全クリア")
-
-    cur = conn.cursor()
-    cur.execute("""
-        UPDATE trx.vendor_item
-           SET remaining_check_by = NULL,
-               remaining_check_at = NULL
-    """)
-    conn.commit()
-
-    print("✅ remaining フラグ初期化完了")
-
-def wait_until_remaining_exhausted(conn):
-    """
-    remaining 対象（remaining_check_at IS NULL）が
-    なくなるまで待機
-    """
-
-    print("⏳ remaining 対象がなくなるのを待機中…")
-
-    cur = conn.cursor()
-
-    while True:
-        cur.execute("""
-            SELECT COUNT(*)
-            FROM trx.listings AS l
-            INNER JOIN trx.vendor_item AS v
-              ON v.vendor_name = l.vendor_name
-             AND v.vendor_item_id = l.vendor_item_id
-            WHERE l.is_deleted = 0
-              AND l.vendor_name IN (N'メルカリ', N'メルカリshops')
-              AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')
-              AND v.remaining_check_at IS NULL
-        """)
-        cnt = cur.fetchone()[0]
-
-        if cnt == 0:
-            print("✅ remaining 対象消滅")
-            return
-
-        print(f"… remaining対象={cnt} 件")
-        time.sleep(30)
 
 def refresh_presets_materialized(conn):
     with conn.cursor() as cur:
@@ -308,6 +261,55 @@ def refresh_presets_and_clear_locks(conn):
         raise
     finally:
         conn.autocommit = True
+
+def reset_remaining_flags(conn):
+    """
+    remaining フェーズ開始前に
+    trx.vendor_item のチェック用フラグをすべてクリアする
+    """
+    print("🧹 remaining_check フラグ（by/lock/at）を全クリア")
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE trx.vendor_item
+           SET remaining_check_by   = NULL,
+               remaining_check_lock = NULL,
+               remaining_check_at   = NULL
+    """)
+    conn.commit()
+    print("✅ remaining フラグ初期化完了")
+
+def wait_until_remaining_exhausted(conn):
+    """
+    remaining 対象（未完了 かつ タイムアウトしていない）が
+    なくなるまで待機
+    """
+    print("⏳ remaining 対象がなくなるのを待機中…")
+    cur = conn.cursor()
+    while True:
+        # 条件: 完了していない(at IS NULL)
+        # かつ (まだ誰も触っていない OR 15分以上生存確認がない)
+        cur.execute("""
+            SELECT COUNT(*)
+            FROM trx.vendor_item AS v
+            INNER JOIN trx.listings AS l 
+                ON v.vendor_name = l.vendor_name
+               AND v.vendor_item_id = l.vendor_item_id
+            WHERE l.is_deleted = 0
+              AND v.vendor_name IN (N'メルカリ', N'メルカリshops')
+              AND v.remaining_check_at IS NULL
+              AND (
+                  v.remaining_check_lock IS NULL 
+                  OR v.remaining_check_lock < DATEADD(MINUTE, -15, SYSDATETIME())
+              )
+        """)
+        cnt = cur.fetchone()[0]
+
+        if cnt == 0:
+            print("✅ remaining 対象消滅")
+            return
+
+        print(f"… 待機中: 残り約 {cnt} 件 (未着手またはリトライ待ち)")
+        time.sleep(30)
 
 # ======================
 # メイン処理

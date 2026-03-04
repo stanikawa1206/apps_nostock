@@ -137,6 +137,8 @@ def build_mercari_url(vendor_name: str, sku: str) -> str:
         return f"https://jp.mercari.com/shops/product/{sku}"
     return f"https://jp.mercari.com/item/{sku}"
 
+
+
 def exists_remaining_target(conn):
     with conn.cursor() as cur:
         cur.execute("""
@@ -147,17 +149,15 @@ def exists_remaining_target(conn):
                AND v.vendor_item_id = l.vendor_item_id
             WHERE l.is_deleted = 0
               AND v.vendor_name IN (N'メルカリ', N'メルカリshops')
-              AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')
-              AND v.remaining_check_at IS NULL
+              AND v.remaining_check_at IS NULL -- 完了していない
+              AND (
+                  v.remaining_check_lock IS NULL -- 未着手
+                  OR v.remaining_check_lock < DATEADD(MINUTE, -15, SYSDATETIME()) -- 15分以上放置
+              )
         """)
         return cur.fetchone() is not None
 
-import time
-import pyodbc
-
-
 def pull_one_remaining_target(conn, worker_name: str):
-    # worker_count, worker_index の引数は不要になります
     sql = """
         ;WITH cte AS (
             SELECT TOP (1)
@@ -169,7 +169,6 @@ def pull_one_remaining_target(conn, worker_name: str):
                 p.mode,
                 p.low_usd_target,
                 p.high_usd_target
-            -- READPAST を追加して、他者がロック中の行をスキップ
             FROM trx.vendor_item AS v WITH (UPDLOCK, ROWLOCK, READPAST)
             INNER JOIN trx.listings AS l
                 ON l.vendor_name    = v.vendor_name
@@ -179,14 +178,17 @@ def pull_one_remaining_target(conn, worker_name: str):
             WHERE
                 l.is_deleted = 0
                 AND v.vendor_name IN (N'メルカリ', N'メルカリshops')
-                AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')
-                AND v.remaining_check_at IS NULL
-            ORDER BY v.last_checked_at ASC -- 古いものから順に、などの指定も可能
+                AND v.remaining_check_at IS NULL -- 完了していない
+                AND (
+                    v.remaining_check_lock IS NULL -- 未着手
+                    OR v.remaining_check_lock < DATEADD(MINUTE, -15, SYSDATETIME()) -- 15分以上放置
+                )
+            ORDER BY v.remaining_check_lock ASC -- 古いロックから優先
         )
         UPDATE v
         SET
             remaining_check_by = ?,
-            remaining_check_at = SYSDATETIME()
+            remaining_check_lock = SYSDATETIME() -- lockに開始時刻を入れる
         OUTPUT
             inserted.vendor_name,
             inserted.vendor_item_id,
@@ -198,12 +200,10 @@ def pull_one_remaining_target(conn, worker_name: str):
             cte.high_usd_target
         FROM trx.vendor_item AS v
         INNER JOIN cte
-            ON v.vendor_name    = cte.vendor_name
-           AND v.vendor_item_id = cte.vendor_item_id;
+            ON v.vendor_name     = cte.vendor_name
+           AND v.vendor_item_id  = cte.vendor_item_id;
     """
-
     cur = conn.cursor()
-    # 引数は worker_name だけ
     cur.execute(sql, (worker_name,))
     row = cur.fetchone()
     conn.commit()
@@ -414,15 +414,14 @@ def process_status_and_sync(
         )
 
     # =====================
-    # ★ 6. remaining 確定
+    # ★ 6. remaining 確定 (関数の最後に配置)
     # =====================
     with conn.cursor() as cur:
         cur.execute("""
             UPDATE trx.vendor_item
-               SET remaining_check_at = SYSDATETIME(),
-                   remaining_check_by = ?
+            SET remaining_check_at = SYSDATETIME() -- ここで完了時刻を打つ
             WHERE vendor_name = ? AND vendor_item_id = ?
-        """, (worker_name, vendor_name,  sku))
+        """, (row["vendor_name"], row["vendor_item_id"]))
 
     conn.commit()
 
