@@ -1582,6 +1582,7 @@ def fetch_accounts_for_pc(conn, current_pc):
     # ===== 一時追加データ =====
     extra = [
         ("谷川③", "x162-43-39-209", "C", 1000),
+        ("谷川②", "xx210-131-209-232, "C", 1000),
     ]
 
     for account, pc, preset_group, target in extra:
