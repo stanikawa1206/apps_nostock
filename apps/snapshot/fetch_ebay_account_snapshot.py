@@ -13,20 +13,20 @@ from apps.common.utils import (
 )
 
 def build_driver_for_ebay_csv():
+
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
 
     opts = Options()
 
-    # headless禁止
-    # opts.add_argument("--headless=new") ← 使わない
+    # ★ VBAと同じ
+    opts.add_argument(
+        r"--user-data-dir=C:\Users\stani\AppData\Local\Google\Chrome\User Data"
+    )
 
-    # 画像ON（重要）
-    # opts.add_argument("--blink-settings=imagesEnabled=false") ← 使わない
+    opts.add_argument("--profile-directory=Default")
 
     opts.add_argument("--disable-blink-features=AutomationControlled")
-    opts.add_experimental_option("excludeSwitches", ["enable-automation"])
-    opts.add_experimental_option("useAutomationExtension", False)
 
     driver = webdriver.Chrome(options=opts)
 
@@ -46,6 +46,7 @@ def get_accounts():
     cur.execute("""
         SELECT account, username, [password]
         FROM mst.ebay_accounts
+        WHERE ISNULL(is_excluded,0) = 0           
     """)
 
     rows = cur.fetchall()
@@ -254,48 +255,66 @@ def download_report(driver, download_dir):
     download_btn.click()
 
     # ───────── LISTINGS ─────────
-    listings_radio = wait.until(
+    select_source = wait.until(
         EC.element_to_be_clickable(
-            (By.XPATH, "//label[contains(@for,'LISTINGS')]")
+            (By.XPATH, "//div[text()='Select report source']/ancestor::button")
         )
     )
-    listings_radio.click()
+
+    driver.execute_script("arguments[0].click();", select_source)
 
     # ───────── ALL ACTIVE ─────────
-    all_active_radio = wait.until(
+    listings_radio = wait.until(
         EC.element_to_be_clickable(
-            (By.XPATH, "//label[contains(@for,'ALL_LISTINGS')]")
+            (By.XPATH, "//label[text()='Listings']")
         )
     )
-    all_active_radio.click()
+
+    driver.execute_script("arguments[0].click();", listings_radio)
+
+    report_type = wait.until(
+        EC.presence_of_element_located(
+            (By.XPATH, "//div[text()='Select report type']/ancestor::button")
+        )
+    )
+
+    driver.execute_script("arguments[0].click();", report_type)
+
+    all_active_radio = wait.until(
+        EC.presence_of_element_located(
+            (By.XPATH, "//label[text()='All active listings']")
+        )
+    )
+
+    driver.execute_script("arguments[0].click();", all_active_radio)
 
     # ───────── 最終Download ─────────
-    final_download = wait.until(
+    download_btn = wait.until(
         EC.element_to_be_clickable(
-            (By.XPATH, "//*[@id='reports-bam']//button[contains(.,'Download')]")
+            (By.XPATH, "//div[contains(@class,'lightbox-dialog')]//button[text()='Download']")
         )
     )
-    final_download.click()
+
+    driver.execute_script("arguments[0].click();", download_btn)
 
     # ───────── 新RefID検出 ─────────
-    timeout = time.time() + 30
-    new_ref = None
+    wait = WebDriverWait(driver, 60)
 
-    while time.time() < timeout:
-        ref_elements = driver.find_elements(By.XPATH, "//td[3]//div")
-        for el in ref_elements:
-            txt = el.text.strip()
-            if txt.isdigit() and len(txt) >= 8:
-                if txt != initial_ref:
-                    new_ref = txt
-                    break
-        if new_ref:
-            break
-        time.sleep(1)
+    def get_new_ref(d):
+        el = d.find_element(
+            By.XPATH,
+            "(//td[contains(@class,'requestId')]//div)[1]"
+        )
+        txt = el.text.strip()
 
-    if not new_ref:
-        raise Exception("新RefID検出失敗")
+        if txt.isdigit() and txt != initial_ref:
+            return txt
+        return False
 
+    new_ref = wait.until(get_new_ref)
+
+    print("新RefID:", new_ref)
+    
     # ───────── CSV検出 ─────────
     timeout = time.time() + 180
     while time.time() < timeout:
@@ -330,6 +349,10 @@ def get_new_csv(before_files):
 # ==========================================
 def write_to_sql(account, df):
 
+    # ←ここで型を整える
+    df["Start price"] = pd.to_numeric(df["Start price"], errors="coerce").fillna(0)
+    df["Watchers"] = pd.to_numeric(df["Watchers"], errors="coerce").fillna(0)
+
     conn = get_sql_server_connection()
     cur = conn.cursor()
 
@@ -361,6 +384,132 @@ def write_to_sql(account, df):
     conn.commit()
     conn.close()
 
+import time
+import re
+from openpyxl import load_workbook
+from selenium.webdriver.common.by import By
+
+
+EXCEL_PATH = r"Y:\ebay\ebay.xlsm"
+
+
+
+def write_extract_to_excel(account, promo_used, selling_limit1, selling_limit2, selling_limit3):
+
+    wb = load_workbook(EXCEL_PATH, keep_vba=True)
+    ws = wb["アカウント別"]
+
+    target_col = None
+
+    # 1行目からアカウント列を探す
+    for col in range(1, ws.max_column + 1):
+        if ws.cell(1, col).value == account:
+            target_col = col
+            break
+
+    if target_col is None:
+        raise Exception(f"{account} の列が見つかりません")
+
+    # 2〜5行クリア
+    for r in range(2, 6):
+        ws.cell(r, target_col).value = None
+
+    # VBAと同じ場所に書く
+    ws.cell(2, target_col).value = promo_used
+    ws.cell(3, target_col).value = selling_limit1
+    ws.cell(4, target_col).value = selling_limit2
+    ws.cell(5, target_col).value = selling_limit3
+
+    wb.save(EXCEL_PATH)
+    wb.close()
+
+def ebay_extract_data(driver, account):
+
+    promo_used = None
+    selling_limit1 = ""
+    selling_limit2 = ""
+    selling_limit3 = ""
+
+    # ① ページロード待ち
+    timeout = time.time() + 10
+    while time.time() < timeout:
+        state = driver.execute_script("return document.readyState")
+        if state == "complete":
+            break
+        time.sleep(0.2)
+
+    # ② show more クリック
+    try:
+        promo_btn = driver.find_element(
+            By.XPATH,
+            "//*[@id='sho-prom-offers']/div/div[2]/div/div/div[8]/div/button"
+        )
+        promo_btn.click()
+    except Exception:
+        pass
+
+    time.sleep(2)
+
+    # ③ HTML取得
+    page_content = driver.execute_script("return document.body.innerHTML")
+
+    # ④ Promotional offers used 抽出
+    pos = page_content.find("Premium Store Subscription")
+    if pos != -1:
+        promo_pos = page_content.find("Promotional offers,", pos)
+        if promo_pos != -1:
+            used_pos = page_content.find("used,", promo_pos)
+            if used_pos != -1:
+                number_text = page_content[used_pos + len("used,"): used_pos + len("used,") + 20]
+                m = re.search(r"\d+", number_text)
+                if m:
+                    promo_used = m.group()
+
+    # ⑤ Selling limits取得
+    timeout = time.time() + 5
+    while time.time() < timeout:
+        try:
+            selling_limit1 = driver.find_element(
+                By.XPATH,
+                "//*[@id='sho-selling-limits']/div/div[2]/div/div/div[2]/p/span[1]"
+            ).text
+
+            selling_limit2 = driver.find_element(
+                By.XPATH,
+                "//*[@id='sho-selling-limits']/div/div[2]/div/div/div[1]/p/span[1]"
+            ).text
+
+            selling_limit3_raw = driver.find_element(
+                By.XPATH,
+                "//*[@id='sho-selling-limits']/div/div[2]/div/div/div[2]/h3/span"
+            ).text
+
+            if selling_limit1 and selling_limit2 and selling_limit3_raw:
+                m = re.search(r"\d{1,3}(?:,\d{3})*(?:\.\d+)?", selling_limit3_raw)
+                if m:
+                    selling_limit3 = m.group()
+                break
+
+        except Exception:
+            pass
+
+        time.sleep(0.5)
+
+    # Excelへ書く前に確認
+    print("account:", account)
+    print("promo_used:", promo_used)
+    print("selling_limit1:", selling_limit1)
+    print("selling_limit2:", selling_limit2)
+    print("selling_limit3:", selling_limit3)
+
+    # Excelへ直接書き込み
+    write_extract_to_excel(
+        account=account,
+        promo_used=promo_used,
+        selling_limit1=selling_limit1,
+        selling_limit2=selling_limit2,
+        selling_limit3=selling_limit3
+    )
 
 # ==========================================
 # メイン
@@ -376,6 +525,11 @@ def main():
         driver = build_driver_for_ebay_csv()
 
         ensure_login(driver, username, password)
+
+        ebay_extract_data(driver,account)
+
+        return
+
 
         # CSVだけ
         before_files = set(glob.glob(r"C:\Users\stani\Downloads\*.csv"))
