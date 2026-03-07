@@ -1,7 +1,7 @@
 from playwright.sync_api import sync_playwright
 import json
 
-URL = "https://jp.mercari.com/item/m34748992463"
+URL = "https://jp.mercari.com/item/m18955768337"
 
 with sync_playwright() as p:
 

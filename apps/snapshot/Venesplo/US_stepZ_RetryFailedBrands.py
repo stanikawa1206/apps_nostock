@@ -9,16 +9,16 @@ import logging
 from my_utils import get_spapi_access_token, get_sql_server_connection
 
 # ==========================================
-# グローバル変数（カナダ用にパスを管理）
+# グローバル変数
 # ==========================================
-LOG_DIR = r"X:\apps\snapshot\keepa_ca_to_jp_cross_asin\logs"
-CSV_OUTPUT_DIR = r"\\MOUSE\apps_nostock\apps\snapshot\Venesplo_CA\input"
+LOG_DIR = r"\\MOUSE\apps_nostock\apps\snapshot\Venesplo\log_US"
+CSV_OUTPUT_DIR = r"\\MOUSE\apps_nostock\apps\snapshot\Venesplo\input_US"
 
 # ==========================================
 # ロギング設定
 # ==========================================
 os.makedirs(LOG_DIR, exist_ok=True)
-log_file = os.path.join(LOG_DIR, f"restriction_check_ca_{datetime.datetime.now().strftime('%Y%m%d')}.log")
+log_file = os.path.join(LOG_DIR, f"retry_restriction_check_{datetime.datetime.now().strftime('%Y%m%d')}.log")
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -29,12 +29,12 @@ logging.basicConfig(
 )
 
 # ==========================================
-# SP-API カナダ制限チェック関数
+# SP-API 制限チェック関数
 # ==========================================
-def check_ca_restriction(asin, access_token, retry_count=3):
+def check_us_restriction(asin, access_token, retry_count=3):
     import requests
     seller_id = "A3LDC1YQ3725LV"
-    marketplace_id = "A2EUQ1WTGCTBG2" # カナダのマーケットプレイスID
+    marketplace_id = "ATVPDKIKX0DER"
     endpoint = "https://sellingpartnerapi-na.amazon.com"
     url = f"{endpoint}/listings/2021-08-01/restrictions"
     
@@ -51,21 +51,21 @@ def check_ca_restriction(asin, access_token, retry_count=3):
 
     for attempt in range(retry_count):
         try:
-            time.sleep(1.0) # APIレートリミット対策
+            time.sleep(1.0)
             resp = requests.get(url, headers=headers, params=params)
             
             if resp.status_code == 200:
                 data = resp.json()
                 restrictions = data.get("restrictions", [])
                 if not restrictions:
-                    return "OK"          # 出品可能
-                return "RESTRICTED"      # 出品不可
+                    return "OK"
+                return "RESTRICTED"
             elif resp.status_code in (429, 500, 502, 503, 504):
                 time.sleep(3.0)
                 continue
             else:
                 return "ERROR"
-        except Exception:
+        except Exception as e:
             time.sleep(3.0)
             continue
     return "ERROR"
@@ -74,10 +74,10 @@ def check_ca_restriction(asin, access_token, retry_count=3):
 # メイン処理
 # ==========================================
 def main():
-    logging.info("カナダ向け処理を開始します。")
+    logging.info("【再トライ処理】を開始します。")
     
     try:
-        token = get_spapi_access_token(region="US") # 北米リージョンとして取得
+        token = get_spapi_access_token(region="US")
         token_acquired_time = time.time()
     except Exception as e:
         logging.error(f"初期トークンの取得に失敗しました: {e}")
@@ -90,14 +90,16 @@ def main():
         logging.error(f"DB接続エラー: {e}")
         return
 
-    # カナダ用の追加カラム(CA_Venesplo, CA)を条件に使用
+    # 3. 処理対象のブランドとASINを取得 (USが'×'のブランドを狙う)
     sql_select = """
         SELECT a.jp_brand, a.asin
         FROM trx.amazon_cross_market_asin a
         LEFT JOIN mst.amazon_brand m ON a.jp_brand = m.brand
         WHERE a.wakarunda IN ('D', '-')
-          AND a.CA_Venesplo IS NULL
-          AND m.CA IS NULL
+          AND a.US_Venesplo IS NULL
+          AND a.us_existence = 1           -- USカタログが存在する
+          AND m.US = '×'                   -- 既に×判定になっているブランド
+          AND a.US_restriction IS NULL     -- まだ制限チェックしていないASINで再トライ
     """
     try:
         cursor.execute(sql_select)
@@ -116,68 +118,74 @@ def main():
         if len(brand_asin_map[brand]) < 3:
             brand_asin_map[brand].append(asin)
 
-    logging.info(f"チェック対象ブランド数: {len(brand_asin_map)}")
+    logging.info(f"再チェック対象ブランド数: {len(brand_asin_map)}")
     
     today_str = datetime.datetime.now().strftime('%Y-%m-%d')
     today_str_file = datetime.datetime.now().strftime('%Y%m%d')
     newly_listable_brands = []
 
+    # 4. ブランドごとにAPIで判定ループ
     for brand, asins in brand_asin_map.items():
-        logging.info(f"ブランド確認中(CA): {brand} (対象ASIN: {asins})")
+        logging.info(f"ブランド再確認中: {brand} (対象ASIN: {asins})")
         
         brand_is_listable = False
         checked_results = {} 
 
         for asin in asins:
             if time.time() - token_acquired_time >= 3000:
-                logging.info("トークンの再認証を行います...")
+                logging.info("トークン取得から50分経過。再認証を行います...")
                 try:
                     token = get_spapi_access_token(region="US")
                     token_acquired_time = time.time()
+                    logging.info("再認証に成功しました。")
                 except Exception as e:
-                    logging.error(f"再取得失敗: {e}")
+                    logging.error(f"トークン再取得失敗。処理中断: {e}")
                     conn.close()
                     return
 
-            status = check_ca_restriction(asin, token)
+            status = check_us_restriction(asin, token)
             
             if status == "OK":
                 checked_results[asin] = '〇'
                 brand_is_listable = True
-                break
+                break 
             elif status == "RESTRICTED":
                 checked_results[asin] = '×'
             else:
                 checked_results[asin] = None
 
+        # 5. 結果に応じたデータベースの更新
         try:
             if brand_is_listable:
-                # mst.amazon_brand の CA カラムを更新
-                cursor.execute("UPDATE mst.amazon_brand SET CA = '〇' WHERE brand = ?", brand)
+                # 敗者復活！ブランドを〇に昇格
+                cursor.execute("UPDATE mst.amazon_brand SET US = '〇' WHERE brand = ?", brand)
                 for asin, res in checked_results.items():
                     if res == '〇':
-                        # trx の CA 関連カラムを更新
                         cursor.execute("""
                             UPDATE trx.amazon_cross_market_asin 
-                            SET CA_restriction = '〇', CA_Venesplo = ? 
+                            SET US_restriction = '〇', US_Venesplo = ? 
                             WHERE asin = ?
                         """, today_str, asin)
+                
                 newly_listable_brands.append(brand)
+                logging.info(f"ブランド【{brand}】が再判定で出品可能(〇)になりました！")
+                
             else:
-                cursor.execute("UPDATE mst.amazon_brand SET CA = '×' WHERE brand = ?", brand)
                 for asin, res in checked_results.items():
                     if res == '×':
                         cursor.execute("""
                             UPDATE trx.amazon_cross_market_asin 
-                            SET CA_restriction = '×' 
+                            SET US_restriction = '×' 
                             WHERE asin = ?
                         """, asin)
+
             conn.commit()
+            
         except Exception as e:
             logging.error(f"DB更新エラー (Brand: {brand}): {e}")
             conn.rollback()
 
-    # CSV出力（本日OKになったブランドの全ASIN）
+    # 6. CSVへの書き出し処理
     try:
         if newly_listable_brands:
             placeholders = ','.join(['?'] * len(newly_listable_brands))
@@ -185,27 +193,31 @@ def main():
                 SELECT jp_brand, asin 
                 FROM trx.amazon_cross_market_asin 
                 WHERE jp_brand IN ({placeholders})
+                  AND us_existence = 1
             """
             cursor.execute(query, newly_listable_brands)
             today_db_records = cursor.fetchall()
 
             os.makedirs(CSV_OUTPUT_DIR, exist_ok=True)
-            csv_filename = f"ca_listable_items_{today_str_file}.csv"
+            csv_filename = f"us_listable_items_retry_{today_str_file}.csv"
             csv_file_path = os.path.join(CSV_OUTPUT_DIR, csv_filename)
             
             with open(csv_file_path, mode='w', newline='', encoding='utf-8-sig') as f:
                 writer = csv.writer(f)
-                writer.writerow(["Brand", "ASIN", "CA_Venesplo"]) 
+                writer.writerow(["Brand", "ASIN", "US_Venesplo"])
+                
                 for row in today_db_records:
                     writer.writerow([row.jp_brand, row.asin, today_str])
-            logging.info(f"CSV(CA)を出力しました: {csv_file_path}")
+                    
+            logging.info(f"再判定分のCSVを出力しました: {csv_file_path} (対象ブランド: {len(newly_listable_brands)}件)")
         else:
-            logging.info("本日新規に出品可能と判定されたCAデータはありませんでした。")
+            logging.info("再判定で新たに出品可能となったブランドはありませんでした。")
+            
     except Exception as e:
         logging.error(f"CSV出力エラー: {e}")
 
     conn.close()
-    logging.info("CA向け処理が完了しました。")
+    logging.info("すべての処理が完了しました。")
 
 if __name__ == "__main__":
     main()

@@ -1,0 +1,4 @@
+2026-02-27 12:26:27,074 [INFO] カナダ向け判定済み・未書き出しASINの出力処理を開始します。
+2026-02-27 12:37:27,042 [INFO] 出力対象のASIN(CA)を 55564 件取得しました。
+2026-02-27 12:37:27,369 [INFO] CSV(CA)を出力しました: \\MOUSE\apps_nostock\apps\snapshot\Venesplo_CA\input\ca_listable_items_additional_20260227.csv
+2026-02-27 12:37:28,333 [INFO] データベースの出力フラグ(CA_Venesplo)を更新しました。

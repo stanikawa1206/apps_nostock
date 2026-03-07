@@ -1,0 +1,2 @@
+2026-03-06 11:47:46,410 [INFO] カナダ向け判定済み・未書き出しASINの出力処理を開始します。
+2026-03-06 11:48:01,741 [ERROR] DB接続エラー: ('08001', '[08001] [Microsoft][ODBC Driver 17 for SQL Server]TCP プロバイダー: 待ち操作がタイムアウトになりました。\r\n (258) (SQLDriverConnect); [08001] [Microsoft][ODBC Driver 17 for SQL Server]ログイン タイムアウトが時間切れになりました (0); [08001] [Microsoft][ODBC Driver 17 for SQL Server]SQL Server への接続の確立中に、ネットワーク関連のエラーまたはインスタンス固有のエラーが発生しました。サーバーが見つからないか、アクセスできません。インスタンス名が正しいことと、SQL Server がリモート接続を許可するように構成されていることを確認してください。詳細については、SQL Server オンライン ブックを参照してください。 (258)')

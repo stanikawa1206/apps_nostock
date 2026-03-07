@@ -19,6 +19,7 @@ SPAPI_ENDPOINT_JP = "https://sellingpartnerapi-fe.amazon.com"
 SPAPI_ENDPOINT_US = "https://sellingpartnerapi-na.amazon.com"
 MARKETPLACE_ID_JP = "A1VC38T7YXB528"
 MARKETPLACE_ID_US = "ATVPDKIKX0DER"
+MARKETPLACE_ID_CA = "A2EUQ1WTGCTBG2"  # ★カナダのIDを追加
 
 # ============================================================
 # 1. DB接続
@@ -62,7 +63,6 @@ def ensure_keepa_tokens(required_tokens=150):
         time.sleep(wait_sec)
         status = get_keepa_token_status()
 
-# my_utils.py 内の keepa_request 関数を以下に差し替え
 def keepa_request(endpoint: str, params: dict = None, data: dict = None) -> dict:
     if not KEEPA_API_KEY:
         raise ValueError("KEEPA_API_KEY が .env に設定されていません。")
@@ -75,21 +75,14 @@ def keepa_request(endpoint: str, params: dict = None, data: dict = None) -> dict
     if params: p.update(params)
     
     try:
-        # 修正ポイント: endpoint が 'query' の場合は、data があっても強制的に GET にするか、
-        # あるいは呼び出し側を徹底させる。ここでは呼び出し側の自由度を高めるため
-        # data が辞書形式であれば json= 引数（requests標準）を使うのが一般的ですが、
-        # 現状の json.dumps(data) を活かす場合は以下の通りです。
         if data:
-            # KeepaのPOSTは一部のエンドポイントでのみ使用します
             r = requests.post(url, params=p, data=json.dumps(data), timeout=180)
         else:
-            # /query などはこちらが正解
             r = requests.get(url, params=p, timeout=180)
         
         r.raise_for_status()
         return r.json()
     except Exception as e:
-        # 詳細なエラー内容を表示するように変更
         if 'r' in locals() and r is not None:
              print(f"[Keepa API Error Detail] Status: {r.status_code} | Body: {r.text}")
         print(f"[Keepa API Error] {e}")
@@ -101,10 +94,16 @@ def keepa_request(endpoint: str, params: dict = None, data: dict = None) -> dict
 def get_spapi_access_token(region: str = "JP") -> str:
     client_id = os.getenv("LWA_CLIENT_ID")
     client_secret = os.getenv("LWA_CLIENT_SECRET")
-    refresh_token = os.getenv("REFRESH_TOKEN_US") if region == "US" else os.getenv("REFRESH_TOKEN")
+    
+    # ★USとCAは同じ北米トークンを使用
+    if region in ("US", "CA"):
+        refresh_token = os.getenv("REFRESH_TOKEN_US")
+        target = "REFRESH_TOKEN_US"
+    else:
+        refresh_token = os.getenv("REFRESH_TOKEN")
+        target = "REFRESH_TOKEN"
 
     if not (refresh_token and client_id and client_secret):
-        target = "REFRESH_TOKEN_US" if region == "US" else "REFRESH_TOKEN"
         raise RuntimeError(f"SP-API認証情報不足: {target}")
 
     url = "https://api.amazon.com/auth/o2/token"
@@ -123,16 +122,19 @@ def get_spapi_access_token(region: str = "JP") -> str:
 def get_spapi_items_batch(asin_list: List[str], region: str, access_token: str) -> List[Dict[str, Any]]:
     if not asin_list: return []
 
+    # ★region に応じて正しいエンドポイントとIDを割り当て
     if region == "US":
         base_url = SPAPI_ENDPOINT_US
         mp_id = MARKETPLACE_ID_US
+    elif region == "CA":
+        base_url = SPAPI_ENDPOINT_US # カナダも北米エンドポイントを使用
+        mp_id = MARKETPLACE_ID_CA
     else:
         base_url = SPAPI_ENDPOINT_JP
         mp_id = MARKETPLACE_ID_JP
 
     url = f"{base_url}/catalog/2022-04-01/items"
     
-    # 【重要】offers を削除しました (これがエラーの原因でした)
     included_data = "summaries,attributes"
 
     params = {
@@ -159,20 +161,27 @@ def get_spapi_items_batch(asin_list: List[str], region: str, access_token: str) 
         return data.get("items", [])
         
     except Exception as e:
-        # デバッグ用に詳細エラーを表示
         if 'r' in locals() and r is not None:
              print(f"[SP-API Error Detail] {r.text}")
         print(f"[SP-API Error ({region})] {e}")
         return []
     
 # ============================================================
-# 4. SP-API 価格取得 (Pricing API) - my_utils.pyの末尾に追加
+# 4. SP-API 価格取得 (Pricing API)
 # ============================================================
 def get_spapi_prices_batch(asin_list: List[str], region: str, access_token: str) -> Dict[str, float]:
     if not asin_list: return {}
 
-    base_url = SPAPI_ENDPOINT_US if region == "US" else SPAPI_ENDPOINT_JP
-    mp_id = MARKETPLACE_ID_US if region == "US" else MARKETPLACE_ID_JP
+    # ★価格取得もCA対応に変更
+    if region == "US":
+        base_url = SPAPI_ENDPOINT_US
+        mp_id = MARKETPLACE_ID_US
+    elif region == "CA":
+        base_url = SPAPI_ENDPOINT_US
+        mp_id = MARKETPLACE_ID_CA
+    else:
+        base_url = SPAPI_ENDPOINT_JP
+        mp_id = MARKETPLACE_ID_JP
 
     url = f"{base_url}/products/pricing/v0/price"
     params = {"Asins": ",".join(asin_list), "ItemType": "Asin", "MarketplaceId": mp_id}
@@ -192,23 +201,19 @@ def get_spapi_prices_batch(asin_list: List[str], region: str, access_token: str)
             
             price = None
             
-            # 1. カート価格 (CompetitivePricing) の中から "New" を探す
             comp_pricing = product.get("CompetitivePricing", {})
             comp_prices = comp_pricing.get("CompetitivePrices", [])
             for cp in comp_prices:
-                # conditionが 'New' であることを確認
                 if cp.get("condition") == "New":
                     amt = cp.get("Price", {}).get("ListingPrice", {}).get("Amount")
                     if amt:
                         price = amt
                         break
             
-            # 2. カート価格に新品がない場合、一般出品 (Offers) から "New" を探す
             if price is None:
                 offers = product.get("Offers", [])
                 for offer in offers:
-                    # condition が 'New' または 'New' の派生（subcondition）を確認
-                    cond = offer.get("SubCondition") # Offers内は SubCondition 表記の場合が多い
+                    cond = offer.get("SubCondition")
                     if cond == "new":
                         amt = offer.get("BuyingPrice", {}).get("ListingPrice", {}).get("Amount")
                         if amt:

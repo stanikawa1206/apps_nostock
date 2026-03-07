@@ -11,8 +11,8 @@ from my_utils import get_spapi_access_token, get_sql_server_connection
 # ==========================================
 # グローバル変数（ファイルパス・設定の一元管理）
 # ==========================================
-LOG_DIR = r"X:\apps\snapshot\keepa_us_to_jp_cross_asin\logs"
-CSV_OUTPUT_DIR = r"\\MOUSE\apps_nostock\apps\snapshot\Venesplo\input"
+LOG_DIR = r"\\MOUSE\apps_nostock\apps\snapshot\Venesplo\log_US"
+CSV_OUTPUT_DIR = r"\\MOUSE\apps_nostock\apps\snapshot\Venesplo\input_US"
 
 # ==========================================
 # ロギング設定
@@ -99,6 +99,7 @@ def main():
         LEFT JOIN mst.amazon_brand m ON a.jp_brand = m.brand
         WHERE a.wakarunda IN ('D', '-')
           AND a.US_Venesplo IS NULL
+          AND a.us_existence = 1
           AND m.US IS NULL
     """
     try:
@@ -120,11 +121,9 @@ def main():
 
     logging.info(f"チェック対象ブランド数: {len(brand_asin_map)}")
     
-    # バッチの基準日を固定
     today_str = datetime.datetime.now().strftime('%Y-%m-%d')
     today_str_file = datetime.datetime.now().strftime('%Y%m%d')
 
-    # ★追加：本日OKになったブランドを格納するリスト
     newly_listable_brands = []
 
     # 4. ブランドごとにAPIで判定ループ
@@ -135,12 +134,12 @@ def main():
         checked_results = {} 
 
         for asin in asins:
-            # --- トークンの有効期限チェック (50分 = 3000秒) ---
+            # トークンの有効期限チェック (50分 = 3000秒)
             if time.time() - token_acquired_time >= 3000:
                 logging.info("トークン取得から50分経過しました。SP-APIの再認証を行います...")
                 try:
                     token = get_spapi_access_token(region="US")
-                    token_acquired_time = time.time() # 取得時間をリセット
+                    token_acquired_time = time.time()
                     logging.info("再認証に成功しました。処理を継続します。")
                 except Exception as e:
                     logging.error(f"トークンの再取得に失敗しました。処理を中断します: {e}")
@@ -153,7 +152,7 @@ def main():
             if status == "OK":
                 checked_results[asin] = '〇'
                 brand_is_listable = True
-                break # 1つでもOKが出たら、残りのASINはAPIを叩かずに抜ける
+                break
             elif status == "RESTRICTED":
                 checked_results[asin] = '×'
             else:
@@ -165,21 +164,18 @@ def main():
                 cursor.execute("UPDATE mst.amazon_brand SET US = '〇' WHERE brand = ?", brand)
                 for asin, res in checked_results.items():
                     if res == '〇':
-                        # トランザクションは調査したASINのみ更新
                         cursor.execute("""
                             UPDATE trx.amazon_cross_market_asin 
                             SET US_restriction = '〇', US_Venesplo = ? 
                             WHERE asin = ?
                         """, today_str, asin)
                 
-                # CSV出力のために、本日OKになったブランド名をリストに追加
                 newly_listable_brands.append(brand)
                 
             else:
                 cursor.execute("UPDATE mst.amazon_brand SET US = '×' WHERE brand = ?", brand)
                 for asin, res in checked_results.items():
                     if res == '×':
-                        # トランザクションは調査したASINのみ更新
                         cursor.execute("""
                             UPDATE trx.amazon_cross_market_asin 
                             SET US_restriction = '×' 
@@ -192,16 +188,15 @@ def main():
             logging.error(f"DB更新エラー (Brand: {brand}): {e}")
             conn.rollback()
 
-    # 6. CSVへの書き出し処理（日別ファイル作成）
+    # 6. CSVへの書き出し処理
     try:
         if newly_listable_brands:
-            # 本日OKになったブランドリストを使って、該当ブランドの全ASINをDBから取得
-            # IN句用のプレースホルダ（?, ?, ?...）を作成
             placeholders = ','.join(['?'] * len(newly_listable_brands))
             query = f"""
                 SELECT jp_brand, asin 
                 FROM trx.amazon_cross_market_asin 
                 WHERE jp_brand IN ({placeholders})
+                  AND us_existence = 1
             """
             cursor.execute(query, newly_listable_brands)
             today_db_records = cursor.fetchall()
@@ -212,10 +207,9 @@ def main():
             
             with open(csv_file_path, mode='w', newline='', encoding='utf-8-sig') as f:
                 writer = csv.writer(f)
-                writer.writerow(["Brand", "ASIN", "US_Venesplo"]) # ヘッダー行
+                writer.writerow(["Brand", "ASIN", "US_Venesplo"])
                 
                 for row in today_db_records:
-                    # 調査していないASINにはUS_Venesplo列に値が入っていないため、ここで日付を強制セット
                     writer.writerow([row.jp_brand, row.asin, today_str])
                     
             logging.info(f"CSVを出力しました: {csv_file_path} (対象ブランド: {len(newly_listable_brands)}件, 出力ASIN: {len(today_db_records)}件)")
