@@ -1,34 +1,30 @@
-from selenium import webdriver
-import time
+from playwright.sync_api import sync_playwright
+import json
 
-items = [
-    "m81876639070",
-    "m91872260315",
-    "m89799124272"
-]
+URL = "https://jp.mercari.com/item/m34748992463"
 
-driver = webdriver.Chrome()
+with sync_playwright() as p:
 
-driver.get("https://jp.mercari.com")
+    browser = p.chromium.launch(headless=False)
+    page = browser.new_page()
 
-time.sleep(5)
+    def handle_response(response):
 
-for item_id in items:
+        if "api.mercari.jp/items/get" in response.url:
 
-    script = """
-    const callback = arguments[arguments.length - 1];
-    const id = arguments[0];
+            try:
+                data = response.json()
 
-    fetch("https://jp.mercari.com/item/" + id)
-      .then(r => r.text())
-      .then(html => callback(html));
-    """
+                print("===== API RESPONSE =====")
+                print(json.dumps(data, indent=2, ensure_ascii=False))
 
-    html = driver.execute_async_script(script, item_id)
+            except:
+                print("JSON parse error")
 
-    if "売り切れました" in html:
-        print(item_id, "売り切れ")
-    else:
-        print(item_id, "販売中")
+    page.on("response", handle_response)
 
-driver.quit()
+    page.goto(URL)
+
+    page.wait_for_timeout(5000)
+
+    browser.close()
