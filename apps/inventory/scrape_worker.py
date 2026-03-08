@@ -784,8 +784,20 @@ def main():
 
                         cur2 = conn.cursor()
                         now = now_jst()
-                        cur2.execute(SQL_MARK_ERROR, now, "FETCH_TIMEOUT", job_id)
+
+                        sql_retry = """
+                        UPDATE trx.scrape_job
+                        SET
+                            status = 'pending',
+                            worker_name = NULL,
+                            locked_at = NULL
+                        WHERE job_id = ?
+                        """
+
+                        cur2.execute(sql_retry, job_id)
                         conn.commit()
+
+
 
                         continue   
 
