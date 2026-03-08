@@ -403,7 +403,7 @@ def page_url(base_url: str, idx_zero_based: int) -> str:
     # 1ページ目＝そのまま、それ以降は page_token=v1:{n}
     return base_url if idx_zero_based == 0 else add_or_replace_query(base_url, page_token=f"v1:{idx_zero_based}")
 
-def fetch_page_json(p, browser, page, url):
+def fetch_page_json(page, url):
     print("************* 前のSPA状態をリセットver *************")
     # ------------------------------
     # 前のSPA状態をリセット
@@ -429,7 +429,8 @@ def fetch_page_json(p, browser, page, url):
             if attempt == 0:
                 print("retry fetch_page_json")
                 continue
-            raise
+            raise RuntimeError("FETCH_TIMEOUT")
+
 
 def extract_items_from_json(json_data):
 
@@ -510,7 +511,7 @@ def run_fetch_sold_ebay(page, payload: dict) -> Tuple[int, int]:
         try:
             conn = get_sql_server_connection()
 
-            json_data = fetch_page_json(p, browser, page, target_url)
+            json_data = fetch_page_json(page, target_url)
             items = extract_items_from_json(json_data)
             print(f"[PAGE {page_idx+1}] scraped={len(items)}", flush=True)
             fetched_pages += 1
@@ -542,9 +543,14 @@ def run_fetch_sold_ebay(page, payload: dict) -> Tuple[int, int]:
             if rows:
                 upsert_vendor_items(conn, rows, now_jst())
 
-        except Exception as e:
-
+        except RuntimeError as e:
+            if "FETCH_TIMEOUT" in str(e):
+                raise
             print(f"[WARN] page error page={page_idx+1}: {e}", flush=True)
+
+        except Exception as e:
+            print(f"[WARN] page error page={page_idx+1}: {e}", flush=True)
+
         finally:
             if conn:
                 try:
@@ -603,7 +609,7 @@ def run_fetch_active_ebay(page, payload: dict) -> Tuple[int, int]:
             url = page_url(base_url, page_idx)
             print(f"[PAGE] {page_idx+1} {url}", flush=True)
 
-            json_data = fetch_page_json(p, browser, page, target_url)
+            json_data = fetch_page_json(page, url)
             items = extract_items_from_json(json_data)
 
             print(f"[PAGE {page_idx+1}] items={len(items)} sample={items[:2]}", flush=True)
@@ -744,7 +750,6 @@ def main():
 
                 try:
                     payload = json.loads(job_payload)
-                    print(f"[JOB PAYLOAD PARSED] keys={list(payload.keys())}", flush=True)
 
                     if job_kind == "fetch_active_ebay":
                         fetched_pages, fetched_items = run_fetch_active_ebay(page, payload)
@@ -758,6 +763,31 @@ def main():
                     cur2.execute(SQL_MARK_DONE, now, fetched_pages, fetched_items, job_id)
                     conn.commit()
                     print(f"[JOB DONE] id={job_id}", flush=True)
+
+                except RuntimeError as e:
+                    if "FETCH_TIMEOUT" in str(e):
+
+                        print("[BROWSER RESTART: FETCH_TIMEOUT]", flush=True)
+
+                        try: page.close()
+                        except Exception: pass
+                        try: browser.close()
+                        except Exception: pass
+
+                        browser = p.chromium.launch(headless=True)
+                        page = browser.new_page()
+
+                        page.on("request", lambda r: "entities:search" in r.url and print("REQ:", r.url, flush=True))
+                        page.on("response", lambda r: "entities:search" in r.url and print("RES:", r.url, flush=True))
+
+                        cur2 = conn.cursor()
+                        now = now_jst()
+                        cur2.execute(SQL_MARK_ERROR, now, "FETCH_TIMEOUT", job_id)
+                        conn.commit()
+
+                        continue   
+
+                    raise
 
                 except Exception:
                     err = traceback.format_exc()
@@ -776,7 +806,7 @@ def main():
                         try:
                             cur2.close()
                         except Exception:
-                            pass
+                            pass 
 
                 browser_job_count += 1
                 page_job_count += 1            
