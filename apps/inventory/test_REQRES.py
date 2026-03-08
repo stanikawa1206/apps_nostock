@@ -38,6 +38,8 @@ def main():
 
             print("TEST", i+1)
 
+            URL = f"https://jp.mercari.com/search?keyword=%E3%83%B4%E3%82%A3%E3%83%88%E3%83%B3&_t={i}"
+
             try:
 
                 # -------------------------------------------------
@@ -53,7 +55,7 @@ def main():
                     # 5. ページを開く
                     #   → Mercari が entities:search API を呼ぶ
                     # -------------------------------------------------
-                    page.goto(URL)
+                    page.goto(URL, wait_until="domcontentloaded")
 
                 # -------------------------------------------------
                 # 6. entities:search の response を取得
