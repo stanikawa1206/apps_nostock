@@ -401,16 +401,31 @@ def page_url(base_url: str, idx_zero_based: int) -> str:
 
 def fetch_page_json(page, url):
 
-    print("*************ver6*************")
+    print("************* 前のSPA状態をリセットver *************")
+    # ------------------------------
+    # 前のSPA状態をリセット
+    # ------------------------------
+    page.goto("about:blank")
+
 
     for attempt in range(2):
 
         try:
-            with page.expect_response(lambda r: "entities:search" in r.url) as resp_info:
+            with page.expect_response(
+                lambda r: r.request.method == "POST" and "entities:search" in r.url,
+                timeout=10000
+            ) as resp_info:
+
                 page.goto(url)
 
             resp = resp_info.value
+
+            if resp.status != 200:
+                raise RuntimeError(f"Mercari API status={resp.status}")
+
             return resp.json()
+
+
 
         except Exception:
 
