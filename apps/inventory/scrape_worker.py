@@ -403,14 +403,12 @@ def page_url(base_url: str, idx_zero_based: int) -> str:
     # 1ページ目＝そのまま、それ以降は page_token=v1:{n}
     return base_url if idx_zero_based == 0 else add_or_replace_query(base_url, page_token=f"v1:{idx_zero_based}")
 
-def fetch_page_json(page, url):
-
+def fetch_page_json(p, browser, page, url):
     print("************* 前のSPA状態をリセットver *************")
     # ------------------------------
     # 前のSPA状態をリセット
     # ------------------------------
     page.goto("about:blank")
-
 
     for attempt in range(2):
 
@@ -419,9 +417,7 @@ def fetch_page_json(page, url):
                 lambda r: r.request.method == "POST" and "entities:search" in r.url,
                 timeout=10000
             ) as resp_info:
-
                 page.goto(url)
-
             resp = resp_info.value
 
             if resp.status != 200:
@@ -429,14 +425,10 @@ def fetch_page_json(page, url):
 
             return resp.json()
 
-
-
         except Exception:
-
             if attempt == 0:
                 print("retry fetch_page_json")
                 continue
-
             raise
 
 def extract_items_from_json(json_data):
@@ -512,21 +504,15 @@ def run_fetch_sold_ebay(page, payload: dict) -> Tuple[int, int]:
             break
 
         target_url = page_url(base_url, page_idx)
-
         print(f"[PAGE {page_idx+1}] GET {target_url}", flush=True)
-
         conn = None
 
         try:
-
             conn = get_sql_server_connection()
 
-            json_data = fetch_page_json(page, target_url)
-
+            json_data = fetch_page_json(p, browser, page, target_url)
             items = extract_items_from_json(json_data)
-
             print(f"[PAGE {page_idx+1}] scraped={len(items)}", flush=True)
-
             fetched_pages += 1
 
             if not items:
@@ -535,14 +521,10 @@ def run_fetch_sold_ebay(page, payload: dict) -> Tuple[int, int]:
             rows = []
 
             for iid, title, price, seller, created, updated in items:
-
                 iid = (iid or "").strip()
-
                 if not iid or iid in seen_ids:
                     continue
-
                 seen_ids.add(iid)
-
                 fetched_items += 1
 
                 rows.append({
@@ -555,7 +537,6 @@ def run_fetch_sold_ebay(page, payload: dict) -> Tuple[int, int]:
                     "vendor_created_at": created,
                     "vendor_updated_at": updated,
                 })
-
                 handle_listing_delete(conn, iid, vendor_name)
 
             if rows:
@@ -564,9 +545,7 @@ def run_fetch_sold_ebay(page, payload: dict) -> Tuple[int, int]:
         except Exception as e:
 
             print(f"[WARN] page error page={page_idx+1}: {e}", flush=True)
-
         finally:
-
             if conn:
                 try:
                     conn.close()
@@ -574,7 +553,6 @@ def run_fetch_sold_ebay(page, payload: dict) -> Tuple[int, int]:
                     pass
 
         page_idx += 1
-
         time.sleep(1)
 
     print(
@@ -625,7 +603,7 @@ def run_fetch_active_ebay(page, payload: dict) -> Tuple[int, int]:
             url = page_url(base_url, page_idx)
             print(f"[PAGE] {page_idx+1} {url}", flush=True)
 
-            json_data = fetch_page_json(page, url)
+            json_data = fetch_page_json(p, browser, page, target_url)
             items = extract_items_from_json(json_data)
 
             print(f"[PAGE {page_idx+1}] items={len(items)} sample={items[:2]}", flush=True)
