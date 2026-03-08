@@ -401,7 +401,7 @@ def page_url(base_url: str, idx_zero_based: int) -> str:
 
 def fetch_page_json(page, url):
 
-    print("*************ver3*************")
+    print("*************ver4*************")
 
     for attempt in range(2):
 
