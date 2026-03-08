@@ -1,8 +1,8 @@
 from playwright.sync_api import sync_playwright
 import time
 
-URL = "ここにメルカリ検索URL"
-TEST_COUNT = 100
+URL = "https://jp.mercari.com/search?keyword=%E3%83%B4%E3%82%A3%E3%83%88%E3%83%B3"
+TEST_COUNT = 1
 
 def main():
 
