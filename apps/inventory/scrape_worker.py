@@ -401,17 +401,15 @@ def page_url(base_url: str, idx_zero_based: int) -> str:
 
 def fetch_page_json(page, url):
 
-    print("*************ver5*************")
+    print("*************ver6*************")
 
     for attempt in range(2):
 
         try:
-
             with page.expect_response(lambda r: "entities:search" in r.url) as resp_info:
                 page.goto(url)
 
             resp = resp_info.value
-
             return resp.json()
 
         except Exception:
