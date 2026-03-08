@@ -11,40 +11,46 @@ def main():
     with sync_playwright() as p:
 
         # ------------------------------
-        # 1. ブラウザ起動 & ページ作成
+        # 1. ブラウザ起動
         # ------------------------------
         browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
 
         # ------------------------------
-        # 2. 通信ログ監視
-        # entities:search API の
-        # request / response をログ出力
-        # ------------------------------
-        page.on(
-            "request",
-            lambda r: "entities:search" in r.url and print("REQ:", r.url, flush=True)
-        )
-
-        page.on(
-            "response",
-            lambda r: "entities:search" in r.url and print("RES:", r.url, flush=True)
-        )
-
-        # ------------------------------
-        # 3. TESTループ
+        # 2. TESTループ
         # ------------------------------
         for i in range(TEST_COUNT):
 
             print("TEST", i+1)
 
-            URL = f"https://jp.mercari.com/search?keyword=%E3%83%B4%E3%82%A3%E3%83%88%E3%83%B3&_t={i}"
+            # ------------------------------
+            # TESTごとに新しいタブを作る
+            # → SPA状態をリセット
+            # ------------------------------
+            page = browser.new_page()
+
+            # ------------------------------
+            # entities:search 通信ログ
+            # ------------------------------
+            page.on(
+                "request",
+                lambda r: "entities:search" in r.url and print("REQ:", r.url, flush=True)
+            )
+
+            page.on(
+                "response",
+                lambda r: "entities:search" in r.url and print("RES:", r.url, flush=True)
+            )
+
+            # ------------------------------
+            # URL
+            # page_token を変える
+            # ------------------------------
+            URL = f"https://jp.mercari.com/search?keyword=%E3%83%B4%E3%82%A3%E3%83%88%E3%83%B3&page_token=v1:{i}"
 
             try:
 
                 # -------------------------------------------------
-                # 4. 先に entities:search の response を待つ準備
-                #   → Playwright が「次に来る response」を捕まえる
+                # entities:search response 待機
                 # -------------------------------------------------
                 with page.expect_response(
                     lambda r: "entities:search" in r.url,
@@ -52,17 +58,16 @@ def main():
                 ) as resp_info:
 
                     # -------------------------------------------------
-                    # 5. ページを開く
-                    #   → Mercari が entities:search API を呼ぶ
+                    # ページを開く
                     # -------------------------------------------------
                     page.goto(URL, wait_until="domcontentloaded")
 
                 # -------------------------------------------------
-                # 6. entities:search の response を取得
+                # response取得
                 # -------------------------------------------------
                 response = resp_info.value
 
-                # 必要ならJSON取得
+                # 必要ならJSON
                 # data = response.json()
 
             except Exception:
@@ -70,11 +75,15 @@ def main():
 
             time.sleep(1)
 
+            # ------------------------------
+            # タブを閉じる
+            # ------------------------------
+            page.close()
+
         # ------------------------------
-        # 7. ブラウザ終了
+        # ブラウザ終了
         # ------------------------------
         browser.close()
-
 
 if __name__ == "__main__":
     main()
