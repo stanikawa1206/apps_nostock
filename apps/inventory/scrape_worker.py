@@ -15,12 +15,7 @@ from typing import Any, Dict, List, Tuple, Optional
 from urllib.parse import urlencode, urlparse, parse_qsl, urlunparse
 from datetime import datetime, timezone, timedelta
 from apps.adapters.mercari_item_status import handle_listing_delete,handle_listing_price_update
-# =========================
-# Path setup
-# =========================
-BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BASE_DIR not in sys.path:
-    sys.path.insert(0, BASE_DIR)
+
 
 # =========================
 # Local application modules
@@ -406,10 +401,26 @@ def page_url(base_url: str, idx_zero_based: int) -> str:
 
 def fetch_page_json(page, url):
 
-    with page.expect_response(lambda r: "entities:search" in r.url) as resp:
-        page.goto(url)
+    print("*************ver3*************")
 
-    return resp.value.json()
+    for attempt in range(2):
+
+        try:
+
+            with page.expect_response(lambda r: "entities:search" in r.url) as resp_info:
+                page.goto(url)
+
+            resp = resp_info.value
+
+            return resp.json()
+
+        except Exception:
+
+            if attempt == 0:
+                print("retry fetch_page_json")
+                continue
+
+            raise
 
 def extract_items_from_json(json_data):
 
