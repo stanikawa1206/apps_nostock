@@ -452,7 +452,8 @@ def extract_items_from_json(json_data):
     return rows
 
 
-def run_fetch_sold_ebay(payload: dict) -> Tuple[int, int]:
+
+def run_fetch_sold_ebay(page, payload: dict) -> Tuple[int, int]:
 
     preset_name = payload["preset"]
     vendor_name = payload["vendor_name"]
@@ -486,84 +487,78 @@ def run_fetch_sold_ebay(payload: dict) -> Tuple[int, int]:
     page_idx = 0
     seen_ids: set[str] = set()
 
-    with sync_playwright() as p:
 
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+    while True:
 
-        while True:
+        if page_idx >= MAX_PAGES:
+            print(f"[STOP] reached MAX_PAGES={MAX_PAGES}", flush=True)
+            break
 
-            if page_idx >= MAX_PAGES:
-                print(f"[STOP] reached MAX_PAGES={MAX_PAGES}", flush=True)
+        target_url = page_url(base_url, page_idx)
+
+        print(f"[PAGE {page_idx+1}] GET {target_url}", flush=True)
+
+        conn = None
+
+        try:
+
+            conn = get_sql_server_connection()
+
+            json_data = fetch_page_json(page, target_url)
+
+            items = extract_items_from_json(json_data)
+
+            print(f"[PAGE {page_idx+1}] scraped={len(items)}", flush=True)
+
+            fetched_pages += 1
+
+            if not items:
                 break
 
-            target_url = page_url(base_url, page_idx)
+            rows = []
 
-            print(f"[PAGE {page_idx+1}] GET {target_url}", flush=True)
+            for iid, title, price, seller, created, updated in items:
 
-            conn = None
+                iid = (iid or "").strip()
 
-            try:
+                if not iid or iid in seen_ids:
+                    continue
 
-                conn = get_sql_server_connection()
+                seen_ids.add(iid)
 
-                json_data = fetch_page_json(page, target_url)
+                fetched_items += 1
 
-                items = extract_items_from_json(json_data)
+                rows.append({
+                    "vendor_name": vendor_name,
+                    "vendor_item_id": iid,
+                    "status": "売り切れ",
+                    "preset": preset_name,
+                    "title_jp": title,
+                    "price": None,
+                    "vendor_created_at": created,
+                    "vendor_updated_at": updated,
+                })
 
-                print(f"[PAGE {page_idx+1}] scraped={len(items)}", flush=True)
+                handle_listing_delete(conn, iid, vendor_name)
 
-                fetched_pages += 1
+            if rows:
+                upsert_vendor_items(conn, rows, now_jst())
 
-                if not items:
-                    break
+        except Exception as e:
 
-                rows = []
+            print(f"[WARN] page error page={page_idx+1}: {e}", flush=True)
 
-                for iid, title, price, seller, created, updated in items:
+        finally:
 
-                    iid = (iid or "").strip()
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
-                    if not iid or iid in seen_ids:
-                        continue
+        page_idx += 1
 
-                    seen_ids.add(iid)
-
-                    fetched_items += 1
-
-                    rows.append({
-                        "vendor_name": vendor_name,
-                        "vendor_item_id": iid,
-                        "status": "売り切れ",
-                        "preset": preset_name,
-                        "title_jp": title,
-                        "price": None,
-                        "vendor_created_at": created,
-                        "vendor_updated_at": updated,
-                    })
-
-                    handle_listing_delete(conn, iid, vendor_name)
-
-                if rows:
-                    upsert_vendor_items(conn, rows, now_jst())
-
-            except Exception as e:
-
-                print(f"[WARN] page error page={page_idx+1}: {e}", flush=True)
-
-            finally:
-
-                if conn:
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
-
-            page_idx += 1
-
-            time.sleep(1)
-
-        browser.close()
+        time.sleep(1)
 
     print(
         f"[SCRAPE END][SOLD] preset='{preset_name}' "
@@ -576,7 +571,7 @@ def run_fetch_sold_ebay(payload: dict) -> Tuple[int, int]:
 # ============================================================
 # fetch_active_ebay scrape 本体（1 preset 分）
 # ============================================================
-def run_fetch_active_ebay(payload: dict) -> Tuple[int, int]:
+def run_fetch_active_ebay(page, payload: dict) -> Tuple[int, int]:
     print(f"[ENV] host={socket.gethostname()} pid={os.getpid()} SIMULATE={SIMULATE}", flush=True)
 
     preset = payload["preset"]
@@ -602,99 +597,94 @@ def run_fetch_active_ebay(payload: dict) -> Tuple[int, int]:
 
     page_idx = 0
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
 
-        while True:
-            page_start = time.time()
-            conn = None
+    while True:
+        page_start = time.time()
+        conn = None
 
-            try:
-                conn = get_sql_server_connection()
+        try:
+            conn = get_sql_server_connection()
 
-                url = page_url(base_url, page_idx)
-                print(f"[PAGE] {page_idx+1} {url}", flush=True)
+            url = page_url(base_url, page_idx)
+            print(f"[PAGE] {page_idx+1} {url}", flush=True)
 
-                json_data = fetch_page_json(page, url)
-                items = extract_items_from_json(json_data)
+            json_data = fetch_page_json(page, url)
+            items = extract_items_from_json(json_data)
 
-                print(f"[PAGE {page_idx+1}] items={len(items)} sample={items[:2]}", flush=True)
+            print(f"[PAGE {page_idx+1}] items={len(items)} sample={items[:2]}", flush=True)
 
-                if not items:
-                    break
+            if not items:
+                break
 
-                total_items += len(items)
+            total_items += len(items)
 
-                item_ids = [iid for iid, _, _, _, _, _ in items]
-                print(f"[F] old_price select start n={len(item_ids)}", flush=True)
-                old_price_map = get_vendor_item_prices_batch(conn, vendor_name, item_ids)
-                print(f"[F] old_price select done got={len(old_price_map)}", flush=True)
+            item_ids = [iid for iid, _, _, _, _, _ in items]
+            print(f"[F] old_price select start n={len(item_ids)}", flush=True)
+            old_price_map = get_vendor_item_prices_batch(conn, vendor_name, item_ids)
+            print(f"[F] old_price select done got={len(old_price_map)}", flush=True)
 
-                cnt_skip = 0
-                cnt_changed = 0
-                cnt_unchanged = 0
+            cnt_skip = 0
+            cnt_changed = 0
+            cnt_unchanged = 0
 
-                for iid, title, price, seller, created, updated in items:
-                    if price is None:
-                        cnt_skip += 1
-                        continue
+            for iid, title, price, seller, created, updated in items:
+                if price is None:
+                    cnt_skip += 1
+                    continue
 
-                    old_price = old_price_map.get(iid)
-                    if old_price is not None and old_price != price:
-                        cnt_changed += 1
-                        handle_price_change_side_effects(
-                            conn,
-                            iid,
-                            vendor_name,
-                            old_price,
-                            price,
-                            mode=mode,
-                            low_usd_target=low_usd_target,
-                            high_usd_target=high_usd_target,
-                        )
-                    else:
-                        cnt_unchanged += 1
+                old_price = old_price_map.get(iid)
+                if old_price is not None and old_price != price:
+                    cnt_changed += 1
+                    handle_price_change_side_effects(
+                        conn,
+                        iid,
+                        vendor_name,
+                        old_price,
+                        price,
+                        mode=mode,
+                        low_usd_target=low_usd_target,
+                        high_usd_target=high_usd_target,
+                    )
+                else:
+                    cnt_unchanged += 1
 
-                rows = [{
-                    "vendor_name": vendor_name,
-                    "vendor_item_id": iid,
-                    "status": "販売中",
-                    "preset": preset,
-                    "title_jp": title,
-                    "vendor_page": page_idx+1,
-                    "price": price,
-                    "vendor_created_at": created,
-                    "vendor_updated_at": updated,
-                } for iid, title, price, seller, created, updated in items]
+            rows = [{
+                "vendor_name": vendor_name,
+                "vendor_item_id": iid,
+                "status": "販売中",
+                "preset": preset,
+                "title_jp": title,
+                "vendor_page": page_idx+1,
+                "price": price,
+                "vendor_created_at": created,
+                "vendor_updated_at": updated,
+            } for iid, title, price, seller, created, updated in items]
 
-                now = now_jst()
-                print(f"[G] upsert start rows={len(rows)} now={now}", flush=True)
-                upsert_vendor_items(conn, rows, now)
-                print("[G] upsert done", flush=True)
+            now = now_jst()
+            print(f"[G] upsert start rows={len(rows)} now={now}", flush=True)
+            upsert_vendor_items(conn, rows, now)
+            print("[G] upsert done", flush=True)
 
-                print(
-                    f"[PAGE {page_idx+1} RESULT] "
-                    f"upserted={len(rows)} skip={cnt_skip} changed={cnt_changed} unchanged={cnt_unchanged}",
-                    flush=True
-                )
+            print(
+                f"[PAGE {page_idx+1} RESULT] "
+                f"upserted={len(rows)} skip={cnt_skip} changed={cnt_changed} unchanged={cnt_unchanged}",
+                flush=True
+            )
 
-                elapsed = time.time() - page_start
-                TARGET = 8.0
-                if elapsed < TARGET:
-                    time.sleep((TARGET - elapsed) + random.uniform(0.0, 5.0))
+            elapsed = time.time() - page_start
+            TARGET = 8.0
+            if elapsed < TARGET:
+                time.sleep((TARGET - elapsed) + random.uniform(0.0, 5.0))
 
-            finally:
-                if conn:
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
-            page_idx += 1
-            time.sleep(1)
-
-        browser.close()
+        page_idx += 1
+        time.sleep(1)
 
     print(f"[SCRAPE END] preset={preset}", flush=True)
     return page_idx, total_items
@@ -704,85 +694,85 @@ def run_fetch_active_ebay(payload: dict) -> Tuple[int, int]:
 # =========================
 def main():
     print(f"[WORKER START] {WORKER_NAME}", flush=True)
-    print("PATH=", os.environ.get("PATH"), flush=True)
-    print("which chrome:", os.system("which google-chrome"), flush=True)
-    print("which chromium:", os.system("which chromium"), flush=True)
 
     if CHECK_SWAP:
         warn_if_no_swap()
 
-    # job pick用の接続（長寿命）
     conn = get_sql_server_connection()
     conn.autocommit = False
- 
-    while True:
-        cur = None
-        try:
-            cur = conn.cursor()
-            now = now_jst()
-            cur.execute(SQL_PICK_JOBS, WORKER_NAME, now)
-            jobs = cur.fetchall()
-            conn.commit()
-            print(f"[PICK] fetched jobs={len(jobs)} committed", flush=True)
-        except Exception:
-            conn.rollback()
-            traceback.print_exc()
-            time.sleep(POLL_SEC)
-            continue
-        finally:
+
+    # Playwright は worker lifetime で1回だけ起動
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+
+        while True:
+            cur = None
             try:
-                if cur:
-                    cur.close()
-            except Exception:
-                pass
-
-        if not jobs:
-            time.sleep(POLL_SEC)
-            continue
-
-        for job_id, job_kind, job_payload in jobs:
-            print(f"[JOB START] id={job_id} kind={job_kind}", flush=True)
-
-            cur2 = None
-            try:
-                payload = json.loads(job_payload)
-                print(f"[JOB PAYLOAD PARSED] keys={list(payload.keys())}", flush=True)
-
-                if job_kind == "fetch_active_ebay":
-                    fetched_pages, fetched_items = run_fetch_active_ebay(payload)
-                elif job_kind == "fetch_sold_ebay":
-                    fetched_pages, fetched_items = run_fetch_sold_ebay(payload)                
-                else:
-                    raise ValueError(f"unknown job_kind: {job_kind}")
-
-                cur2 = conn.cursor()
+                cur = conn.cursor()
                 now = now_jst()
-                cur2.execute(SQL_MARK_DONE, now, fetched_pages, fetched_items, job_id)
+                cur.execute(SQL_PICK_JOBS, WORKER_NAME, now)
+                jobs = cur.fetchall()
                 conn.commit()
-                print(f"[JOB DONE] id={job_id}", flush=True)
-
+                print(f"[PICK] fetched jobs={len(jobs)} committed", flush=True)
             except Exception:
-                err = traceback.format_exc()
-                print(err, flush=True)
+                conn.rollback()
+                traceback.print_exc()
+                time.sleep(POLL_SEC)
+                continue
+            finally:
+                if cur:
+                    try:
+                        cur.close()
+                    except Exception:
+                        pass
+
+            if not jobs:
+                time.sleep(POLL_SEC)
+                continue
+
+            for job_id, job_kind, job_payload in jobs:
+                print(f"[JOB START] id={job_id} kind={job_kind}", flush=True)
+                cur2 = None
+
                 try:
+                    payload = json.loads(job_payload)
+                    print(f"[JOB PAYLOAD PARSED] keys={list(payload.keys())}", flush=True)
+
+                    if job_kind == "fetch_active_ebay":
+                        fetched_pages, fetched_items = run_fetch_active_ebay(page, payload)
+                    elif job_kind == "fetch_sold_ebay":
+                        fetched_pages, fetched_items = run_fetch_sold_ebay(page, payload)
+                    else:
+                        raise ValueError(f"unknown job_kind: {job_kind}")
+
                     cur2 = conn.cursor()
                     now = now_jst()
-                    cur2.execute(SQL_MARK_ERROR, now, err[-4000:], job_id)
+                    cur2.execute(SQL_MARK_DONE, now, fetched_pages, fetched_items, job_id)
                     conn.commit()
-                except Exception:
-                    conn.rollback()
-                    traceback.print_exc()
+                    print(f"[JOB DONE] id={job_id}", flush=True)
 
-            finally:
-                try:
+                except Exception:
+                    err = traceback.format_exc()
+                    print(err, flush=True)
+                    try:
+                        cur2 = conn.cursor()
+                        now = now_jst()
+                        cur2.execute(SQL_MARK_ERROR, now, err[-4000:], job_id)
+                        conn.commit()
+                    except Exception:
+                        conn.rollback()
+                        traceback.print_exc()
+
+                finally:
                     if cur2:
-                        cur2.close()
-                except Exception:
-                    pass
+                        try:
+                            cur2.close()
+                        except Exception:
+                            pass
 
-            if os.environ.get("ONESHOT") == "1":
-                return
-
+                if os.environ.get("ONESHOT") == "1":
+                    return
 
 if __name__ == "__main__":
     main()
