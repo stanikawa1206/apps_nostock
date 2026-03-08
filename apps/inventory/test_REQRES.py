@@ -1,37 +1,31 @@
 from playwright.sync_api import sync_playwright
 import time
 
+
 URL = "https://jp.mercari.com/search?keyword=%E3%83%B4%E3%82%A3%E3%83%88%E3%83%B3"
-TEST_COUNT = 1
+
+TEST_COUNT = 100
 
 def main():
-
-    req_count = 0
-    res_count = 0
-    timeout_count = 0
 
     with sync_playwright() as p:
 
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
 
+        page.on(
+            "request",
+            lambda r: "entities:search" in r.url and print("REQ:", r.url, flush=True)
+        )
+
+        page.on(
+            "response",
+            lambda r: "entities:search" in r.url and print("RES:", r.url, flush=True)
+        )
+
         for i in range(TEST_COUNT):
 
-            req_hit = False
-            res_hit = False
-
-            def on_req(r):
-                nonlocal req_hit
-                if "entities:search" in r.url:
-                    req_hit = True
-
-            def on_res(r):
-                nonlocal res_hit
-                if "entities:search" in r.url:
-                    res_hit = True
-
-            page.on("request", on_req)
-            page.on("response", on_res)
+            print("TEST", i+1)
 
             try:
                 page.goto(URL)
@@ -41,28 +35,13 @@ def main():
                     timeout=10000
                 )
 
-            except:
-                timeout_count += 1
-
-            if req_hit:
-                req_count += 1
-
-            if res_hit:
-                res_count += 1
-
-            page.remove_listener("request", on_req)
-            page.remove_listener("response", on_res)
-
-            print(f"test {i+1} done")
+            except Exception as e:
+                print("TIMEOUT")
 
             time.sleep(1)
 
         browser.close()
 
-    print("----- RESULT -----")
-    print("REQ:", req_count)
-    print("RES:", res_count)
-    print("TIMEOUT:", timeout_count)
 
 if __name__ == "__main__":
     main()
