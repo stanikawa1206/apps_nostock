@@ -65,6 +65,8 @@ BROWSER_RESTART_EVERY = 25
 # page寿命
 PAGE_RESTART_EVERY = 10
 
+FETCH_TIMEOUT_MS = 30000
+
 # =========================
 # SQL
 # =========================
@@ -415,9 +417,10 @@ def fetch_page_json(page, url):
         try:
             with page.expect_response(
                 lambda r: r.request.method == "POST" and "entities:search" in r.url,
-                timeout=10000
+                timeout=FETCH_TIMEOUT_MS
             ) as resp_info:
                 page.goto(url)
+
             resp = resp_info.value
 
             if resp.status != 200:
@@ -426,10 +429,9 @@ def fetch_page_json(page, url):
             return resp.json()
 
         except Exception:
-            if attempt == 0:
-                print("retry fetch_page_json")
-                continue
             raise RuntimeError("FETCH_TIMEOUT")
+
+
 
 
 def extract_items_from_json(json_data):
