@@ -401,7 +401,7 @@ def page_url(base_url: str, idx_zero_based: int) -> str:
 
 def fetch_page_json(page, url):
 
-    print("*************ver4*************")
+    print("*************ver5*************")
 
     for attempt in range(2):
 
@@ -698,15 +698,14 @@ def main():
     if CHECK_SWAP:
         warn_if_no_swap()
 
-    conn = get_sql_server_connection()
-    conn.autocommit = False
-
     # Playwright は worker lifetime で1回だけ起動
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
 
         while True:
+            conn = get_sql_server_connection()
+            conn.autocommit = False
             cur = None
             try:
                 cur = conn.cursor()
@@ -726,6 +725,7 @@ def main():
                         cur.close()
                     except Exception:
                         pass
+
 
             if not jobs:
                 time.sleep(POLL_SEC)
