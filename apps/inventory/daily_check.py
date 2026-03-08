@@ -333,35 +333,35 @@ def main():
             # ------------------------------------------------
             print("\n=== ⭐ 事前 sold チェック（分散版）開始 ===")
 
-            pre_sold_start = datetime.now()
-            pre_sold_code, _ = run_script(FETCH_SOLD)  # job投入
+            #pre_sold_start = datetime.now()
+            #pre_sold_code, _ = run_script(FETCH_SOLD)  # job投入
 
-            if pre_sold_code != 0:
-                pre_sold_end = datetime.now()
-                send_script_mail(
-                    FETCH_SOLD,
-                    pre_sold_start,
-                    pre_sold_end,
-                    pre_sold_code,
-                    round_no=set_no,
-                    conn=conn,
-                )
-                print("[STOP] 事前 fetch_sold job投入失敗")
-                continue
+            #if pre_sold_code != 0:
+            #    pre_sold_end = datetime.now()
+            #    send_script_mail(
+            #        FETCH_SOLD,
+            #        pre_sold_start,
+            #        pre_sold_end,
+            #        pre_sold_code,
+            #        round_no=set_no,
+            #        conn=conn,
+            #    )
+            #    print("[STOP] 事前 fetch_sold job投入失敗")
+            #    continue
 
             # worker完了待ち
-            wait_until_no_pending(conn, phase_name="pre_sold")
+            #wait_until_no_pending(conn, phase_name="pre_sold")
 
-            pre_sold_end = datetime.now()
+            #pre_sold_end = datetime.now()
 
-            send_script_mail(
-                FETCH_SOLD,
-                pre_sold_start,
-                pre_sold_end,
-                0,
-                round_no=set_no,
-                conn=conn,
-            )
+            #send_script_mail(
+            #    FETCH_SOLD,
+            #    pre_sold_start,
+            #    pre_sold_end,
+            #    0,
+            #    round_no=set_no,
+            #    conn=conn,
+            #)
 
             # ------------------------------------------------
             # ② フル在庫チェック（fetch_active だけ分散）

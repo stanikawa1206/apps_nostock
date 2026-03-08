@@ -1,166 +1,102 @@
-# ============================================================
-# update_category_groups_and_presets_price_ranges.py
-#
-# ■ 目的
-# 1) nostock.mst.category_groups の USD価格レンジを元に
-#    compute_cost_range_jpy_from_usd_range() で円レンジを逆算し、
-#    low_jpy_target / high_jpy_target を UPDATE する。
-#
-# 2) 続いて同じ category_group に属する
-#    nostock.mst.presets_price_ranges の全行について、
-#    （presets側の USDレンジを使い、mode は category_groups 側を使って）
-#    low_jpy_target / high_jpy_target を UPDATE する。
-# ============================================================
-
-# -*- coding: utf-8 -*-
-
-from apps.common.utils import (
-    get_sql_server_connection,
-    compute_cost_range_jpy_from_usd_range,
-)
+import time
+import csv
+from apps.common.utils import get_sql_server_connection
+from apps.adapters.ebay_api import update_ebay_price
 
 
-SQL_SELECT_CATEGORY_GROUPS = """
+MODE = "CSV"   # "API" or "CSV"
+
+
+SQL_SELECT_UNDERPRICED = """
 SELECT
-    category_group,
-    mode,
-    low_usd_target,
-    high_usd_target
-FROM nostock.mst.category_groups
-ORDER BY category_group
-"""
+    ext.ebay_active_download.listing_id,
+    ext.ebay_active_download.vendor_item_id,
+    ext.ebay_active_download.account,
+    trx.listings.is_deleted,
+    ext.ebay_active_download.[Start price] AS actual_price_usd,
+    trx.listings.start_price as expected_price_usd,
+    ext.ebay_active_download.[Start price] - trx.listings.start_price AS price_diff,
+    trx.vendor_item.price AS cost_jpy
+FROM ext.ebay_active_download
 
-SQL_UPDATE_CATEGORY_GROUPS_JPY = """
-UPDATE nostock.mst.category_groups
-SET
-    low_jpy_target  = ?,
-    high_jpy_target = ?
-WHERE category_group = ?
-"""
+INNER JOIN trx.listings
+    ON ext.ebay_active_download.listing_id = trx.listings.listing_id
 
-SQL_SELECT_PRESETS_BY_CATEGORY_GROUP = """
-SELECT
-    preset_group,
-    category_group,
-    low_usd_target,
-    high_usd_target
-FROM nostock.mst.presets_price_ranges
-WHERE category_group = ?
-ORDER BY preset_group
-"""
+INNER JOIN trx.vendor_item
+    ON trx.listings.vendor_item_id = trx.vendor_item.vendor_item_id
 
-SQL_UPDATE_PRESETS_JPY = """
-UPDATE nostock.mst.presets_price_ranges
-SET
-    low_jpy_target  = ?,
-    high_jpy_target = ?
-WHERE category_group = ?
-  AND preset_group  = ?
+WHERE
+    trx.listings.is_deleted = 0
+    AND ext.ebay_active_download.[Start price] <> trx.listings.start_price
 """
 
 
 def main():
+
     conn = get_sql_server_connection()
     cur = conn.cursor()
 
-    # ===== 外側: category_groups =====
-    cur.execute(SQL_SELECT_CATEGORY_GROUPS)
-    category_rows = cur.fetchall()
-    print(f"[category_groups] 対象件数: {len(category_rows)}")
+    cur.execute(SQL_SELECT_UNDERPRICED)
+    rows = cur.fetchall()
 
-    for row in category_rows:
-        category_group = (row.category_group or "").strip()
-        mode          = (row.mode or "").strip()
-        low_usd       = row.low_usd_target
-        high_usd      = row.high_usd_target
+    print("対象件数:", len(rows))
 
-        if not category_group:
-            raise RuntimeError(f"category_groupが空: {row}")
-        if not mode:
-            raise RuntimeError(f"modeが空: category_group={category_group}")
-        if low_usd is None or high_usd is None:
-            raise RuntimeError(
-                f"category_groups USDレンジNULL: category_group={category_group} mode={mode}"
-            )
+    # =========================
+    # CSV生成モード
+    # =========================
+    if MODE == "CSV":
 
-        # 1) category_groups を USD→JPY 逆算して更新
-        min_cost, max_cost = compute_cost_range_jpy_from_usd_range(
-            mode=mode,
-            low_usd_target=float(low_usd),
-            high_usd_target=float(high_usd),
+        files = {}
+
+        for row in rows:
+
+            account = row.account
+            listing_id = row.listing_id
+            price = float(row.expected_price_usd)
+
+            if account not in files:
+                f = open(f"price_update_{account}.csv", "w", newline="", encoding="utf-8")
+                writer = csv.writer(f)
+                writer.writerow(["Action", "ItemID", "StartPrice"])
+                files[account] = (f, writer)
+
+            writer = files[account][1]
+            writer.writerow(["Revise", listing_id, price])
+
+        for f, _ in files.values():
+            f.close()
+
+        print("CSV作成完了")
+        return
+
+    # =========================
+    # APIモード
+    # =========================
+    for row in rows:
+
+        account = row.account
+        listing_id = row.listing_id
+        sku = row.vendor_item_id
+        new_price = float(row.expected_price_usd)
+
+        print(f"price update: listing_id={listing_id} sku={sku} price={new_price}")
+
+        res = update_ebay_price(
+            account=account,
+            ebay_item_id=listing_id,
+            new_price_usd=new_price,
+            sku=sku
         )
 
-        cur.execute(
-            SQL_UPDATE_CATEGORY_GROUPS_JPY,
-            min_cost,
-            max_cost,
-            category_group,
-        )
+        if not res.get("success"):
+            print("ERROR:", res)
+            break
 
-        if cur.rowcount != 1:
-            raise RuntimeError(
-                f"[category_groups] UPDATE一意でない: category_group={category_group} rowcount={cur.rowcount}"
-            )
+        print(res)
 
-        print(
-            f"[category_groups] 更新: {category_group} mode={mode} "
-            f"usd={low_usd}-{high_usd} -> jpy={min_cost}-{max_cost}"
-        )
+        time.sleep(1)
 
-        # ===== 内側: presets_price_ranges（同じcategory_group配下を全部） =====
-        cur.execute(SQL_SELECT_PRESETS_BY_CATEGORY_GROUP, category_group)
-        preset_rows = cur.fetchall()
-
-        # category_groupに紐づくpresetが0件でも問題ない（0件ならスキップ）
-        print(f"  [presets] {category_group} 対象件数: {len(preset_rows)}")
-
-        for prow in preset_rows:
-            preset_group = (prow.preset_group or "").strip()
-            cg2          = (prow.category_group or "").strip()
-            p_low_usd    = prow.low_usd_target
-            p_high_usd   = prow.high_usd_target
-
-            if cg2 != category_group:
-                raise RuntimeError(
-                    f"[presets] category_group不整合: outer={category_group} inner={cg2}"
-                )
-            if not preset_group:
-                raise RuntimeError(f"[presets] preset_groupが空: category_group={category_group}")
-
-            if p_low_usd is None or p_high_usd is None:
-                raise RuntimeError(
-                    f"[presets] USDレンジNULL: category_group={category_group} preset_group={preset_group}"
-                )
-
-            # ★ mode は category_groups の mode を使う（仕様通り）
-            p_min_cost, p_max_cost = compute_cost_range_jpy_from_usd_range(
-                mode=mode,
-                low_usd_target=float(p_low_usd),
-                high_usd_target=float(p_high_usd),
-            )
-
-            cur.execute(
-                SQL_UPDATE_PRESETS_JPY,
-                p_min_cost,
-                p_max_cost,
-                category_group,
-                preset_group,
-            )
-
-            if cur.rowcount != 1:
-                raise RuntimeError(
-                    f"[presets] UPDATE一意でない: category_group={category_group} "
-                    f"preset_group={preset_group} rowcount={cur.rowcount}"
-                )
-
-            print(
-                f"    [presets] 更新: preset={preset_group} "
-                f"usd={p_low_usd}-{p_high_usd} -> jpy={p_min_cost}-{p_max_cost} (mode={mode})"
-            )
-
-    conn.commit()
     conn.close()
-    print("完了")
 
 
 if __name__ == "__main__":
