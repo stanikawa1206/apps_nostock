@@ -701,6 +701,16 @@ def main():
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
 
+        page.on(
+            "request",
+            lambda r: "entities:search" in r.url and print("REQ:", r.url, flush=True)
+        )
+
+        page.on(
+            "response",
+            lambda r: "entities:search" in r.url and print("RES:", r.url, flush=True)
+        )
+
         while True:
             conn = get_sql_server_connection()
             conn.autocommit = False
