@@ -60,6 +60,10 @@ MAX_PAGES = 2
 PAUSE = 0.6
 SIMULATE_DELETE = False
 
+# browser寿命 この回数のjob処理したらrowserを作り直す
+BROWSER_RESTART_EVERY = 25
+# page寿命
+PAGE_RESTART_EVERY = 10
 
 # =========================
 # SQL
@@ -715,6 +719,8 @@ def main():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
+        browser_job_count = 0
+        page_job_count = 0
 
         page.on(
             "request",
@@ -793,6 +799,62 @@ def main():
                             cur2.close()
                         except Exception:
                             pass
+
+                browser_job_count += 1
+                page_job_count += 1            
+
+                if page_job_count >= PAGE_RESTART_EVERY:
+
+                    print("[PAGE RESTART]", flush=True)
+
+                    try:
+                        page.close()
+                    except Exception:
+                        pass
+
+                    page = browser.new_page()
+
+                    page.on(
+                        "request",
+                        lambda r: "entities:search" in r.url and print("REQ:", r.url, flush=True)
+                    )
+
+                    page.on(
+                        "response",
+                        lambda r: "entities:search" in r.url and print("RES:", r.url, flush=True)
+                    )
+
+                    page_job_count = 0
+
+                if browser_job_count >= BROWSER_RESTART_EVERY:
+
+                    print("[BROWSER RESTART]", flush=True)
+
+                    try:
+                        page.close()
+                    except Exception:
+                        pass
+
+                    try:
+                        browser.close()
+                    except Exception:
+                        pass
+
+                    browser = p.chromium.launch(headless=True)
+                    page = browser.new_page()
+
+                    page.on(
+                        "request",
+                        lambda r: "entities:search" in r.url and print("REQ:", r.url, flush=True)
+                    )
+
+                    page.on(
+                        "response",
+                        lambda r: "entities:search" in r.url and print("RES:", r.url, flush=True)
+                    )
+
+                    browser_job_count = 0
+                    page_job_count = 0
 
                 if os.environ.get("ONESHOT") == "1":
                     return

@@ -155,6 +155,7 @@ SELECT
 FROM [trx].[listings]
 WHERE
     ISNULL([is_deleted], 0) = 0
+    AND [account] NOT IN ('谷川②', '谷川③', '川島')
     AND DATEDIFF(day, CONVERT(date, [start_time]), CONVERT(date, GETDATE())) >= {DAYS_THRESHOLD}
 ORDER BY [account], [start_time] ASC;
 """
