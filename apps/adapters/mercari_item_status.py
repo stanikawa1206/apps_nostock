@@ -260,8 +260,8 @@ def handle_listing_delete(
         print(f"[SIMULATE DELETE] {listing_id=}")
         return
 
-    res = delete_item_from_ebay(account, listing_id)
-    print("DELETE RESULT:", res)
+    res = delete_item_from_ebay(account, vendor_item_id)
+    
     ok = bool(res.get("success")) or res.get("note") in {
         "already_deleted",
         "already_ended",
@@ -278,7 +278,7 @@ def handle_listing_delete(
             """, (datetime.now(), listing_id, account))
         conn.commit()
 
-        print(f"[LOGICAL DELETE] {listing_id=}")
+
 
 
 def _is_transient_inventory_error(resp: Dict[str, Any]) -> bool:

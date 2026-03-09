@@ -446,9 +446,56 @@ def revise_price(*, item_id: str, new_price_usd: str | float | int,
         return {'success': False, 'error': f'parse_error:{e}',
                 'http_status': r.status_code, 'raw': r.text[:1500]}
 
+def delete_item_from_ebay(account: str, sku: str) -> Dict[str, Any]:
+    print(f"delete_item_from_ebay_REST: account={account}, sku={sku}")
+
+    token = get_access_token_new(account)
+    if not token:
+        return {"success": False, "error_code": "no_token"}
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+
+    # --------------------------------
+    # 1 OfferID取得
+    # --------------------------------
+    url = f"https://api.ebay.com/sell/inventory/v1/offer?sku={sku}"
+
+    r = requests.get(url, headers=headers, timeout=30)
+
+    if r.status_code != 200:
+        return {"success": False, "error_code": r.status_code, "raw_response": r.text}
+
+    data = r.json()
+
+    offers = data.get("offers", [])
+    if not offers:
+        return {"success": False, "error_code": "offer_not_found", "raw_response": data}
+
+    offer_id = offers[0]["offerId"]
+
+    # --------------------------------
+    # 2 Offer削除
+    # --------------------------------
+    delete_url = f"https://api.ebay.com/sell/inventory/v1/offer/{offer_id}"
+
+    r = requests.delete(delete_url, headers=headers, timeout=30)
+
+    if r.status_code in (200, 204):
+        return {"success": True, "offer_id": offer_id}
+
+    return {
+        "success": False,
+        "error_code": r.status_code,
+        "offer_id": offer_id,
+        "raw_response": r.text
+    }
 
 
-def delete_item_from_ebay(account: str, item_id: str) -> Dict[str, Any]:
+## Trading API版　今後削除
+def delete_item_from_ebay_bk(account: str, item_id: str) -> Dict[str, Any]:
     print(f"delete_item_from_ebay: account={account}, item_id={item_id}")
     token = get_access_token_new(account)
     if not token:
@@ -636,7 +683,7 @@ def update_ebay_price_rest(
     return out
 
 
-def update_ebay_price(account: str, ebay_item_id: str, new_price_usd, *, sku: Optional[str] = None, debug: bool=True) -> dict:
+def update_ebay_price(account: str, ebay_item_id: str, new_price_usd, *, sku: Optional[str] = None, debug: bool=False)-> dict:
 
     if not account or not ebay_item_id:
         return {'success': False, 'error': 'missing_account_or_item_id'}
