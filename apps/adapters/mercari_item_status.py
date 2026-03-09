@@ -320,11 +320,11 @@ def handle_listing_price_update(
         if wait:
             time.sleep(wait)
 
+
         resp = update_ebay_price_rest(
-            account,    
-            listing_id,
+            account,
+            vendor_item_id,
             usd,
-            sku=vendor_item_id,
             debug=True,
         )
 
