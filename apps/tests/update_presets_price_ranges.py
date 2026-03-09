@@ -101,17 +101,16 @@ def main():
                 if errors:
                     error_id = errors[0].get("errorId")
 
-                    # duplicate
+                    # small image / duplicate扱い
                     if error_id == 25002:
                         print(
-                            "DUPLICATE DETECTED:",
+                            "SMALL IMAGE → DELETE:",
                             "account=", account,
                             "listing_id=", listing_id,
                             "sku=", sku
                         )
 
                         handle_listing_delete(conn, sku, vendor_name)
-                        break
 
                     # ebay internal error
                     if error_id == 25001:
@@ -120,10 +119,11 @@ def main():
                         continue
 
             print("ERROR:", res)
-            break
 
         print(res)
-        time.sleep(1)
+        time.sleep(1) 
+
+
 
     conn.close()
 

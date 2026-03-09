@@ -14,7 +14,7 @@ from datetime import datetime, timezone, timedelta
 
 # ★ eBay削除API ← 波線エラーの正体はコレ
 from apps.adapters.ebay_api import delete_item_from_ebay
-from apps.adapters.ebay_api import update_ebay_price
+from apps.adapters.ebay_api import update_ebay_price_rest
 
 # ================================
 # 例外定義  
@@ -320,8 +320,8 @@ def handle_listing_price_update(
         if wait:
             time.sleep(wait)
 
-        resp = update_ebay_price(
-            account,
+        resp = update_ebay_price_rest(
+            account,    
             listing_id,
             usd,
             sku=vendor_item_id,

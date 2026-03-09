@@ -683,56 +683,71 @@ def update_ebay_price_rest(
     return out
 
 
-def update_ebay_price(account: str, ebay_item_id: str, new_price_usd, *, sku: Optional[str] = None, debug: bool=False)-> dict:
+def update_ebay_price(account: str, ebay_item_id: str, new_price_usd, *, sku: Optional[str] = None) -> dict:
 
     if not account or not ebay_item_id:
-        return {'success': False, 'error': 'missing_account_or_item_id'}
+        err = {'success': False, 'error': 'missing_account_or_item_id'}
+        print("ERROR:", err)
+        return err
 
     if not sku:
-        return {'success': False, 'item_id': str(ebay_item_id), 'error': 'sku_missing'}
+        err = {'success': False, 'item_id': str(ebay_item_id), 'error': 'sku_missing'}
+        print("ERROR:", err)
+        return err
 
     price_str = _to_price_str(new_price_usd)
 
-    # Inventory API
     token = get_access_token_new(account)
     if not token:
-        return {'success': False, 'item_id': str(ebay_item_id), 'price': price_str, 'error': 'get_token_failed'}
+        err = {'success': False, 'item_id': str(ebay_item_id), 'price': price_str, 'error': 'get_token_failed'}
+        print("ERROR:", err)
+        return err
 
     offer_id, list_res = _inventory_get_offer_id_by_sku(token, sku)
     if not offer_id:
-        out = {'success': False, 'item_id': str(ebay_item_id), 'price': price_str, 'error': 'offer_not_found_for_sku'}
-        if debug:
-            out['raw'] = {'listOffers': list_res}
-        return out
+        err = {
+            'success': False,
+            'item_id': str(ebay_item_id),
+            'price': price_str,
+            'error': 'offer_not_found_for_sku',
+            'raw': {'listOffers': list_res}
+        }
+        print("ERROR:", err)
+        return err
 
     offer_obj = _inventory_get_offer(token, offer_id) or {}
     offer_obj.setdefault('pricingSummary', {})['price'] = {"value": price_str, "currency": "USD"}
 
     ok, put_res = _inventory_put_offer(token, offer_id, offer_obj)
     if not ok:
-        out = {'success': False, 'item_id': str(ebay_item_id), 'price': price_str, 'error': 'inventory_put_failed'}
-        if debug:
-            out['raw'] = {'offerId': offer_id, 'putOffer': put_res}
-        return out
+        err = {
+            'success': False,
+            'item_id': str(ebay_item_id),
+            'price': price_str,
+            'error': 'inventory_put_failed',
+            'raw': {'offerId': offer_id, 'putOffer': put_res}
+        }
+        print("ERROR:", err)
+        return err
 
     ok2, pub_res = _inventory_publish_offer(token, offer_id)
     if not ok2:
-        out = {'success': False, 'item_id': str(ebay_item_id), 'price': price_str, 'error': 'inventory_publish_failed'}
-        if debug:
-            out['raw'] = {'offerId': offer_id, 'publishOffer': pub_res}
-        return out
+        err = {
+            'success': False,
+            'item_id': str(ebay_item_id),
+            'price': price_str,
+            'error': 'inventory_publish_failed',
+            'raw': {'offerId': offer_id, 'publishOffer': pub_res}
+        }
+        print("ERROR:", err)
+        return err
 
-    out = {
+    return {
         'success': True,
         'item_id': str(pub_res.get('listingId') or ebay_item_id),
         'price': price_str,
         'note': 'via_inventory'
     }
-
-    if debug:
-        out['raw'] = {'offerId': offer_id, 'publishOffer': pub_res}
-
-    return out
 
 ### ↓これは削除候補　Tradingを使わなくてもいいのに使ってるから　一旦backupとして保存
 def update_ebay_price_bk(account: str, ebay_item_id: str, new_price_usd, *, sku: Optional[str] = None, debug: bool=False) -> dict:
