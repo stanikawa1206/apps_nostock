@@ -1580,7 +1580,7 @@ def fetch_accounts_for_pc(conn, current_pc):
         rows = list(cur.fetchall())
 
     # ===== 一時追加データ =====
-    #extra = [
+    extra = [
     #    ("川島","x162-43-15-160","C", 1000),
     #    ("川島","x162-43-42-135","C", 1000),
     #    ("川島","x210-131-209-232","C", 1000),
@@ -1588,7 +1588,7 @@ def fetch_accounts_for_pc(conn, current_pc):
     #    ("川島","x85-131-251-127","C", 1000),
     #    ("川島","x162-43-39-209","C", 1000),
     #    ("川島","mouse","C", 1000),
-    #    ]
+        ]
     for account, pc, preset_group, target in extra:
         if pc == current_pc:
             rows.append((account, preset_group, target))
