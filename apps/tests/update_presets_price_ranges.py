@@ -2,9 +2,9 @@ import time
 import csv
 from apps.common.utils import get_sql_server_connection
 from apps.adapters.ebay_api import update_ebay_price
+from apps.adapters.mercari_item_status import handle_listing_delete
 
-
-MODE = "CSV"   # "API" or "CSV"
+MODE = "API"   # "API" or "CSV"
 
 
 SQL_SELECT_UNDERPRICED = """
@@ -12,6 +12,7 @@ SELECT
     ext.ebay_active_download.listing_id,
     ext.ebay_active_download.vendor_item_id,
     ext.ebay_active_download.account,
+    trx.listings.vendor_name,
     trx.listings.is_deleted,
     ext.ebay_active_download.[Start price] AS actual_price_usd,
     trx.listings.start_price as expected_price_usd,
@@ -40,6 +41,8 @@ def main():
     rows = cur.fetchall()
 
     print("対象件数:", len(rows))
+
+
 
     # =========================
     # CSV生成モード
@@ -77,6 +80,7 @@ def main():
         account = row.account
         listing_id = row.listing_id
         sku = row.vendor_item_id
+        vendor_name = row.vendor_name
         new_price = float(row.expected_price_usd)
 
         print(f"price update: listing_id={listing_id} sku={sku} price={new_price}")
@@ -89,11 +93,36 @@ def main():
         )
 
         if not res.get("success"):
+
+            if res.get("error") == "inventory_put_failed":
+                raw = res.get("raw", {})
+                errors = raw.get("putOffer", {}).get("errors", [])
+
+                if errors:
+                    error_id = errors[0].get("errorId")
+
+                    # duplicate
+                    if error_id == 25002:
+                        print(
+                            "DUPLICATE DETECTED:",
+                            "account=", account,
+                            "listing_id=", listing_id,
+                            "sku=", sku
+                        )
+
+                        handle_listing_delete(conn, sku, vendor_name)
+                        break
+
+                    # ebay internal error
+                    if error_id == 25001:
+                        print("RETRY (EBAY INTERNAL ERROR)")
+                        time.sleep(2)
+                        continue
+
             print("ERROR:", res)
             break
 
         print(res)
-
         time.sleep(1)
 
     conn.close()

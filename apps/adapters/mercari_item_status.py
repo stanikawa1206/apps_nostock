@@ -261,7 +261,7 @@ def handle_listing_delete(
         return
 
     res = delete_item_from_ebay(account, listing_id)
-
+    print("DELETE RESULT:", res)
     ok = bool(res.get("success")) or res.get("note") in {
         "already_deleted",
         "already_ended",
