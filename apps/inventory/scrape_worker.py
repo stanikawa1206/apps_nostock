@@ -405,7 +405,28 @@ def page_url(base_url: str, idx_zero_based: int) -> str:
     # 1ページ目＝そのまま、それ以降は page_token=v1:{n}
     return base_url if idx_zero_based == 0 else add_or_replace_query(base_url, page_token=f"v1:{idx_zero_based}")
 
-def fetch_page_json(page, url):
+def release_job(conn, job_id):
+    cur = conn.cursor()
+    try:
+        sql = """
+        UPDATE trx.scrape_job
+        SET
+            status = 'pending',
+            worker_name = NULL,
+            locked_at = NULL,
+            finished_at = NULL,
+            error_message = NULL
+        WHERE job_id = ?
+        """
+        cur.execute(sql, job_id)
+        conn.commit()
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+
+def fetch_page_json(page, url, conn, job_id):
     print("************* 前のSPA状態をリセットver *************")
     # ------------------------------
     # 前のSPA状態をリセット
@@ -414,7 +435,6 @@ def fetch_page_json(page, url):
         page.goto("about:blank")
 
     except Exception:
-        release_job(conn, job_id)
         raise RuntimeError("BROWSER_BROKEN")
 
     for attempt in range(2):
@@ -469,7 +489,7 @@ def extract_items_from_json(json_data):
 
 
 
-def run_fetch_sold_ebay(page, payload: dict) -> Tuple[int, int]:
+def run_fetch_sold_ebay(page, payload: dict, job_id: int) -> Tuple[int, int]:
 
     preset_name = payload["preset"]
     vendor_name = payload["vendor_name"]
@@ -517,7 +537,7 @@ def run_fetch_sold_ebay(page, payload: dict) -> Tuple[int, int]:
         try:
             conn = get_sql_server_connection()
 
-            json_data = fetch_page_json(page, target_url)
+            json_data = fetch_page_json(page, target_url, conn, job_id)
             items = extract_items_from_json(json_data)
             print(f"[PAGE {page_idx+1}] scraped={len(items)}", flush=True)
             fetched_pages += 1
@@ -550,7 +570,7 @@ def run_fetch_sold_ebay(page, payload: dict) -> Tuple[int, int]:
                 upsert_vendor_items(conn, rows, now_jst())
 
         except RuntimeError as e:
-            if "FETCH_TIMEOUT" in str(e):
+            if "FETCH_TIMEOUT" in str(e) or "BROWSER_BROKEN" in str(e):
                 raise
             print(f"[WARN] page error page={page_idx+1}: {e}", flush=True)
 
@@ -578,7 +598,7 @@ def run_fetch_sold_ebay(page, payload: dict) -> Tuple[int, int]:
 # ============================================================
 # fetch_active_ebay scrape 本体（1 preset 分）
 # ============================================================
-def run_fetch_active_ebay(page, payload: dict) -> Tuple[int, int]:
+def run_fetch_active_ebay(page, payload: dict, job_id: int) -> Tuple[int, int]:
     print(f"[ENV] host={socket.gethostname()} pid={os.getpid()} SIMULATE={SIMULATE}", flush=True)
 
     preset = payload["preset"]
@@ -696,22 +716,7 @@ def run_fetch_active_ebay(page, payload: dict) -> Tuple[int, int]:
     print(f"[SCRAPE END] preset={preset}", flush=True)
     return page_idx, total_items
 
-def release_job(conn, job_id):
-    cur = conn.cursor()
 
-    sql = """
-    UPDATE trx.scrape_job
-    SET
-        status = 'pending',
-        worker_name = NULL,
-        locked_at = NULL,
-        finished_at = NULL,
-        error_message = NULL
-    WHERE job_id = ?
-    """
-
-    cur.execute(sql, job_id)
-    conn.commit()
 
 
 # =========================
@@ -776,9 +781,9 @@ def main():
                     payload = json.loads(job_payload)
 
                     if job_kind == "fetch_active_ebay":
-                        fetched_pages, fetched_items = run_fetch_active_ebay(page, payload)
+                        fetched_pages, fetched_items = run_fetch_active_ebay(page, payload, job_id)
                     elif job_kind == "fetch_sold_ebay":
-                        fetched_pages, fetched_items = run_fetch_sold_ebay(page, payload)
+                        fetched_pages, fetched_items = run_fetch_sold_ebay(page, payload, job_id)
                     else:
                         raise ValueError(f"unknown job_kind: {job_kind}")
 
@@ -789,14 +794,17 @@ def main():
                     print(f"[JOB DONE] id={job_id}", flush=True)
 
                 except RuntimeError as e:
-                    if "FETCH_TIMEOUT" in str(e):
+                    if "FETCH_TIMEOUT" in str(e) or "BROWSER_BROKEN" in str(e):
+                        print(f"[BROWSER RESTART: {e}]", flush=True)
 
-                        print("[BROWSER RESTART: FETCH_TIMEOUT]", flush=True)
-
-                        try: page.close()
-                        except Exception: pass
-                        try: browser.close()
-                        except Exception: pass
+                        try:
+                            page.close()
+                        except Exception:
+                            pass
+                        try:
+                            browser.close()
+                        except Exception:
+                            pass
 
                         browser = p.chromium.launch(headless=True)
                         page = browser.new_page()
@@ -805,7 +813,7 @@ def main():
                         page.on("response", lambda r: "entities:search" in r.url and print("RES:", r.url, flush=True))
 
                         release_job(conn, job_id)
-                        continue   
+                        continue
 
                     raise
 
