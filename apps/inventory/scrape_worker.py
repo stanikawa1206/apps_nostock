@@ -410,7 +410,12 @@ def fetch_page_json(page, url):
     # ------------------------------
     # 前のSPA状態をリセット
     # ------------------------------
-    page.goto("about:blank")
+    try:
+        page.goto("about:blank")
+
+    except Exception:
+        release_job(conn, job_id)
+        raise RuntimeError("BROWSER_BROKEN")
 
     for attempt in range(2):
 
@@ -691,6 +696,24 @@ def run_fetch_active_ebay(page, payload: dict) -> Tuple[int, int]:
     print(f"[SCRAPE END] preset={preset}", flush=True)
     return page_idx, total_items
 
+def release_job(conn, job_id):
+    cur = conn.cursor()
+
+    sql = """
+    UPDATE trx.scrape_job
+    SET
+        status = 'pending',
+        worker_name = NULL,
+        locked_at = NULL,
+        finished_at = NULL,
+        error_message = NULL
+    WHERE job_id = ?
+    """
+
+    cur.execute(sql, job_id)
+    conn.commit()
+
+
 # =========================
 # Worker main loop
 # =========================
@@ -781,23 +804,7 @@ def main():
                         page.on("request", lambda r: "entities:search" in r.url and print("REQ:", r.url, flush=True))
                         page.on("response", lambda r: "entities:search" in r.url and print("RES:", r.url, flush=True))
 
-                        cur2 = conn.cursor()
-                        now = now_jst()
-
-                        sql_retry = """
-                        UPDATE trx.scrape_job
-                        SET
-                            status = 'pending',
-                            worker_name = NULL,
-                            locked_at = NULL
-                        WHERE job_id = ?
-                        """
-
-                        cur2.execute(sql_retry, job_id)
-                        conn.commit()
-
-
-
+                        release_job(conn, job_id)
                         continue   
 
                     raise

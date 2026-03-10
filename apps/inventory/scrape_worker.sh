@@ -32,3 +32,5 @@ tmux send-keys -t $SESSION_NAME "$COMMAND" C-m
 
 echo "Worker loop started."
 echo "Check progress with: tmux attach -t $SESSION_NAME"
+
+tmux attach -t $SESSION_NAME
