@@ -21,7 +21,7 @@ COMMAND="cd $PROJECT_DIR && while true; do
     pkill -f chromedriver || true;
     
     echo \"[\$(date)] --- Starting Python Worker ---\" | tee -a $LOG_FILE;
-    python3 -m apps.inventory.scrape_worker 2>&1 | tee -a $LOG_FILE;
+    python3 -u -m apps.inventory.scrape_worker 2>&1 | tee -a $LOG_FILE;
     
     echo \"[\$(date)] --- Worker exited. Restarting in 10s ---\" | tee -a $LOG_FILE;
     sleep 10;
