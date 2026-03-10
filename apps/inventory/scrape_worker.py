@@ -635,7 +635,7 @@ def run_fetch_active_ebay(page, payload: dict, job_id: int) -> Tuple[int, int]:
             url = page_url(base_url, page_idx)
             print(f"[PAGE] {page_idx+1} {url}", flush=True)
 
-            json_data = fetch_page_json(page, url)
+            json_data = fetch_page_json(page, url, conn, job_id)
             items = extract_items_from_json(json_data)
 
             print(f"[PAGE {page_idx+1}] items={len(items)} sample={items[:2]}", flush=True)
