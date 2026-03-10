@@ -1585,6 +1585,7 @@ def fetch_accounts_for_pc(conn, current_pc):
         ("谷川④","x85-131-251-127","C", 1000),
         ("谷川④","x210-131-209-232","C", 1000),
         ("谷川④","mouse","C", 1000),
+        ("谷川③","x162-43-15-160","A", 1000),
         ]
     for account, pc, preset_group, target in extra:
         if pc == current_pc:
