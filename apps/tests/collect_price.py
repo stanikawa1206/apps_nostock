@@ -1,7 +1,7 @@
 import time
 import csv
 from apps.common.utils import get_sql_server_connection
-from apps.adapters.ebay_api import update_ebay_price
+from apps.adapters.ebay_api import update_ebay_price_rest
 from apps.adapters.mercari_item_status import handle_listing_delete
 
 MODE = "API"   # "API" or "CSV"
@@ -42,7 +42,7 @@ def main():
 
     print("対象件数:", len(rows))
 
-
+    exit(0)
 
     # =========================
     # CSV生成モード
@@ -85,7 +85,7 @@ def main():
 
         print(f"price update: listing_id={listing_id} sku={sku} price={new_price}")
 
-        res = update_ebay_price(
+        res = update_ebay_price_rest(
             account=account,
             ebay_item_id=listing_id,
             new_price_usd=new_price,

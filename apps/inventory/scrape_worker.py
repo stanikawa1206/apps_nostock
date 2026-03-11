@@ -431,20 +431,15 @@ def fetch_page_json(page, url, conn, job_id):
     # ------------------------------
     # 前のSPA状態をリセット
     # ------------------------------
-    try:
-        page.goto("about:blank")
-
-    except Exception:
-        raise RuntimeError("BROWSER_BROKEN")
 
     for attempt in range(2):
 
         try:
-            with page.expect_response(
-                lambda r: r.request.method == "POST" and "entities:search" in r.url,
+            with page.expect_response(  # これから起きる response を待つ 準備を始める
+                lambda r: r.request.method == "POST" and "entities:search" in r.url, #response の中でも、「元の request が POST で、URL に entities:search を含むもの」
                 timeout=FETCH_TIMEOUT_MS
-            ) as resp_info:
-                page.goto(url)
+            ) as resp_info: # 条件に合う response を後で resp_info に入れる
+                page.goto(url, wait_until="domcontentloaded",timeout=FETCH_TIMEOUT_MS)
 
             resp = resp_info.value
 
