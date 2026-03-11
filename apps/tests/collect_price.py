@@ -76,20 +76,12 @@ def main():
     # APIモード
     # =========================
     for row in rows:
-
-        account = row.account
-        listing_id = row.listing_id
-        sku = row.vendor_item_id
-        vendor_name = row.vendor_name
-        new_price = float(row.expected_price_usd)
-
-        print(f"price update: listing_id={listing_id} sku={sku} price={new_price}")
+        print(f"price update: account={row.account} listing_id={row.listing_id} sku={row.vendor_item_id} price={row.expected_price_usd}")
 
         res = update_ebay_price_rest(
-            account=account,
-            ebay_item_id=listing_id,
-            new_price_usd=new_price,
-            sku=sku
+            row.account,
+            row.vendor_item_id,
+            float(row.expected_price_usd)
         )
 
         if not res.get("success"):

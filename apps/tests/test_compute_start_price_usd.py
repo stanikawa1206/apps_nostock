@@ -3,7 +3,7 @@ from apps.common.utils import compute_start_price_usd
 
 def main():
 
-    cost_jpy = 37000
+    cost_jpy = 117480
 
     mode = "GA"
     low_usd_target = 80
