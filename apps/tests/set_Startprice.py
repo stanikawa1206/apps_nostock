@@ -53,8 +53,8 @@ def main():
         price = compute_start_price_usd(
             cost_jpy=cost_jpy,
             mode=mode,
-            low_usd_target=None,
-            high_usd_target=None
+            low_usd_target=80,
+            high_usd_target=1100
         )
 
         if price is None:

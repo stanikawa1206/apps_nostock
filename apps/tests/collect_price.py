@@ -1,7 +1,7 @@
 import time
 import csv
 from apps.common.utils import get_sql_server_connection
-from apps.adapters.ebay_api import update_ebay_price_rest
+from apps.adapters.ebay_api import update_ebay_price_rest_new
 from apps.adapters.mercari_item_status import handle_listing_delete
 
 MODE = "API"   # "API" or "CSV"
@@ -78,44 +78,17 @@ def main():
     for row in rows:
         print(f"price update: account={row.account} listing_id={row.listing_id} sku={row.vendor_item_id} price={row.expected_price_usd}")
 
-        res = update_ebay_price_rest(
+        res = update_ebay_price_rest_new(
             row.account,
             row.vendor_item_id,
             float(row.expected_price_usd)
         )
 
         if not res.get("success"):
-
-            if res.get("error") == "inventory_put_failed":
-                raw = res.get("raw", {})
-                errors = raw.get("putOffer", {}).get("errors", [])
-
-                if errors:
-                    error_id = errors[0].get("errorId")
-
-                    # small image / duplicate扱い
-                    if error_id == 25002:
-                        print(
-                            "SMALL IMAGE → DELETE:",
-                            "account=", account,
-                            "listing_id=", listing_id,
-                            "sku=", sku
-                        )
-
-                        handle_listing_delete(conn, sku, vendor_name)
-
-                    # ebay internal error
-                    if error_id == 25001:
-                        print("RETRY (EBAY INTERNAL ERROR)")
-                        time.sleep(2)
-                        continue
-
             print("ERROR:", res)
-
-        print(res)
         time.sleep(1) 
 
-
+        break #１件処理したら終了
 
     conn.close()
 

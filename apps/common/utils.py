@@ -237,7 +237,7 @@ def compute_start_price_usd(
     if 'final_price' not in locals():
         print(f"!!! CRITICAL BUG !!!")
         print(f"Variable 'final_price' was NEVER assigned.")
-        print(f"Input Data -> mode: '{mode}', jpy_price: {jpy_price}")
+        print(f"Input Data -> mode: '{mode}', jpy_price: {cost_jpy}")
         # 他にも計算に使っている変数があればここに並べる
         # print(f"Context -> rate: {rate}, fee: {fee}")
         final_price = 0 # 一時的にエラー回避して続行させる

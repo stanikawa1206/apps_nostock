@@ -730,191 +730,116 @@ def update_ebay_price_rest_new(
     }
 
     # 5) PUT
+
     ok = False
     put_res = None
 
     for attempt in range(3):
-
         ok, put_res = _inventory_put_offer(token, offer_id, offer_obj)
-
         if ok:
             break
-
         if attempt < 2:
             time.sleep(2)
 
     if not ok:
-
         errors = put_res.get("putOffer", {}).get("errors", [])
 
         if errors:
             error_id = errors[0].get("errorId")
+            msg = errors[0].get("message", "").lower()
 
-            # small image / duplicate
+            # -------------------------
+            # error message 決定
+            # -------------------------
             if error_id == 25002:
+                if "small" in msg:
+                    error_message = "image_small"
+                elif "duplicate" in msg:
+                    error_message = "duplicate_image"
+                else:
+                    error_message = "image_error"
 
-                print(
-                    "SMALL IMAGE → DELETE:",
-                    "account=", account,
-                    "listing_id=", ebay_item_id,
-                    "sku=", sku
-                )
-
-                delete_item_from_ebay(account, ebay_item_id)
-
-                conn = get_sql_server_connection()
-                cursor = conn.cursor()
-
-                cursor.execute(
-                    """
-                    UPDATE trx.listings
-                    SET
-                        error_message = ?,
-                        error_at = SYSDATETIME(),
-                        is_deleted = 1
-                    WHERE listing_id = ?
-                    """,
-                    "image_small_or_duplicate",
-                    ebay_item_id
-                )
-
-                conn.commit()
-                conn.close()
-
-                return {
-                    "success": False,
-                    "sku": sku,
-                    "error": "permanent_error_deleted",
-                }
-
-            # ebay internal error
-            if error_id == 25001:
-
+            elif error_id == 25001:
                 print("RETRY (EBAY INTERNAL ERROR)")
                 time.sleep(2)
-
                 ok, put_res = _inventory_put_offer(token, offer_id, offer_obj)
-
                 if ok:
-                    pass
-                else:
-                    return {
-                        "success": False,
-                        "sku": sku,
-                        "error": "inventory_put_failed",
-                        "raw": put_res
-                    }
+                    return {"success": True, "sku": sku}
+                error_message = "ebay_internal_error"
 
-        return {
-            "success": False,
-            "sku": sku,
-            "error": "inventory_put_failed",
-            "raw": put_res
-        }
+            else:
+                error_message = f"inventory_put_error_{error_id}"
 
+            # -------------------------
+            # 出品削除
+            # -------------------------
+            print(
+                "DELETE LISTING:",
+                "account=", account,
+                "sku=", sku,
+                "reason=", error_message
+            )
+            delete_item_from_ebay(account, sku)
 
+            # -------------------------
+            # DB更新
+            # -------------------------
+            conn = get_sql_server_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE trx.listings
+                SET
+                    error_message = ?,
+                    error_at = SYSDATETIME(),
+                    is_deleted = 1
+                WHERE vendor_item_id = ?
+                """,
+                error_message,
+                sku
+            )
+
+            conn.commit()
+            conn.close()
+
+            return {
+                "success": False,
+                "sku": sku,
+                "error": error_message
+            }
 
     # 6) publish
-
-    ok2 = False
-    pub_res = None
-
+    ok2=False
+    pub_res=None
     for attempt in range(3):
-
-        ok2, pub_res = _inventory_publish_offer(token, offer_id)
-
-        if ok2:
-            break
-
-        if attempt < 2:
-            time.sleep(2)
+        ok2,pub_res=_inventory_publish_offer(token,offer_id)
+        if ok2:break
+        if attempt<2:time.sleep(2)
 
     if not ok2:
+        errors=pub_res.get("errors",[])
+        if errors:
+            error_id=errors[0].get("errorId")
+            error_message=f"publish_error_{error_id}"
+        else:
+            error_message="publish_failed"
 
-        print(
-            "PUBLISH FAILED → DELETE:",
-            "account=", account,
-            "listing_id=", ebay_item_id,
-            "sku=", sku
-        )
+        print("PUBLISH FAILED → DELETE:","account=",account,"sku=",sku,"reason=",error_message)
 
-        delete_item_from_ebay(account, ebay_item_id)
+        delete_item_from_ebay(account,sku)
 
-        conn = get_sql_server_connection()
-        cursor = conn.cursor()
-
-        cursor.execute(
-            """
+        conn=get_sql_server_connection()
+        cursor=conn.cursor()
+        cursor.execute("""
             UPDATE trx.listings
-            SET
-                error_message = ?,
-                error_at = SYSDATETIME(),
-                is_deleted = 1
-            WHERE listing_id = ?
-            """,
-            "publish_failed",
-            ebay_item_id
-        )
-
+            SET error_message=?,error_at=SYSDATETIME(),is_deleted=1
+            WHERE vendor_item_id=?
+            """,error_message,sku)
         conn.commit()
         conn.close()
 
-        return {
-            "success": False,
-            "sku": sku,
-            "error": "publish_failed_deleted"
-        }
-    # 6) publish
-
-    ok2 = False
-    pub_res = None
-
-    for attempt in range(3):
-
-        ok2, pub_res = _inventory_publish_offer(token, offer_id)
-
-        if ok2:
-            break
-
-        if attempt < 2:
-            time.sleep(2)
-
-    if not ok2:
-
-        print(
-            "PUBLISH FAILED → DELETE:",
-            "account=", account,
-            "listing_id=", ebay_item_id,
-            "sku=", sku
-        )
-
-        delete_item_from_ebay(account, ebay_item_id)
-
-        conn = get_sql_server_connection()
-        cursor = conn.cursor()
-
-        cursor.execute(
-            """
-            UPDATE trx.listings
-            SET
-                error_message = ?,
-                error_at = SYSDATETIME(),
-                is_deleted = 1
-            WHERE listing_id = ?
-            """,
-            "publish_failed",
-            ebay_item_id
-        )
-
-        conn.commit()
-        conn.close()
-
-        return {
-            "success": False,
-            "sku": sku,
-            "error": "publish_failed_deleted"
-        }
-
+        return {"success":False,"sku":sku,"error":error_message}
+ 
 
 def update_ebay_price(account: str, ebay_item_id: str, new_price_usd, *, sku: Optional[str] = None) -> dict:
 
