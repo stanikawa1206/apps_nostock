@@ -751,24 +751,16 @@ def update_ebay_price_rest_new(
             # -------------------------
             # error message 決定
             # -------------------------
-            if error_id == 25002:
-                if "small" in msg:
-                    error_message = "image_small"
-                elif "duplicate" in msg:
-                    error_message = "duplicate_image"
-                else:
-                    error_message = "image_error"
+            errors = put_res.get("putOffer", {}).get("errors", [])
 
-            elif error_id == 25001:
-                print("RETRY (EBAY INTERNAL ERROR)")
-                time.sleep(2)
-                ok, put_res = _inventory_put_offer(token, offer_id, offer_obj)
-                if ok:
-                    return {"success": True, "sku": sku}
-                error_message = "ebay_internal_error"
-
+            if errors:
+                e = errors[0]
+                error_id = e.get("errorId")
+                msg = e.get("message", "")
+                long_msg = e.get("longMessage", "")
+                error_message = f"inventory_put_error_{error_id}:{msg} {long_msg}"
             else:
-                error_message = f"inventory_put_error_{error_id}"
+                error_message = "inventory_put_failed"
 
             # -------------------------
             # 出品削除
@@ -819,10 +811,14 @@ def update_ebay_price_rest_new(
     if not ok2:
         errors=pub_res.get("errors",[])
         if errors:
-            error_id=errors[0].get("errorId")
-            error_message=f"publish_error_{error_id}"
+            e = errors[0]
+            error_id = e.get("errorId")
+            msg = e.get("message","")
+            long_msg = e.get("longMessage","")
+
+            error_message = f"publish_error_{error_id}:{msg} | {long_msg}"
         else:
-            error_message="publish_failed"
+            error_message = "publish_failed"
 
         print("PUBLISH FAILED → DELETE:","account=",account,"sku=",sku,"reason=",error_message)
 
@@ -839,7 +835,7 @@ def update_ebay_price_rest_new(
         conn.close()
 
         return {"success":False,"sku":sku,"error":error_message}
- 
+    return {"success":True,"sku":sku}
 
 def update_ebay_price(account: str, ebay_item_id: str, new_price_usd, *, sku: Optional[str] = None) -> dict:
 

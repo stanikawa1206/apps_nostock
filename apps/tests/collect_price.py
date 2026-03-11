@@ -29,6 +29,8 @@ INNER JOIN trx.vendor_item
 WHERE
     trx.listings.is_deleted = 0
     AND ext.ebay_active_download.[Start price] <> trx.listings.start_price
+ORDER BY
+    ext.ebay_active_download.account
 """
 
 
@@ -41,8 +43,6 @@ def main():
     rows = cur.fetchall()
 
     print("対象件数:", len(rows))
-
-    exit(0)
 
     # =========================
     # CSV生成モード
@@ -75,6 +75,11 @@ def main():
     # =========================
     # APIモード
     # =========================
+    conn = get_sql_server_connection()
+    cursor = conn.cursor()
+    N = 100
+    count = 0
+
     for row in rows:
         print(f"price update: account={row.account} listing_id={row.listing_id} sku={row.vendor_item_id} price={row.expected_price_usd}")
 
@@ -86,10 +91,30 @@ def main():
 
         if not res.get("success"):
             print("ERROR:", res)
+        else:
+            price = float(row.expected_price_usd)
+            listing_id = str(row.listing_id)
+
+            print("UPDATE VALUE:", price)
+            print("UPDATE listing_id:", listing_id)
+            cursor.execute(
+                """
+                UPDATE ext.ebay_active_download
+                SET [Start price] = ?
+                WHERE [listing_id] = ?
+                """,
+                float(row.expected_price_usd),
+                str(row.listing_id)
+            )
+            conn.commit()
+            print("rows updated:", cursor.rowcount)
+
         time.sleep(1) 
 
-        break #１件処理したら終了
-
+        count += 1
+        if count >= N:
+            break
+    
     conn.close()
 
 
