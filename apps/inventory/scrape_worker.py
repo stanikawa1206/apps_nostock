@@ -447,12 +447,11 @@ def fetch_page_json(page, url, conn, job_id):
             if resp.status != 200:
                 raise RuntimeError(f"Mercari API status={resp.status}")
 
-            print("C: before body")
+            print("C: before boy")
             return json.loads(resp.body())
  
-
-        except Exception:
-            print("D: exception")
+        except Exception  as e:
+            print("D: exception", type(e), e)
             if attempt == 1:
                 raise RuntimeError("FETCH_TIMEOUT")
 
