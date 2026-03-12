@@ -439,15 +439,13 @@ def fetch_page_json(page, url, conn, job_id):
                 timeout=FETCH_TIMEOUT_MS
             ) as resp_info: # 条件に合う response を後で resp_info に入れる
                 page.goto(url, wait_until="domcontentloaded",timeout=FETCH_TIMEOUT_MS)
-                print("B:", resp.url)
 
             resp = resp_info.value
-            print("D:", resp.url)
 
             if resp.status != 200:
                 raise RuntimeError(f"Mercari API status={resp.status}")
 
-            print("C: before boy")
+            print("B: before body")
             return json.loads(resp.body())
  
         except Exception  as e:
