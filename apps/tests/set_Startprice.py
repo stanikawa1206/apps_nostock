@@ -78,7 +78,7 @@ def main():
     conn.close()
 
     print("更新:", updated)
-    print("スキップ:", skipped)
+    print("売価範囲外:", skipped)
 
 
 if __name__ == "__main__":

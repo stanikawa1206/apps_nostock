@@ -601,7 +601,8 @@ def _inventory_publish_offer(token: str, offer_id: str) -> tuple[bool, dict]:
     r = requests.post(url, headers=_ebay_json_headers(token), json={}, timeout=45)
     return (r.status_code == 200), _safe_json(r)
 
-def update_ebay_price_rest(
+# 旧version
+def update_ebay_price_rest_bk(
     account: str,
     sku: str,
     new_price_usd,
@@ -683,8 +684,8 @@ def update_ebay_price_rest(
     return out
 
 
-
-def update_ebay_price_rest_new(
+# 新version
+def update_ebay_price_rest(
     account: str,
     sku: str,
     new_price_usd,
@@ -736,75 +737,71 @@ def update_ebay_price_rest_new(
 
     for attempt in range(3):
         ok, put_res = _inventory_put_offer(token, offer_id, offer_obj)
+
         if ok:
             break
         if attempt < 2:
             time.sleep(2)
 
     if not ok:
-        errors = put_res.get("putOffer", {}).get("errors", [])
+        errors = put_res.get("errors", [])
 
         if errors:
-            error_id = errors[0].get("errorId")
-            msg = errors[0].get("message", "").lower()
+            e = errors[0]
+            error_id = e.get("errorId")
+            msg = e.get("message", "")
+            long_msg = e.get("longMessage", "")
 
-            # -------------------------
-            # error message 決定
-            # -------------------------
-            errors = put_res.get("putOffer", {}).get("errors", [])
+            error_message = f"inventory_put_error_{error_id}:{msg}"
+        else:
+            error_message = "inventory_put_failed"
 
-            if errors:
-                e = errors[0]
-                error_id = e.get("errorId")
-                msg = e.get("message", "")
-                long_msg = e.get("longMessage", "")
-                error_message = f"inventory_put_error_{error_id}:{msg} {long_msg}"
-            else:
-                error_message = "inventory_put_failed"
 
-            # -------------------------
-            # 出品削除
-            # -------------------------
-            print(
-                "DELETE LISTING:",
-                "account=", account,
-                "sku=", sku,
-                "reason=", error_message
-            )
-            delete_item_from_ebay(account, sku)
+        # -------------------------
+        # 出品削除
+        # -------------------------
+        print(
+            "DELETE LISTING:",
+            "account=", account,
+            "sku=", sku,
+            "reason=", error_message
+        )
+        delete_item_from_ebay(account, sku)
 
-            # -------------------------
-            # DB更新
-            # -------------------------
-            conn = get_sql_server_connection()
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                UPDATE trx.listings
-                SET
-                    error_message = ?,
-                    error_at = SYSDATETIME(),
-                    is_deleted = 1
-                WHERE vendor_item_id = ?
-                """,
-                error_message,
-                sku
-            )
+        # -------------------------
+        # DB更新
+        # -------------------------
+        conn = get_sql_server_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE trx.listings
+            SET
+                error_message = ?,
+                error_at = SYSDATETIME(),
+                is_deleted = 1
+            WHERE vendor_item_id = ?
+            AND is_deleted=0
+            """,
+            error_message,
+            sku
+        )
 
-            conn.commit()
-            conn.close()
+        conn.commit()
+        conn.close()
 
-            return {
-                "success": False,
-                "sku": sku,
-                "error": error_message
-            }
+        return {
+            "success": False,
+            "sku": sku,
+            "error": error_message
+        }
 
     # 6) publish
     ok2=False
     pub_res=None
     for attempt in range(3):
         ok2,pub_res=_inventory_publish_offer(token,offer_id)
+
         if ok2:break
         if attempt<2:time.sleep(2)
 
@@ -816,7 +813,7 @@ def update_ebay_price_rest_new(
             msg = e.get("message","")
             long_msg = e.get("longMessage","")
 
-            error_message = f"publish_error_{error_id}:{msg} | {long_msg}"
+            error_message = f"publish_error_{error_id}:{msg}"
         else:
             error_message = "publish_failed"
 
@@ -830,6 +827,7 @@ def update_ebay_price_rest_new(
             UPDATE trx.listings
             SET error_message=?,error_at=SYSDATETIME(),is_deleted=1
             WHERE vendor_item_id=?
+            AND is_deleted=0
             """,error_message,sku)
         conn.commit()
         conn.close()

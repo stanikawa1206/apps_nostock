@@ -1,7 +1,7 @@
 import time
 import csv
 from apps.common.utils import get_sql_server_connection
-from apps.adapters.ebay_api import update_ebay_price_rest_new
+from apps.adapters.ebay_api import update_ebay_price_rest
 from apps.adapters.mercari_item_status import handle_listing_delete
 
 MODE = "API"   # "API" or "CSV"
@@ -83,7 +83,7 @@ def main():
     for row in rows:
         print(f"price update: account={row.account} listing_id={row.listing_id} sku={row.vendor_item_id} price={row.expected_price_usd}")
 
-        res = update_ebay_price_rest_new(
+        res = update_ebay_price_rest(
             row.account,
             row.vendor_item_id,
             float(row.expected_price_usd)

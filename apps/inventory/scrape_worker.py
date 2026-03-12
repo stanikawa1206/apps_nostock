@@ -269,8 +269,6 @@ def handle_price_change_side_effects(
         sys.exit(0)
 
 
-
-
 # =========================
 # vendor_item UPSERT
 # =========================
