@@ -433,20 +433,26 @@ def fetch_page_json(page, url, conn, job_id):
     for attempt in range(2):
 
         try:
+            print("A: expect_response start")
             with page.expect_response(  # これから起きる response を待つ 準備を始める
                 lambda r: r.request.method == "POST" and "entities:search" in r.url, #response の中でも、「元の request が POST で、URL に entities:search を含むもの」
                 timeout=FETCH_TIMEOUT_MS
             ) as resp_info: # 条件に合う response を後で resp_info に入れる
                 page.goto(url, wait_until="domcontentloaded",timeout=FETCH_TIMEOUT_MS)
+                print("B:", resp.url)
 
             resp = resp_info.value
+            print("D:", resp.url)
 
             if resp.status != 200:
                 raise RuntimeError(f"Mercari API status={resp.status}")
 
+            print("C: before body")
             return json.loads(resp.body())
+ 
 
         except Exception:
+            print("D: exception")
             if attempt == 1:
                 raise RuntimeError("FETCH_TIMEOUT")
 
