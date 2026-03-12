@@ -250,7 +250,22 @@ def register_inventory_item(row: Dict[str, Any], token: str) -> Dict[str, Any]:
         "condition": cond,
     }
 
-    r = requests.put(url, headers=_ebay_json_headers(token), json=payload, timeout=45)
+    for attempt in range(3):
+        try:
+            r = requests.put(
+                url,
+                headers=_ebay_json_headers(token),
+                json=payload,
+                timeout=90
+            )
+            break
+
+        except requests.exceptions.ReadTimeout:
+            if attempt == 2:
+                raise
+            print("RETRY (timeout)")
+            time.sleep(2)
+
     if r.status_code >= 400:
         err = _safe_json(r)
         print(f"DEBUG [Register]: {err}")  # ★この行を追加
@@ -597,9 +612,27 @@ def _inventory_put_offer(token: str, offer_id: str, body: dict) -> tuple[bool, d
     return (r.status_code < 400), _safe_json(r)
 
 def _inventory_publish_offer(token: str, offer_id: str) -> tuple[bool, dict]:
+
     url = f"https://api.ebay.com/sell/inventory/v1/offer/{offer_id}/publish/"
-    r = requests.post(url, headers=_ebay_json_headers(token), json={}, timeout=45)
-    return (r.status_code == 200), _safe_json(r)
+    for attempt in range(3):
+        try:
+            r = requests.post(
+                url,
+                headers=_ebay_json_headers(token),
+                json={},
+                timeout=45
+            )
+            return (r.status_code == 200), _safe_json(r)
+        except requests.exceptions.ConnectionError:
+            if attempt == 2:
+                raise
+            print("RETRY publish_offer (connection)")
+            time.sleep(2)
+        except requests.exceptions.ReadTimeout:
+            if attempt == 2:
+                raise
+            print("RETRY publish_offer (timeout)")
+            time.sleep(2)
 
 # 旧version
 def update_ebay_price_rest_bk(

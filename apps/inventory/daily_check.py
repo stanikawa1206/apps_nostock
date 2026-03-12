@@ -312,11 +312,30 @@ def wait_until_remaining_exhausted(conn):
         print(f"… 待機中: 残り約 {cnt} 件 (未着手またはリトライ待ち)")
         time.sleep(30)
 
+def refresh_presets_lookup(conn):
+    cursor = conn.cursor()
+
+    print("presets_lookup refresh start")
+
+    cursor.execute("""
+    TRUNCATE TABLE mst.presets_lookup;
+
+    INSERT INTO mst.presets_lookup
+    SELECT *
+    FROM mst.v_presets;
+    """)
+
+    conn.commit()
+
 # ======================
 # メイン処理
 # ======================
 def main():
     conn = get_sql_server_connection()
+
+    # presets一覧を準備
+    refresh_presets_lookup(conn)
+
     try:
         SET_N = 1
         print(f"=== 🧭 inventory_ebay_manager.py 開始（4工程×{SET_N}回転） ===")

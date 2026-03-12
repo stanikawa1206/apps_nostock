@@ -1653,21 +1653,12 @@ def take_one_vendor_item(conn, preset_group, processing_by, account_name):
             AND (v.status = N'販売中' OR v.status IS NULL)
             AND ISNULL(v.出品不可flg, 0) = 0
             
-            -- ★重要：ここに AND を追加しました
-            AND (v.price Is Null Or (v.price >= pl.low_jpy_target And v.price <= pl.high_jpy_target))
-
-            -- ② かつ、今回のアカウントグループ(r)の担当レンジ内か
-            AND v.price >= r.low_jpy_target
-            AND v.price <= r.high_jpy_target
+            AND (v.price IS NULL OR (v.price >= r.low_jpy_target AND v.price <= r.high_jpy_target))
 
             -- 基本的なNG条件の除外
             AND (
-                v.last_updated_str IS NULL 
-                OR NOT (
-                    v.last_updated_str LIKE N'%ヶ月前%'
-                    OR v.last_updated_str LIKE N'%か月前%'
-                    OR v.last_updated_str LIKE N'%半年以上前%'
-                )
+                v.vendor_updated_at IS NULL
+                OR v.vendor_updated_at >= DATEADD(MONTH, -1, SYSDATETIME())
             )
             AND ISNULL(v.[出品状況], N'') NOT IN (N'NG(GA補色)', N'NG(危険素材)')
             AND ISNULL(v.shipping_days, N'') NOT IN (
