@@ -9,7 +9,7 @@ import random
 import traceback
 import socket
 import pyodbc
-import concurrent.futures
+
 from playwright.sync_api import sync_playwright
 from typing import Any, Dict, List, Tuple, Optional
 from urllib.parse import urlencode, urlparse, parse_qsl, urlunparse
@@ -446,10 +446,7 @@ def fetch_page_json(page, url, conn, job_id):
                 raise RuntimeError(f"Mercari API status={resp.status}")
 
             print("B: before body")
-            with concurrent.futures.ThreadPoolExecutor() as ex:
-                body = ex.submit(resp.body).result(timeout=10)
-            return json.loads(body)
-
+            return json.loads(resp.body())
  
         except Exception  as e:
             print("D: exception", type(e), e)
@@ -731,6 +728,7 @@ def main():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
+        page.set_default_timeout(10000)  
         browser_job_count = 0
         page_job_count = 0
 
@@ -807,6 +805,7 @@ def main():
 
                         browser = p.chromium.launch(headless=True)
                         page = browser.new_page()
+                        page.set_default_timeout(10000)
 
                         page.on("request", lambda r: "entities:search" in r.url and print("REQ:", r.url, flush=True))
                         page.on("response", lambda r: "entities:search" in r.url and print("RES:", r.url, flush=True))
@@ -848,7 +847,7 @@ def main():
                         pass
 
                     page = browser.new_page()
-
+                    page.set_default_timeout(10000)
                     page.on(
                         "request",
                         lambda r: "entities:search" in r.url and print("REQ:", r.url, flush=True)
@@ -877,7 +876,7 @@ def main():
 
                     browser = p.chromium.launch(headless=True)
                     page = browser.new_page()
-
+                    page.set_default_timeout(10000)
                     page.on(
                         "request",
                         lambda r: "entities:search" in r.url and print("REQ:", r.url, flush=True)
