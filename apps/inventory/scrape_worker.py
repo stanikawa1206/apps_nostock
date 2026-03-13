@@ -9,7 +9,7 @@ import random
 import traceback
 import socket
 import pyodbc
-
+import concurrent.futures
 from playwright.sync_api import sync_playwright
 from typing import Any, Dict, List, Tuple, Optional
 from urllib.parse import urlencode, urlparse, parse_qsl, urlunparse
@@ -446,7 +446,10 @@ def fetch_page_json(page, url, conn, job_id):
                 raise RuntimeError(f"Mercari API status={resp.status}")
 
             print("B: before body")
-            return json.loads(resp.body())
+            with concurrent.futures.ThreadPoolExecutor() as ex:
+                body = ex.submit(resp.body).result(timeout=10)
+            return json.loads(body)
+
  
         except Exception  as e:
             print("D: exception", type(e), e)
