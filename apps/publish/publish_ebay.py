@@ -1583,7 +1583,7 @@ def fetch_accounts_for_pc(conn, current_pc):
     extra = [
         ("BUZZ","x210-131-209-232","C", 1000),
         ("BUZZ","mouse","C", 1000),
-        #("谷川③","x162-43-42-135","A", 1000),
+        #("BUZZ","x162-43-39-209","C", 1000),
         #("谷川②","x162-43-29-154","A", 1000),
         ]
     for account, pc, preset_group, target in extra:
