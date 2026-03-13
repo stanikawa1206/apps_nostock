@@ -335,6 +335,7 @@ def main():
 
     # presets一覧を準備
     refresh_presets_lookup(conn)
+    
 
     try:
         SET_N = 1
