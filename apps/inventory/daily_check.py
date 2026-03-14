@@ -338,7 +338,7 @@ def main():
     
 
     try:
-        SET_N = 1
+        SET_N = 3
         print(f"=== 🧭 inventory_ebay_manager.py 開始（4工程×{SET_N}回転） ===")
 
         for set_no in range(1, SET_N + 1):
@@ -488,7 +488,7 @@ def main():
             print(f"=== ✅ セット{set_no}: フル在庫チェック完了 ===")
             time.sleep(WAIT_SECONDS)
 
-            return
+            continue
 
             # ------------------------------------------------
             # ③ delete_ebay_daily.py を 1 回実行
