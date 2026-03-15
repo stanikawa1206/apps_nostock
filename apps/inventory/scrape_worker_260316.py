@@ -624,7 +624,8 @@ def run_fetch_sold_ebay(page, payload: dict, job_id: int) -> Tuple[int, int]:
 # ============================================================
 # fetch_active_ebay scrape 本体（1 preset 分）
 # ============================================================
-def run_fetch_active_ebay(page, payload: dict, job_id: int) -> Tuple[int, int]:
+def run_fetch_active_ebay(browser, payload: dict, job_id: int) -> Tuple[int, int]:
+    # 引数を page ではなく browser に変更
     print(f"[ENV] host={socket.gethostname()} pid={os.getpid()} SIMULATE={SIMULATE}", flush=True)
 
     preset = payload["preset"]
@@ -650,27 +651,38 @@ def run_fetch_active_ebay(page, payload: dict, job_id: int) -> Tuple[int, int]:
 
     page_idx = 0
 
-
     while True:
         page_start = time.time()
-        conn = None
+        
+        # ★ 劇的改善：1ページごとに新しいページ（タブ）を作成
+        current_page = browser.new_page()
+        current_page.set_default_timeout(FETCH_TIMEOUT_MS)
+        
+        # ログ出力用リスナーを再設定
+        current_page.on("request", lambda r: "entities:search" in r.url and print("REQ:", r.url, flush=True))
+        current_page.on("response", lambda r: "entities:search" in r.url and print("RES:", r.url, flush=True))
 
+        conn = None
         try:
             conn = get_sql_server_connection()
+            # 明示的に autocommit=False になっているか確認（mainの仕様に合わせる）
+            conn.autocommit = False 
 
             url = page_url(base_url, page_idx)
-            print(f"[PAGE] {page_idx+1} {url}", flush=True)
+            print(f"[PAGE {page_idx+1}] START {url}", flush=True)
 
-            json_data = fetch_page_json(page, url, conn, job_id)
+            # ★ 前述の修正版 fetch_page_json (resp.json()版) を呼び出す
+            json_data = fetch_page_json(current_page, url, conn, job_id)
             items = extract_items_from_json(json_data)
 
-            print(f"[PAGE {page_idx+1}] items={len(items)} sample={items[:2]}", flush=True)
+            print(f"[PAGE {page_idx+1}] items={len(items)} sample={items[:2] if items else 'None'}", flush=True)
 
             if not items:
                 break
 
             total_items += len(items)
 
+            # --- ここから元のロジックを完全維持 ---
             item_ids = [iid for iid, _, _, _, _, _ in items]
             print(f"[F] old_price select start n={len(item_ids)}", flush=True)
             old_price_map = get_vendor_item_prices_batch(conn, vendor_name, item_ids)
@@ -718,22 +730,37 @@ def run_fetch_active_ebay(page, payload: dict, job_id: int) -> Tuple[int, int]:
             upsert_vendor_items(conn, rows, now)
             print("[G] upsert done", flush=True)
 
+            # 1ページごとにコミット
+            conn.commit()
+
             print(
                 f"[PAGE {page_idx+1} RESULT] "
                 f"upserted={len(rows)} skip={cnt_skip} changed={cnt_changed} unchanged={cnt_unchanged}",
                 flush=True
             )
 
+            # ウェイト
             elapsed = time.time() - page_start
             TARGET = 8.0
             if elapsed < TARGET:
                 time.sleep((TARGET - elapsed) + random.uniform(0.0, 5.0))
 
+        except Exception as e:
+            # ページ内エラー時は上位のブラウザ再起動ロジックに任せる
+            if conn: conn.rollback()
+            print(f"[PAGE {page_idx+1} ERROR] {e}", flush=True)
+            raise RuntimeError("BROWSER_BROKEN")
+
         finally:
+            # ★ 劇的改善：ページ（タブ）を確実に閉じてメモリを返す
+            try:
+                current_page.close()
+            except:
+                pass
             if conn:
                 try:
                     conn.close()
-                except Exception:
+                except:
                     pass
 
         page_idx += 1
@@ -741,9 +768,6 @@ def run_fetch_active_ebay(page, payload: dict, job_id: int) -> Tuple[int, int]:
 
     print(f"[SCRAPE END] preset={preset}", flush=True)
     return page_idx, total_items
-
-
-
 
 # =========================
 # Worker main loop

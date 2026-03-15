@@ -15,22 +15,19 @@ tmux new-session -d -s $SESSION_NAME
 # --- 実行コマンド ---
 # 1. 確実に PROJECT_DIR に移動
 # 2. その場所で python3 -m を実行
+# シェルスクリプト内の COMMAND 部分を一部変更
 COMMAND="cd $PROJECT_DIR && while true; do 
-    echo \"[\$(date)] --- Cleaning up --- \" | tee -a $LOG_FILE;
-    # 完全にプロセスを掃除
+    echo \"[\$(date)] --- Full Cleanup ---\" | tee -a $LOG_FILE;
     pkill -9 -f chrome || true;
     pkill -9 -f chromium || true;
-    
-    # Playwrightの一時ファイルを掃除（たまに溢れるため）
+    # Playwrightの一時ファイルを削除（ディスクフル対策）
     rm -rf /tmp/playwright* || true;
-    rm -rf /tmp/v8-compile-cache* || true;
-
+    
     echo \"[\$(date)] --- Starting Python Worker ---\" | tee -a $LOG_FILE;
-    # -u は付いているのでOK。バッファなしで出力
     python3 -u -m apps.inventory.scrape_worker 2>&1 | tee -a $LOG_FILE;
     
-    echo \"[\$(date)] --- Worker exited. --- \" | tee -a $LOG_FILE;
-    sleep 5;
+    echo \"[\$(date)] --- Worker exited. Restarting in 10s ---\" | tee -a $LOG_FILE;
+    sleep 10;
 done"
 
 # セッション内でコマンド実行
