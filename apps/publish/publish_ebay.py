@@ -68,7 +68,7 @@ from apps.adapters.mercari_item_status import (
 )
 
 # ========= 固定値／運用設定 =========
-IMG_LIMIT     = 10
+IMG_LIMIT     = 20
 BATCH_COMMIT  = 10
 
 # ========= NG打刻・スキップ関連定義 =========
@@ -520,7 +520,7 @@ def _none_if_blank(s: Any) -> Optional[str]:
 UPSERT_VENDOR_ITEM_SQL = """
 MERGE INTO [trx].[vendor_item] WITH (HOLDLOCK) AS tgt
 USING (
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ) AS src (
     vendor_name, vendor_item_id,
     title_jp, title_en,
@@ -532,6 +532,8 @@ USING (
     preset, vendor_page,
     image_url1, image_url2, image_url3, image_url4, image_url5,
     image_url6, image_url7, image_url8, image_url9, image_url10,
+    image_url11, image_url12, image_url13, image_url14, image_url15,
+    image_url16, image_url17, image_url18, image_url19, image_url20,
     listing_head, listing_detail
 )
 ON (tgt.vendor_name = src.vendor_name AND tgt.vendor_item_id = src.vendor_item_id)
@@ -557,7 +559,16 @@ WHEN MATCHED THEN
         image_url8       = COALESCE(src.image_url8, tgt.image_url8),
         image_url9       = COALESCE(src.image_url9, tgt.image_url9),
         image_url10      = COALESCE(src.image_url10, tgt.image_url10),
-
+        image_url11      = COALESCE(src.image_url11, tgt.image_url11),
+        image_url12      = COALESCE(src.image_url12, tgt.image_url12),
+        image_url13      = COALESCE(src.image_url13, tgt.image_url13),
+        image_url14      = COALESCE(src.image_url14, tgt.image_url14),
+        image_url15      = COALESCE(src.image_url15, tgt.image_url15),
+        image_url16      = COALESCE(src.image_url16, tgt.image_url16),
+        image_url17      = COALESCE(src.image_url17, tgt.image_url17),
+        image_url18      = COALESCE(src.image_url18, tgt.image_url18),
+        image_url19      = COALESCE(src.image_url19, tgt.image_url19),
+        image_url20      = COALESCE(src.image_url20, tgt.image_url20),
         prev_price       = CASE
                              WHEN src.price IS NOT NULL AND tgt.price <> src.price THEN tgt.price
                              ELSE tgt.prev_price
@@ -590,6 +601,8 @@ WHEN NOT MATCHED THEN
         image_url1, image_url2, image_url3, image_url4, image_url5,
         image_url6, image_url7, image_url8, image_url9, image_url10,
         created_at, last_checked_at, prev_price, status,
+        image_url11, image_url12, image_url13, image_url14, image_url15,
+        image_url16, image_url17, image_url18, image_url19, image_url20,
         [出品状況], [出品状況詳細],
         last_ng_at
     )
@@ -618,6 +631,16 @@ WHEN NOT MATCHED THEN
         src.image_url8,
         src.image_url9,
         src.image_url10,
+        src.image_url11,
+        src.image_url12,
+        src.image_url13,
+        src.image_url14,
+        src.image_url15,
+        src.image_url16,
+        src.image_url17,
+        src.image_url18,
+        src.image_url19,
+        src.image_url20,
         SYSDATETIME(),
         SYSDATETIME(),
         NULL,
@@ -639,7 +662,7 @@ OUTPUT
 
 def upsert_vendor_item(conn, rec: Dict[str, Any]):
     imgs = (rec.get("images") or [])
-    imgs = (imgs + [None] * 10)[:10]
+    imgs = (imgs + [None] * 20)[:20]
 
     preset_val  = _none_if_blank(rec.get("preset"))
     vendor_page = rec.get("vendor_page")
@@ -1581,11 +1604,11 @@ def fetch_accounts_for_pc(conn, current_pc):
 
     # ===== 一時追加データ =====
     extra = [
-        ("川島","x210-131-209-232","B", 1000),
-        ("川島","mouse","B", 1000),
-        ("川島","x162-43-39-209","B", 1000),
-        ("貴文","x162-43-29-154","A", 1000),
-        ("川島","x210-131-209-103","B", 1000),
+        ("谷川③","x210-131-209-232","A", 1000),
+        ("BUZZ","mouse","B", 1000),
+        #("川島","x162-43-39-209","B", 1000),
+        #("貴文","x162-43-29-154","A", 1000),
+        #("川島","x210-131-209-103","B", 1000),
         ]
     for account, pc, preset_group, target in extra:
         if pc == current_pc:
