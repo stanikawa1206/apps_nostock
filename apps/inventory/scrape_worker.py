@@ -425,7 +425,6 @@ def release_job(conn, job_id):
             pass
 
 def fetch_page_json(page, url, conn, job_id):
-    print("************* 前のSPA状態をリセットver *************")
     
     for attempt in range(2):
         try:
