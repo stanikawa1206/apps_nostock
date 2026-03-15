@@ -426,6 +426,37 @@ def release_job(conn, job_id):
 
 def fetch_page_json(page, url, conn, job_id):
     print("************* 前のSPA状態をリセットver *************")
+    
+    for attempt in range(2):
+        try:
+            print("A: expect_response start")
+            # 1. 待機オブジェクトを定義するだけにする
+            with page.expect_response(
+                lambda r: r.request.method == "POST" and "entities:search" in r.url,
+                timeout=FETCH_TIMEOUT_MS
+            ) as resp_info:
+                page.goto(url, wait_until="domcontentloaded", timeout=FETCH_TIMEOUT_MS)
+
+            # 2. withを抜けてからレスポンスを受け取る
+            resp = resp_info.value
+            
+            if resp.status != 200:
+                raise RuntimeError(f"Mercari API status={resp.status}")
+
+            print("B: before body")
+            # 3. body() ではなく直接 json() を呼ぶ
+            data = resp.json() 
+            print("C: body parsed")
+            return data
+ 
+        except Exception as e:
+            # ここでブラウザが壊れている可能性が高いので、エラーを投げて
+            # メインループの「BROWSER_BROKEN」ロジックに飛ばす
+            print(f"D: exception {type(e)} {e}")
+            raise RuntimeError("BROWSER_BROKEN")
+        
+def fetch_page_json_bk(page, url, conn, job_id):
+
     # ------------------------------
     # 前のSPA状態をリセット
     # ------------------------------
@@ -726,7 +757,11 @@ def main():
 
     # Playwright は worker lifetime で1回だけ起動
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--disable-dev-shm-usage"] # 共有メモリではなく /tmp を使うように強制
+        )
         page = browser.new_page()
         page.set_default_timeout(10000)  
         browser_job_count = 0
