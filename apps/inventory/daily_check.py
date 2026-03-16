@@ -336,8 +336,6 @@ def main():
     # presets一覧を準備
     refresh_presets_lookup(conn)
     
-
-
     try:
         SET_N = 1
         print(f"=== 🧭 inventory_ebay_manager.py 開始（4工程×{SET_N}回転） ===")

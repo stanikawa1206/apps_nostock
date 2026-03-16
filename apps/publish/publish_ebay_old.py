@@ -10,7 +10,7 @@ import random
 import re
 import sys
 import time
-import socket  
+import socket  # ★ NEW
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
@@ -70,7 +70,6 @@ from apps.adapters.mercari_item_status import (
 # ========= 固定値／運用設定 =========
 IMG_LIMIT     = 20
 BATCH_COMMIT  = 10
-MAX_PARALLEL_PC = 6  # 1アカウントあたりの最大同時稼働PC数
 
 # ========= NG打刻・スキップ関連定義 =========
 NG_HEADS_FOR_TIMESTAMP: Set[str] = {
@@ -1570,70 +1569,60 @@ class Account:
     post_target: Optional[int]
 
 
-def fetch_next_account_and_lock(conn, current_pc):
-    """
-    次に実行すべきアカウントを1つ特定し、mst.execute_pcs.account を更新してロックを確保する
-    """
-    sql = """
-    UPDATE TOP (1) mst.execute_pcs
-    SET account = Target.account
-    OUTPUT inserted.account, Target.preset_group, Target.post_target
-    FROM mst.execute_pcs AS P
-    CROSS APPLY (
-        SELECT TOP 1 
-            A.account, A.preset_group, A.post_target
-        FROM mst.ebay_accounts A
-        LEFT JOIN (
-            SELECT account, COUNT(*) as active_workers
-            FROM mst.execute_pcs
-            WHERE account IS NOT NULL
-            GROUP BY account
-        ) W ON A.account = W.account
-        CROSS APPLY (
-            SELECT COUNT(*) as sent_count 
-            FROM trx.listings 
-            WHERE account = A.account 
-              AND CAST(start_time AS DATE) = CAST(GETDATE() AS DATE)
-              AND is_deleted = 0
-        ) T
-        WHERE A.is_excluded = 0
-          AND A.is_closed_today = 0
-          AND T.sent_count < A.post_target
-          AND ISNULL(W.active_workers, 0) < ?  -- MAX_PARALLEL_PC
-        ORDER BY (A.post_target - T.sent_count) DESC -- 残り数が多い順
-    ) AS Target
-    WHERE P.execute_pc = ? AND P.is_active = 1;
-    """
+def fetch_accounts_for_pc_bk(conn, current_pc):
     with conn.cursor() as cur:
-        cur.execute(sql, (MAX_PARALLEL_PC, current_pc))
-        row = cur.fetchone()
-        conn.commit()
-        if row:
-            return Account(account=row[0].strip(), preset_group=row[1].strip(), post_target=row[2])
-    return None
-
-def release_pc_and_close_account(conn, current_pc, account_name=None, close_reason=None):
-    """
-    PCの占有を解除する。close_reasonがある場合はアカウント自体を当日終了とする。
-    """
-    with conn.cursor() as cur:
-        # 1. アカウント自体の終了フラグ更新 (Limit検知や在庫切れ時)
-        if account_name and close_reason:
-            cur.execute("""
-                UPDATE mst.ebay_accounts 
-                SET is_closed_today = 1, close_reason = ? 
-                WHERE account = ?
-            """, (close_reason, account_name))
-        
-        # 2. PCの占有解除 (account を NULL に戻す)
         cur.execute("""
-            UPDATE mst.execute_pcs 
-            SET account = NULL 
+            SELECT account, preset_group, post_target
+            FROM mst.ebay_accounts
             WHERE execute_pc = ?
+              AND ISNULL(is_excluded,0) = 0
+            ORDER BY account
         """, (current_pc,))
-        
-        conn.commit()
 
+        rows = cur.fetchall()
+
+    return [
+        Account(
+            account=r[0].strip(),
+            preset_group=r[1].strip(),
+            post_target=r[2]
+        )
+        for r in rows
+    ]
+
+def fetch_accounts_for_pc(conn, current_pc):
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT account, preset_group, post_target
+            FROM mst.ebay_accounts
+            WHERE execute_pc = ?
+              AND ISNULL(is_excluded,0) = 0
+            ORDER BY account
+        """, (current_pc,))
+
+        rows = list(cur.fetchall())
+
+    # ===== 一時追加データ =====
+    extra = [
+        #("谷川③","x210-131-209-232","A", 1000),
+        ("川島","mouse","B", 1000),
+        ("川島","x162-43-15-160","B", 1000),
+        ("川島","x162-43-42-135","B", 1000),
+        ("川島","x210-131-209-232","B", 1000),
+        ("谷川④","x162-43-29-154","C", 1000),
+        ]
+    for account, pc, preset_group, target in extra:
+        if pc == current_pc:
+            rows.append((account, preset_group, target))
+
+    return [
+        Account(
+            account=r[0].strip(),
+            preset_group=r[1].strip(),
+            post_target=r[2]
+        )
+        for r in rows
+    ]
 
 @dataclass
 class PublishState:
@@ -1738,8 +1727,11 @@ def take_one_vendor_item(conn, preset_group, processing_by, account_name):
 
          
 def main():
+
     # --- 修正ポイント1: .env の場所を絶対パスで指定 ---
+    # プロジェクトルートにある .env を確実に読み込むようにします
     from pathlib import Path
+    # publish_ebay.py の場所から見て .env がどこにあるか指定
     _PROJECT_ROOT = Path("/opt/apps_nostock") 
     env_path = _PROJECT_ROOT / ".env"
     
@@ -1751,15 +1743,18 @@ def main():
     start_time = datetime.now()
     
     # --- 修正ポイント2: .strip() で目に見えないゴミを削除 ---
+    # これにより SignatureDoesNotMatch を防ぎます
     r2_endpoint    = os.getenv("R2_ENDPOINT", "").strip()
     r2_access_key  = os.getenv("R2_ACCESS_KEY_ID", "").strip()
     r2_secret_key = os.getenv("R2_SECRET_ACCESS_KEY", "").strip()
     r2_bucket_name = os.getenv("R2_BUCKET", "").strip()
     r2_public_base = os.getenv("R2_PUBLIC_BASE", "").strip()
 
+    # 2. テストで成功したロジックをそのまま適用
     if r2_endpoint and r2_bucket_name and r2_endpoint.endswith("/" + r2_bucket_name):
         r2_endpoint = r2_endpoint.replace("/" + r2_bucket_name, "")
 
+    # 3. テストで成功した Config 指定を適用
     from botocore.config import Config
     r2 = boto3.client(
         "s3",
@@ -1770,6 +1765,7 @@ def main():
         config=Config(signature_version='s3v4') 
     )
 
+    # 既存の変数への代入
     R2_BUCKET = r2_bucket_name
     R2_PUBLIC_BASE = r2_public_base
 
@@ -1787,36 +1783,25 @@ def main():
     conn = get_sql_server_connection()
     driver = build_driver()
 
-    # メール通知用の集計データ
-    summary_success = {}
-
     try:
-        # マスターデータのロード
+        # ===== アカウント取得 =====
+        accounts = fetch_accounts_for_pc(conn, current_pc)
         presets = fetch_active_presets(conn)
 
-        # ===== 動的アカウントループ：実行可能な仕事がある限り回し続ける =====
-        while not stop_all:
-            # 1. 次に担当すべきアカウントをDBから1つ確保（ロック）
-            acct = fetch_next_account_and_lock(conn, current_pc)
-            
-            if not acct:
-                print("[INFO] 実行可能なアカウントがありません。全タスク完了または制限により終了します。")
-                break
-
-            print(f"🚀 アカウント開始: {acct.account} (Target: {acct.post_target})")
-            
-            # アカウント固有のポリシーをロード
-            acct_policies_map = {}
-            with conn.cursor() as cur:
+        # ===== policies事前ロード =====
+        acct_policies_map = {}
+        with conn.cursor() as cur:
+            for acct in accounts:
                 cur.execute("""
-                    SELECT fulfillment_policy_id, payment_policy_id, return_policy_id
-                    FROM mst.ebay_accounts WHERE account = ?
+                    SELECT fulfillment_policy_id,
+                           payment_policy_id,
+                           return_policy_id
+                    FROM mst.ebay_accounts
+                    WHERE account = ?
                 """, (acct.account,))
                 row = cur.fetchone()
                 if not row:
-                    print(f"[ERROR] policy未設定のためスキップ: {acct.account}")
-                    release_pc_and_close_account(conn, current_pc)
-                    continue
+                    raise RuntimeError(f"policy未設定: {acct.account}")
 
                 acct_policies_map[acct.account] = {
                     "fulfillment_policy_id": str(row[0]),
@@ -1825,103 +1810,143 @@ def main():
                     "merchant_location_key": "Default",
                 }
 
-            # アカウント処理中のステータス初期化
-            acct_success = {acct.account: 0}
-            acct_targets = {acct.account: acct.post_target}
-            close_reason = None
+        acct_success = {acct.account: 0 for acct in accounts}
+        acct_targets = {acct.account: acct.post_target for acct in accounts}
 
-            # ===== アカウント内メインループ =====
-            while not stop_all:
-                # 当日の出品済み数を正確に把握（案2）
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        SELECT COUNT(*) FROM trx.listings 
-                        WHERE account = ? AND CAST(start_time AS DATE) = CAST(GETDATE() AS DATE)
-                    """, (acct.account,))
-                    sent_now = cur.fetchone()[0]
+        # ===== 第一階層 アカウントループ =====
+        # このPCに割り当てられた複数アカウントを順番に処理する
+        for acct in accounts:
 
-                if sent_now >= acct.post_target:
-                    print(f"✅ {acct.account} 当日目標数に達しました。")
-                    break
+            # --- quota判定（acct_targets を参照）---
+            def has_quota(a: Account) -> bool:
+                t = acct_targets.get(a.account)
+                if t is None:
+                    return True
+                return t > 0
 
-                # CDNモードの解除判定
-                if image_mode == "CDN" and cdn_mode_until and datetime.now() > cdn_mode_until:
-                    print("[IMG_ERR] CDN timeout reached. Resetting to NORMAL.")
-                    image_mode = "NORMAL"
-                    image_error_count = 0
-                    cdn_mode_until = None
+            # ===== 第二階層 アカウント内ループ =====
+            while has_quota(acct) and not stop_all:
+                 
+                row = take_one_vendor_item(
+                    conn,
+                    acct.preset_group,   # ← presetではなく preset_group
+                    processing_by,
+                    acct.account  
+                )
 
-                # 商品確保
-                row = take_one_vendor_item(conn, acct.preset_group, processing_by, acct.account)
+
                 if not row:
                     print(f"[INFO] {acct.account} 在庫枯渇")
-                    close_reason = "EMPTY"
                     break
 
-                sku = row["vendor_item_id"].strip()
-                vendor_name = row["vendor_name"]
-                item_url = f"https://mercari-shops.com/products/{sku}" if vendor_name == "メルカリshops" else f"https://jp.mercari.com/item/{sku}"
+                vendor_item_id = row["vendor_item_id"]
+                vendor_name    = row["vendor_name"]
+                price          = row["price"]
+                shipping_region = row["shipping_region"]
+                shipping_days   = row["shipping_days"]
+                preset         = row["preset"]
+                mode         = row["mode"]
+                sku = vendor_item_id.strip()
 
-                # 解析とチェック
+                if vendor_name == "メルカリshops":
+                    item_url = f"https://mercari-shops.com/products/{sku}"
+                else:
+                    item_url = f"https://jp.mercari.com/item/{sku}"
+
+                # ===== heavy =====
                 try:
                     heavy, _, writes_since_commit, _, _ = heavy_check_detail(
-                        conn, driver, item_url, sku, row["preset"], vendor_name, row["mode"],
-                        row["default_brand_en"], row["category_id_ebay"], row["department"], row["type_ebay"],
-                        {}, writes_since_commit
+                        conn,
+                        driver,
+                        item_url,
+                        sku,
+                        preset,
+                        vendor_name,
+                        mode,
+                        row["default_brand_en"],
+                        row["category_id_ebay"],      # ★追加
+                        row["department"],            # ★追加
+                        row["type_ebay"],             # ★追加
+                        {},
+                        writes_since_commit
                     )
                 except FatalRendererError:
                     print("[FATAL] Renderer crash → exit 1")
                     sys.exit(1)
 
+
+                status_str = "OK (Proceeding to post)" if heavy else "NG (Skip / Upserted failure status)"
+                # print(f"[HEAVY CHECK] SKU: {sku} | Result: {status_str}")
+
                 if not heavy:
                     continue
 
-                # 出品実行
+                # print(f"[PostPost] SKU: {sku} ")
+
                 (
-                    acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
-                    _, image_mode, image_error_count, cdn_mode_until,
+                    acct_targets,
+                    acct_success,
+                    total_listings,
+                    stop_all,
+                    writes_since_commit,
+                    _,
+                    image_mode,
+                    image_error_count,
+                    cdn_mode_until,
                 ) = post_to_ebay(
-                    conn=conn, p=None, acct=acct.account, heavy=heavy,
-                    acct_targets=acct_targets, acct_success=acct_success,
+                    conn=conn,
+                    p=None,  # ここも設計に応じて整理
+                    acct=acct.account,
+                    heavy=heavy,
+                    acct_targets=acct_targets,
+                    acct_success=acct_success,
                     acct_policies_map=acct_policies_map,
-                    total_listings=total_listings, MAX_LISTINGS=MAX_LISTINGS,
-                    stop_all=stop_all, writes_since_commit=writes_since_commit,
-                    BATCH_COMMIT=BATCH_COMMIT, image_mode=image_mode,
-                    image_error_count=image_error_count, cdn_mode_until=cdn_mode_until,
-                    r2=r2, r2_bucket=r2_bucket_name, r2_public_base=r2_public_base,
-                    cdn_cache=cdn_cache, now_dt=datetime.now(),
+                    total_listings=total_listings,
+                    MAX_LISTINGS=MAX_LISTINGS,
+                    stop_all=stop_all,
+                    writes_since_commit=writes_since_commit,
+                    BATCH_COMMIT=BATCH_COMMIT,
+                    image_mode=image_mode,
+                    image_error_count=image_error_count,
+                    cdn_mode_until=cdn_mode_until,
+                    r2=r2,
+                    r2_bucket=r2_bucket_name,
+                    r2_public_base=r2_public_base,
+                    cdn_cache=cdn_cache,
+                    now_dt=datetime.now(),
                 )
 
-                # API Limit検知時（post_to_ebay内で acct_targets が 0 にされる）
-                if acct_targets.get(acct.account) == 0:
-                    print(f"🚫 {acct.account} APIリミットを検知しました。")
-                    close_reason = "LIMIT"
-                    break
 
-                if writes_since_commit > 0:
-                    conn.commit()
+        if writes_since_commit > 0:
+            conn.commit()
 
-            # アカウント終了処理（PC解放とフラグ更新）
-            release_pc_and_close_account(conn, current_pc, acct.account, close_reason)
-            summary_success[acct.account] = summary_success.get(acct.account, 0) + acct_success[acct.account]
-            print(f"🏁 アカウント終了: {acct.account} (Reason: {close_reason or 'DONE'})")
-
-        # ===== 完了後の処理（メール通知など） =====
+        # ===== 完了メール =====
         end_time = datetime.now()
         elapsed = end_time - start_time
-        lines = [f"{a}: 成功 {s}" for a, s in summary_success.items()]
-        body = (f"PC: {current_pc}\n開始: {start_time}\n終了: {end_time}\n処理時間: {elapsed}\n\n" + "\n".join(lines))
-        send_mail("✅ eBay出品処理 完了通知", body)
 
-        print(f"[EXIT] 処理完了（合計出品数: {total_listings}）")
-        sys.exit(0)
+        lines = [f"{acct}: 成功 {acct_success.get(acct,0)}"
+                 for acct in acct_success.keys()]
+
+        body = (
+            f"PC: {current_pc}\n"
+            f"開始: {start_time}\n終了: {end_time}\n処理時間: {elapsed}\n\n"
+            + "\n".join(lines)
+        )
+
+        send_mail(
+            "✅ eBay出品処理 完了通知",
+            body
+        )
+
+        # ===== exit code 制御 =====
+        if total_listings == 0:
+            print("[EXIT] 在庫枯渇 → exit 0")
+            sys.exit(0)
+        else:
+            print("[EXIT] 出品実行あり → exit 0")
+            sys.exit(0)
 
     finally:
-        # PCが掴みっぱなしにならないよう最後に必ず解放を試みる
-        try:
-            release_pc_and_close_account(conn, current_pc)
-        except:
-            pass
         driver.quit()
         conn.close()
 
