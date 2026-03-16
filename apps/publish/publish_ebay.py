@@ -1057,6 +1057,8 @@ def heavy_check_detail(
     type_ebay,          # ★追加
     debug_unavailable_dump,
     writes_since_commit,
+    low_jpy_target,   # ★追加
+    high_jpy_target   # ★追加
 ):
     """
     ✅ ここでは「詳細解析」「NG判定」「翻訳生成」まで。
@@ -1121,6 +1123,18 @@ def heavy_check_detail(
     upsert_mst_seller_from_rec(conn, vendor_name, rec)
     writes_since_commit += 1
     writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
+
+    # === 1) 価格条件NG (最新価格でのレンジチェック) ===
+    # スクレイピングした最新価格が、アカウントの担当レンジ外になっていないか確認
+    current_cost = rec.get("price")
+    if current_cost is None or current_cost < low_jpy_target or current_cost > high_jpy_target:
+        rec["listing_head"] = "計算価格が範囲外"
+        rec["listing_detail"] = f"最新価格:{current_cost} (Range:{low_jpy_target}-{high_jpy_target})"
+        upsert_vendor_item(conn, rec)
+        writes_since_commit += 1
+        writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
+        return None, debug_unavailable_dump, writes_since_commit, 1, 0
+
 
     # === 2) 配送条件NG ===
     is_ng_page, has_info_page = _check_shipping_condition_values(
@@ -1572,7 +1586,7 @@ class Account:
 
 def fetch_next_account_and_lock(conn, current_pc):
     """
-    次に実行すべきアカウントを1つ特定し、mst.execute_pcs.account を更新してロックを確保する
+    並行数が少ないアカウントから優先的に、かつアカウント順に1つ確保する
     """
     sql = """
     UPDATE TOP (1) mst.execute_pcs
@@ -1600,7 +1614,9 @@ def fetch_next_account_and_lock(conn, current_pc):
           AND A.is_closed_today = 0
           AND T.sent_count < A.post_target
           AND ISNULL(W.active_workers, 0) < ?  -- MAX_PARALLEL_PC
-        ORDER BY (A.post_target - T.sent_count) DESC -- 残り数が多い順
+        ORDER BY 
+            ISNULL(W.active_workers, 0) ASC, -- 1. 稼働中のWorkerが少ないアカウントを優先(分散)
+            A.account ASC                    -- 2. アカウント名順(順繰り)
     ) AS Target
     WHERE P.execute_pc = ? AND P.is_active = 1;
     """
@@ -1867,7 +1883,7 @@ def main():
                     heavy, _, writes_since_commit, _, _ = heavy_check_detail(
                         conn, driver, item_url, sku, row["preset"], vendor_name, row["mode"],
                         row["default_brand_en"], row["category_id_ebay"], row["department"], row["type_ebay"],
-                        {}, writes_since_commit
+                        {}, writes_since_commit,row["low_jpy_target"],row["high_jpy_target"]
                     )
                 except FatalRendererError:
                     print("[FATAL] Renderer crash → exit 1")
