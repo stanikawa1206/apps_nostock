@@ -54,7 +54,7 @@ def main():
             cost_jpy=cost_jpy,
             mode=mode,
             low_usd_target=80,
-            high_usd_target=1100
+            high_usd_target=1200
         )
 
         if price is None:
