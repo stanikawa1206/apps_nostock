@@ -12,3 +12,6 @@ logs/
 
 .history/
 *.deb
+
+
+apps/snapshot/Venesplo/
