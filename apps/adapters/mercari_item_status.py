@@ -5,7 +5,7 @@ from typing import Literal, Optional, Tuple, Dict, Any
 import requests
 from typing import Optional
 import json
-
+from playwright.sync_api import sync_playwright
 
 import pyodbc
 from bs4 import BeautifulSoup
@@ -63,28 +63,91 @@ def extract_price_jpy_from(main: BeautifulSoup) -> Optional[int]:
 # ================================
 # 通常メルカリ
 # ================================
-import json
-from typing import Optional
-from selenium.webdriver.common.by import By
+def fetch_mercari_api_data(url: str) -> Tuple[Optional[Dict[str, Any]], str]:
+    """
+    APIレスポンスと、その時のページテキストをセットで返す。
+    """
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        )
+        page = context.new_page()
 
-def find_item(data):
-    if isinstance(data, dict):
-        if "price" in data and "status" in data:
-            return data
-        for v in data.values():
-            result = find_item(v)
-            if result:
-                return result
-    elif isinstance(data, list):
-        for v in data:
-            result = find_item(v)
-            if result:
-                return result
-    return None
+        # 高速化：画像・スタイル等を遮断
+        page.route("**/*", lambda route: 
+            route.abort() if route.request.resource_type in ["image", "media", "font", "stylesheet"] 
+            else route.continue_()
+        )
+
+        api_payload = None
+        try:
+            # API受信を待機
+            with page.expect_response(lambda res: "api.mercari.jp/items/get?id=" in res.url, timeout=12000) as response_info:
+                page.goto(url, wait_until="commit")
+            api_payload = response_info.value.json()
+        except:
+            pass # タイムアウト時はNoneのまま進む
+
+        # ページ内の全テキストを取得（JSONが取れなかった時のバックアップ用）
+        page_text = page.content() 
+        browser.close()
+        return api_payload, page_text
+
+def detect_status_from_mercari(url: str) -> Tuple[str, Optional[int]]:
+    """
+    メルカリ商品ステータス判定。
+    InvisibleItemException または 特定テキスト検知で「削除」と断定する。
+    """
+    max_retries = 3
+    
+    for attempt in range(max_retries):
+        res, html_content = fetch_mercari_api_data(url)
+        
+        # --- 1. 削除の確定判定（最優先） ---
+        # A. JSONから判定
+        if res and res.get("result") == "error":
+            errors = res.get("errors", [])
+            if any(e.get("code") == "InvisibleItemException" for e in errors):
+                return "削除", None
+        
+        # B. テキストから判定（JSONが取れなかった場合や直書きされている場合）
+        if "該当する商品は削除されています" in html_content:
+            return "削除", None
+
+        # --- 2. 正常データの解析 ---
+        if res and res.get("result") == "OK":
+            item = res.get("data", {})
+            
+            # オークション判定
+            auction_info = item.get("auction_info")
+            if auction_info is not None:
+                return "オークション", auction_info.get("highest_bid")
+            
+            # 通常ステータス判定
+            status = item.get("status")
+            if status == "on_sale":
+                return "販売中", item.get("price")
+            elif status in ["trading", "sold_out", "finished"]:
+                return "売り切れ", None
+            
+            return "判定不可", None
+
+        # --- 3. 通信失敗時のリトライ ---
+        # resが取れず、かつ「削除」テキストも見当たらない場合は通信エラーとみなす
+        if attempt < max_retries - 1:
+            time.sleep(2 * (attempt + 1))
+            continue
+        break
+
+    # 全リトライ終了後、何も確証が得られなければ判定不可（スルー）
+    return "判定不可", None
 
 
-def detect_status_from_mercari(driver) -> tuple[str, Optional[int]]:
-    # 1. ページ読み込み待機 (価格が表示されるまで)
+
+
+def detect_status_from_mercari_bk(driver) -> tuple[str, Optional[int]]:
+    # 1. ページ読み込み待機 (価格要素が出るまで)
     try:
         WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, "[data-testid='price']"))
@@ -97,28 +160,33 @@ def detect_status_from_mercari(driver) -> tuple[str, Optional[int]]:
 
     soup = BeautifulSoup(driver.page_source, 'html.parser')
 
-    # --- 判定1: オークション (入札ボタンの有無) ---
-    # 「入札する」というテキストを持つボタンがあるかチェック
-    bid_button = soup.find("button", text=re.compile(r"入札する"))
-    # もしくはメルカリの特定の属性（あれば）
-    if bid_button or "オークション商品" in soup.get_text():
-        # 価格を取得（現在の入札価格）
-        price_tag = soup.find(attrs={"data-testid": "price"})
-        price = int(re.sub(r'\D', '', price_tag.get_text())) if price_tag else None
+    # --- 共通：価格の取得 ---
+    price_tag = soup.find(attrs={"data-testid": "price"})
+    price = int(re.sub(r'\D', '', price_tag.get_text())) if price_tag else None
+
+    # --- ステータス判定（ボタンの属性を直接見る） ---
+
+    # A. オークション判定
+    bid_button_container = soup.find(attrs={"data-testid": "bid-button"})
+    if bid_button_container:
         return "オークション", price
 
-    # --- 判定2: 売り切れ / 取引中 ---
-    # 画面上のテキストで判断
-    page_text = soup.get_text()
-    sold_keywords = ["売り切れました", "取引中", "この商品は売却済みです"]
-    if any(k in page_text for k in sold_keywords):
-        return "売り切れ", None
+    # B. 通常販売 or 売り切れ判定
+    checkout_button_container = soup.find(attrs={"data-testid": "checkout-button"})
+    if checkout_button_container:
+        # container内のbuttonタグを探す
+        button_tag = checkout_button_container.find("button")
+        
+        if button_tag:
+            # disabled属性があれば「売り切れ」、なければ「販売中」
+            if button_tag.has_attr("disabled"):
+                return "売り切れ", None
+            else:
+                return "販売中", price
 
-    # --- 判定3: 販売中 (通常) ---
-    price_tag = soup.find(attrs={"data-testid": "price"})
-    if price_tag:
-        price_val = int(re.sub(r'\D', '', price_tag.get_text()))
-        return "販売中", price_val
+    # C. どちらのボタンも見当たらない場合（削除済みなど）
+    if "ページが見つかりません" in soup.get_text():
+        return "削除", None
 
     return "判定不可", None
 

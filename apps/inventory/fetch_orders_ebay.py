@@ -7,6 +7,7 @@ import sys
 from datetime import datetime
 from decimal import Decimal
 import requests
+import time
 
 from datetime import datetime, timezone, timedelta
 from apps.common.utils import get_sql_server_connection, send_mail
@@ -38,9 +39,9 @@ def fetch_paid_orders(account: str):
 
     all_orders = []
     offset = 0
-    limit = 200
+    limit = 50
     now = datetime.now(timezone.utc)
-    start = now - timedelta(days=365*2 - 1)  # 
+    start = now - timedelta(minutes=10) 
 
     start_str = start.strftime("%Y-%m-%dT%H:%M:%S.000Z")
     end_str = now.strftime("%Y-%m-%dT%H:%M:%S.000Z")
@@ -77,15 +78,19 @@ def send_new_order_mail(
     order_id: str,
     buyer: str,
     vendor_item_id: str,
+    ebay_id: str, 
     price_usd: float,
     country: str,
 ):
+    from apps.common.utils import get_sql_server_connection, send_mail
+    import os
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
     cn = get_sql_server_connection()
     cur = cn.cursor()
 
-    # -------------------------
-    # vendor_item取得
-    # -------------------------
     cur.execute("""
         SELECT vendor_name, image_url1
         FROM trx.vendor_item
@@ -96,48 +101,90 @@ def send_new_order_mail(
     cur.close()
     cn.close()
 
-    if not row:
-        vendor_name = None
-        image_url = None
-    else:
-        vendor_name, image_url = row
+    vendor_name, image_url = row if row else (None, None)
 
     # -------------------------
-    # URL生成
+    # URL
     # -------------------------
     if vendor_name == "メルカリshops":
-        item_url = f"https://mercari-shops.com/products/{vendor_item_id}"
+        mercari_url = f"https://mercari-shops.com/products/{vendor_item_id}"
     else:
-        item_url = f"https://jp.mercari.com/item/{vendor_item_id}"
+        mercari_url = f"https://jp.mercari.com/item/{vendor_item_id}"
+
+    ebay_url = f"https://www.ebay.com/itm/{ebay_id}"
 
     # -------------------------
-    # メール本文
+    # 件名
+    # -------------------------
+    subject = f"🟢【新規受注】{account}"
+
+    # -------------------------
+    # HTML本文
     # -------------------------
     body = f"""
-【NEW ORDER】
+<html>
+<body style="font-family: Arial;">
 
-Account : {account}
-OrderID : {order_id}
-Buyer   : {buyer}
-Price   : ${price_usd}
-Country : {country}
 
-▼商品ページ
-{item_url}
+    <!-- ①画像 -->
+    <div>
+        <img src="{image_url}" width="250">
+    </div>
 
-▼画像
-{image_url}
+    <br>
+
+    <!-- ③価格 -->
+    <div style="font-size:18px;">
+        💰 <b>${price_usd}</b>
+    </div>
+
+    <br>
+
+    <!-- メルカリURL（ラベルなし） -->
+    <div>
+        <a href="{mercari_url}">{mercari_url}</a>
+    </div>
+
+    <br>
+
+    <!-- eBay URL（ラベルなし） -->
+    <div>
+        <a href="{ebay_url}">{ebay_url}</a>
+    </div>
+
+    <br>
+
+    <!-- その他 -->
+    <div style="color:gray;">
+        Buyer: {buyer}<br>
+        Country: {country}<br>
+        SKU: {vendor_item_id}
+    </div>
+
+</body>
+</html>
 """
 
-    subject = f"[eBay] NEW ORDER {order_id}"
+    # -------------------------
+    # 送信（HTML）
+    # -------------------------
+    sender_email = os.getenv("GMAIL_SENDER_EMAIL")
+    receiver_email = sender_email
+    password = os.getenv("GMAIL_APP_PASSWORD")
 
-    # -------------------------
-    # 送信
-    # -------------------------
-    send_mail(
-        subject=subject,
-        body=body
-    )
+    msg = MIMEMultipart("alternative")
+    msg["From"] = sender_email
+    msg["To"] = receiver_email
+    msg["Subject"] = subject
+
+    msg.attach(MIMEText(body, "html", "utf-8"))
+
+    with smtplib.SMTP("smtp.gmail.com", 587) as server:
+        server.starttls()
+        server.login(sender_email, password)
+        server.send_message(msg)
+
+    print("📧 HTMLメール送信完了")
 
 # --------------------------------------------------
 # アカウント取得
@@ -149,7 +196,6 @@ def load_accounts():
         SELECT account
         FROM mst.ebay_accounts
         WHERE is_excluded = 0
-            AND account = '川島'
         ORDER BY account
     """)
     accounts = [row[0] for row in cur.fetchall()]
@@ -164,98 +210,103 @@ def load_accounts():
 def run():
     print(f"START: {datetime.now():%Y-%m-%d %H:%M:%S}")
 
-    cn = get_sql_server_connection()
-    cur = cn.cursor()
+    while True:
+        try:
+            cn = get_sql_server_connection()
+            cur = cn.cursor()
 
-    for account in load_accounts():
-        print(f"[ACCOUNT] {account}")
-        orders = fetch_paid_orders(account)
+            for account in load_accounts():
+                print(f"[ACCOUNT] {account}")
+                orders = fetch_paid_orders(account)
 
-        if not orders:
-            continue
+                if not orders:
+                    continue
 
-        for order in orders:
-            order_id = order.get("orderId")
-            order_date = order.get("creationDate")
-            status = order.get("orderFulfillmentStatus")
-            buyer = order.get("buyer", {}).get("username")
+                for order in orders:
+                    order_id = order.get("orderId")
+                    order_date = order.get("creationDate")
+                    status = order.get("orderFulfillmentStatus")
+                    buyer = order.get("buyer", {}).get("username")
 
-            # --- COUNTRY ---
-            f_instructions = order.get("fulfillmentStartInstructions", [])
-            country = None
+                    f_instructions = order.get("fulfillmentStartInstructions", [])
+                    country = None
 
-            if f_instructions:
-                shipping_step = f_instructions[0].get("shippingStep", {})
-                ship_to = shipping_step.get("shipTo", {})
-                addr = ship_to.get("contactAddress") or ship_to.get("address") or {}
-                country = addr.get("countryCode")
+                    if f_instructions:
+                        shipping_step = f_instructions[0].get("shippingStep", {})
+                        ship_to = shipping_step.get("shipTo", {})
+                        addr = ship_to.get("contactAddress") or ship_to.get("address") or {}
+                        country = addr.get("countryCode")
 
-            for item in order.get("lineItems", []):
-                ebay_id = item.get("legacyItemId")
-                vendor_item_id = item.get("sku")
-                qty = item.get("quantity")
-                price_usd = Decimal(item.get("lineItemCost", {}).get("value", "0"))
+                    for item in order.get("lineItems", []):
+                        ebay_id = item.get("legacyItemId")
+                        vendor_item_id = item.get("sku")
+                        qty = item.get("quantity")
+                        price_usd = Decimal(item.get("lineItemCost", {}).get("value", "0"))
 
-                # ---------------------------
-                # 既存チェック（超重要）
-                # ---------------------------
-                cur.execute("""
-                    SELECT 1
-                    FROM trx.ebay_orders
-                    WHERE order_id = ? AND ebay_id = ?
-                """, order_id, ebay_id)
+                        # 既存チェック
+                        cur.execute("""
+                            SELECT 1
+                            FROM trx.ebay_orders
+                            WHERE order_id = ? AND ebay_id = ?
+                        """, order_id, ebay_id)
 
-                if cur.fetchone():
-                    continue  # 既存 → スキップ
+                        if cur.fetchone():
+                            continue
 
+                        # 新規注文
+                        print(f"NEW ORDER: {order_id} / {vendor_item_id}")
 
-                # 新規注文
-                print(f"NEW ORDER: {order_id} / {vendor_item_id}")
+                        send_new_order_mail(
+                            account=account,
+                            order_id=order_id,
+                            buyer=buyer,
+                            vendor_item_id=vendor_item_id,
+                            ebay_id=ebay_id,
+                            price_usd=float(price_usd),
+                            country=country
+                        )
 
-                send_new_order_mail(
-                    account=account,
-                    order_id=order_id,
-                    buyer=buyer,
-                    vendor_item_id=vendor_item_id,
-                    price_usd=float(price_usd),
-                    country=country
-                )
+                        # INSERT
+                        cur.execute("""
+                            INSERT INTO trx.ebay_orders (
+                                account,
+                                order_id,
+                                buyer,
+                                status,
+                                ebay_id,
+                                vendor_item_id,
+                                qty,
+                                order_date,
+                                price_usd,
+                                country
+                            )
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                            account,
+                            order_id,
+                            buyer,
+                            status,
+                            ebay_id,
+                            vendor_item_id,
+                            qty,
+                            order_date,
+                            float(price_usd),
+                            country
+                        )
 
-                # ---------------------------
-                # INSERT
-                # ---------------------------
-                cur.execute("""
-                    INSERT INTO trx.ebay_orders (
-                        account,
-                        order_id,
-                        buyer,
-                        status,
-                        ebay_id,
-                        sku,
-                        qty,
-                        order_date,
-                        price_usd,
-                        country
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                    account,
-                    order_id,
-                    buyer,
-                    status,
-                    ebay_id,
-                    sku,
-                    qty,
-                    order_date,
-                    float(price_usd),
-                    country
-                )
+                        cn.commit()  # ←ここ重要（1件ごと）
 
-                print(f"NEW ORDER: {order_id} / {sku}")
+            cur.close()
+            cn.close()
 
-    cn.commit()
-    cur.close()
-    cn.close()
+        except Exception as e:
+            print(f"❌ ERROR: {e}")
+
+        # -------------------------
+        # ループ間隔（超重要）
+        # -------------------------
+        time.sleep(10)  # ←10秒
+
 
 if __name__ == "__main__":
     run()

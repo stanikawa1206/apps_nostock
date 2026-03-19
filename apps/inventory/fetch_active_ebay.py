@@ -20,6 +20,7 @@ def reset_vendor_item_status_for_active_skus(conn):
             INNER JOIN [trx].[listings] AS l
                 ON vi.[vendor_name] = l.[vendor_name]
                AND vi.[vendor_item_id] = l.[vendor_item_id]
+            WHERE l.[is_deleted] = 0
         """)
         conn.commit()
     print("[INIT] status cleared on vendor_item joined with listings", flush=True)

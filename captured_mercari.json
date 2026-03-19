@@ -1,0 +1,232 @@
+{
+    "result": "OK",
+    "data": {
+        "id": "m86222654096",
+        "seller": {
+            "id": 721871284,
+            "name": "かずさん",
+            "photo_url": "https://static.mercdn.net/images/member_photo_noimage.png",
+            "photo_thumbnail_url": "https://static.mercdn.net/images/member_photo_noimage_thumb.png",
+            "register_sms_confirmation": "yes",
+            "register_sms_confirmation_at": "2022-02-17 22:46:53",
+            "created": 1645105613,
+            "num_sell_items": 48,
+            "ratings": {
+                "good": 56,
+                "normal": 0,
+                "bad": 2
+            },
+            "num_ratings": 58,
+            "score": 54,
+            "is_official": false,
+            "quick_shipper": false,
+            "is_followable": true,
+            "is_blocked": false,
+            "is_inactive": false,
+            "star_rating_score": 4.5
+        },
+        "status": "on_sale",
+        "name": "ルイ・ヴィトン 二つ折り財布 モノグラム",
+        "price": 6500,
+        "description": "叔母から貰った物です。\n購入した時期はわからないのですが、多少の年季は感じられます。\n\n中古品ですので、神経質な方はお控えください。\n商品すり替え防止のため、返品不可でお願いします",
+        "photos": [
+            "https://static.mercdn.net/item/detail/orig/photos/m86222654096_1.jpg?1773888180",
+            "https://static.mercdn.net/item/detail/orig/photos/m86222654096_2.jpg?1773888180",
+            "https://static.mercdn.net/item/detail/orig/photos/m86222654096_3.jpg?1773888180"
+        ],
+        "photo_paths": [
+            "photos/m86222654096_1.jpg",
+            "photos/m86222654096_2.jpg",
+            "photos/m86222654096_3.jpg"
+        ],
+        "thumbnails": [
+            "https://static.mercdn.net/thumb/item/jpeg/m86222654096_1.jpg?1773888180"
+        ],
+        "item_category": {
+            "id": 23,
+            "name": "小物",
+            "display_order": 8,
+            "parent_category_id": 1,
+            "parent_category_name": "レディース",
+            "root_category_id": 3088,
+            "root_category_name": "ファッション"
+        },
+        "item_category_ntiers": {
+            "id": 1692,
+            "name": "二つ折り財布",
+            "display_order": 2,
+            "parent_category_id": 242,
+            "parent_category_name": "折り財布",
+            "root_category_id": 3088,
+            "root_category_name": "ファッション",
+            "brand_group_id": 1
+        },
+        "parent_categories_ntiers": [
+            {
+                "id": 3088,
+                "name": "ファッション",
+                "display_order": 0
+            },
+            {
+                "id": 1,
+                "name": "レディース",
+                "display_order": 0
+            },
+            {
+                "id": 23,
+                "name": "小物",
+                "display_order": 0
+            },
+            {
+                "id": 242,
+                "name": "折り財布",
+                "display_order": 0
+            }
+        ],
+        "item_condition": {
+            "id": 3,
+            "name": "目立った傷や汚れなし",
+            "subname": "細かな使用感・傷・汚れはあるが、目立たない"
+        },
+        "item_brand": {
+            "id": 1326,
+            "name": "LOUIS VUITTON",
+            "sub_name": "LOUIS VUITTON"
+        },
+        "colors": [],
+        "shipping_payer": {
+            "id": 2,
+            "name": "送料込み(出品者負担)",
+            "code": "seller"
+        },
+        "shipping_method": {
+            "id": 14,
+            "name": "らくらくメルカリ便",
+            "is_deprecated": "no"
+        },
+        "shipping_from_area": {
+            "id": 99,
+            "name": "未定"
+        },
+        "shipping_duration": {
+            "id": 2,
+            "name": "2~3日で発送",
+            "min_days": 2,
+            "max_days": 3
+        },
+        "shipping_class": {
+            "id": 0,
+            "fee": 0,
+            "icon_id": 0,
+            "pickup_fee": 0,
+            "shipping_fee": 0,
+            "total_fee": 0,
+            "is_pickup": false
+        },
+        "num_likes": 0,
+        "num_comments": 0,
+        "registered_prices_count": 0,
+        "comments": [],
+        "updated": 1773888484,
+        "created": 1773888180,
+        "pager_id": 5742130523,
+        "liked": false,
+        "checksum": "b804fe3fb2176c501fcbfda8d5249f09",
+        "is_dynamic_shipping_fee": false,
+        "application_attributes": {},
+        "is_shop_item": "no",
+        "hash_tags": [],
+        "is_anonymous_shipping": true,
+        "is_web_visible": true,
+        "is_offerable": false,
+        "is_organizational_user": false,
+        "organizational_user_status": "",
+        "is_stock_item": false,
+        "is_cancelable": true,
+        "shipped_by_worker": false,
+        "additional_services": [
+            {
+                "service_code": "anshin_item_authentication_in_house",
+                "authentication_fee": 4300,
+                "is_free_authentication": false
+            }
+        ],
+        "has_additional_service": true,
+        "has_like_list": false,
+        "is_offerable_v2": false,
+        "item_attributes": [
+            {
+                "id": "f7f186cc-a16e-474b-a7a9-ee179b5565c0",
+                "text": "photo_description",
+                "values": [
+                    {
+                        "id": "",
+                        "text": ""
+                    },
+                    {
+                        "id": "",
+                        "text": ""
+                    },
+                    {
+                        "id": "",
+                        "text": ""
+                    }
+                ],
+                "deep_facet_filterable": false,
+                "show_on_ui": false
+            },
+            {
+                "id": "b6b9be89-648c-4af9-b3fe-1b77de4833d1",
+                "text": "ブランド",
+                "values": [
+                    {
+                        "id": "6906350e-4602-44f4-9668-57ba199f87fc",
+                        "text": "LOUIS VUITTON"
+                    }
+                ],
+                "deep_facet_filterable": false,
+                "show_on_ui": false
+            },
+            {
+                "id": "e6cec404-5b34-46aa-8316-cda6695a85f3",
+                "text": "あんしん鑑定",
+                "values": [
+                    {
+                        "id": "a2364058-0db2-4a68-bc92-afcc2f79787e",
+                        "text": "あんしん鑑定利用可能",
+                        "preconditions": [
+                            {
+                                "id": "b6b9be89-648c-4af9-b3fe-1b77de4833d1",
+                                "value": {
+                                    "id": "6906350e-4602-44f4-9668-57ba199f87fc",
+                                    "text": "LOUIS VUITTON"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                "deep_facet_filterable": true,
+                "show_on_ui": false
+            }
+        ],
+        "is_dismissed": false,
+        "photo_descriptions": [
+            "",
+            "",
+            ""
+        ],
+        "auction_info": {
+            "id": "21930705",
+            "start_time": 1773888181,
+            "expected_end_time": 1774005393,
+            "total_bids": 0,
+            "initial_price": 6500,
+            "highest_bid": 6500,
+            "state": "STATE_NO_BID",
+            "auction_type": "AUCTION_TYPE_NORMAL"
+        },
+        "meta_title": "ルイ・ヴィトン 二つ折り財布 モノグラム",
+        "meta_subtitle": "LOUIS VUITTON・目立った傷や汚れなし"
+    },
+    "meta": {}
+}

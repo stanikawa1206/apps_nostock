@@ -83,12 +83,19 @@ def human_sleep(a: float, b: float):
     time.sleep(random.uniform(a, b))
 
 def get_status(driver: webdriver.Chrome, url: str) -> tuple[Status, Optional[int]]:
-    driver.get(url)
     host_path = re.sub(r"^https?://", "", url)
+    
+    # --- 1. メルカリ（通常）の場合：Seleniumを使わずPlaywright関数を直接呼ぶ ---
+    if "mercari.com" in host_path and "/shops/product/" not in host_path:
+        # driver.get(url) は実行せず、直接URLを渡す
+        return detect_status_from_mercari(url)
+    
+    # --- 2. メルカリShopsの場合：従来通り Selenium を使用する ---
+    # ここで初めて driver.get を実行する（無駄なアクセスを防ぐ）
+    driver.get(url)
     if "/shops/product/" in host_path:
         return detect_status_from_mercari_shops(driver)
-    if "mercari.com" in host_path:
-        return detect_status_from_mercari(driver)
+    
     return "判定不可", None
 
 # ===================== Price Sync I/O（vendor_item） =====================
