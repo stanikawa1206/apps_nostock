@@ -43,7 +43,7 @@ def main():
     print(f"\n[Start] CSVの反映を開始: {CSV_FILE}")
 
     try:
-        with open(CSV_FILE, mode='r', encoding='utf-8-sig') as f:
+        with open(CSV_FILE, mode='r', encoding='cp932', newline='') as f:
             reader = csv.DictReader(f)
             
             for row in reader:
