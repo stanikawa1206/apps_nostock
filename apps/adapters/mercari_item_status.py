@@ -2,6 +2,9 @@ from __future__ import annotations
 import re
 import time
 from typing import Literal, Optional, Tuple, Dict, Any
+import requests
+from typing import Optional
+import json
 
 
 import pyodbc
@@ -60,46 +63,64 @@ def extract_price_jpy_from(main: BeautifulSoup) -> Optional[int]:
 # ================================
 # 通常メルカリ
 # ================================
-def detect_status_from_mercari(driver: webdriver.Chrome) -> tuple[Status, Optional[int]]:
+import json
+from typing import Optional
+from selenium.webdriver.common.by import By
+
+def find_item(data):
+    if isinstance(data, dict):
+        if "price" in data and "status" in data:
+            return data
+        for v in data.values():
+            result = find_item(v)
+            if result:
+                return result
+    elif isinstance(data, list):
+        for v in data:
+            result = find_item(v)
+            if result:
+                return result
+    return None
+
+
+def detect_status_from_mercari(driver) -> tuple[str, Optional[int]]:
+    # 1. ページ読み込み待機 (価格が表示されるまで)
     try:
-        WebDriverWait(driver, TIMEOUT).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "body"))
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "[data-testid='price']"))
         )
-    except Exception:
-        pass
-
-    time.sleep(0.6)
-    soup = BeautifulSoup(driver.page_source, "html.parser")
-    main = soup.select_one("#main") or soup
-
-    # 1) 削除
-    for el in main.select("p"):
-        t = el.get_text(strip=True)
-        if t in {"該当する商品は削除されています。", "ページが見つかりませんでした"}:
+    except:
+        # タイムアウト時にページが存在しないか確認
+        if "ページが見つかりません" in driver.page_source:
             return "削除", None
+        return "判定不可", None
 
-    # 2) 販売中
-    for el in main.select('button, a, [role="button"]'):
-        if el.get_text(" ", strip=True) == "購入手続きへ":
-            return "販売中", extract_price_jpy_from(main)
+    soup = BeautifulSoup(driver.page_source, 'html.parser')
 
-    # 3) オークション
-    for el in main.select('button, a, [role="button"]'):
-        if el.get_text(" ", strip=True) == "入札する":
-            return "オークション", None
+    # --- 判定1: オークション (入札ボタンの有無) ---
+    # 「入札する」というテキストを持つボタンがあるかチェック
+    bid_button = soup.find("button", text=re.compile(r"入札する"))
+    # もしくはメルカリの特定の属性（あれば）
+    if bid_button or "オークション商品" in soup.get_text():
+        # 価格を取得（現在の入札価格）
+        price_tag = soup.find(attrs={"data-testid": "price"})
+        price = int(re.sub(r'\D', '', price_tag.get_text())) if price_tag else None
+        return "オークション", price
 
-    # 4) 売り切れ
-    for el in main.select('button, a, [role="button"]'):
-        if el.get_text(" ", strip=True) == "売り切れました":
-            return "売り切れ", None
-
-    # コメント不可でも売り切れ
-    whole_text = soup.get_text(" ", strip=True)
-    if "※売り切れのためコメントできません" in whole_text:
+    # --- 判定2: 売り切れ / 取引中 ---
+    # 画面上のテキストで判断
+    page_text = soup.get_text()
+    sold_keywords = ["売り切れました", "取引中", "この商品は売却済みです"]
+    if any(k in page_text for k in sold_keywords):
         return "売り切れ", None
 
-    return "判定不可", None
+    # --- 判定3: 販売中 (通常) ---
+    price_tag = soup.find(attrs={"data-testid": "price"})
+    if price_tag:
+        price_val = int(re.sub(r'\D', '', price_tag.get_text()))
+        return "販売中", price_val
 
+    return "判定不可", None
 
 # ================================
 # Shops 用

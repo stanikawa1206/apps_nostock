@@ -9,6 +9,7 @@ from decimal import Decimal
 import requests
 
 from datetime import datetime, timezone, timedelta
+from apps.common.utils import get_sql_server_connection, send_mail
 
 # ==== VS Code ▶ 実行対応 ====
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -71,6 +72,72 @@ def fetch_paid_orders(account: str):
 
     return all_orders
 
+def send_new_order_mail(
+    account: str,
+    order_id: str,
+    buyer: str,
+    vendor_item_id: str,
+    price_usd: float,
+    country: str,
+):
+    cn = get_sql_server_connection()
+    cur = cn.cursor()
+
+    # -------------------------
+    # vendor_item取得
+    # -------------------------
+    cur.execute("""
+        SELECT vendor_name, image_url1
+        FROM trx.vendor_item
+        WHERE vendor_item_id = ?
+    """, vendor_item_id)
+
+    row = cur.fetchone()
+    cur.close()
+    cn.close()
+
+    if not row:
+        vendor_name = None
+        image_url = None
+    else:
+        vendor_name, image_url = row
+
+    # -------------------------
+    # URL生成
+    # -------------------------
+    if vendor_name == "メルカリshops":
+        item_url = f"https://mercari-shops.com/products/{vendor_item_id}"
+    else:
+        item_url = f"https://jp.mercari.com/item/{vendor_item_id}"
+
+    # -------------------------
+    # メール本文
+    # -------------------------
+    body = f"""
+【NEW ORDER】
+
+Account : {account}
+OrderID : {order_id}
+Buyer   : {buyer}
+Price   : ${price_usd}
+Country : {country}
+
+▼商品ページ
+{item_url}
+
+▼画像
+{image_url}
+"""
+
+    subject = f"[eBay] NEW ORDER {order_id}"
+
+    # -------------------------
+    # 送信
+    # -------------------------
+    send_mail(
+        subject=subject,
+        body=body
+    )
 
 # --------------------------------------------------
 # アカウント取得
@@ -96,18 +163,9 @@ def load_accounts():
 # --------------------------------------------------
 def run():
     print(f"START: {datetime.now():%Y-%m-%d %H:%M:%S}")
-    
-    download_dir = Path(os.path.expanduser("~")) / "Downloads"
-    csv_file = download_dir / f"ebay_orders_{datetime.now():%Y%m%d_%H%M%S}.csv"
-    
-    # ★修正ポイント：BUYER をヘッダーに追加して列ズレを防止
-    headers_csv = [
-        "ACCOUNT", "ORDER_ID", "BUYER", "STATUS",
-        "ebayID", "SKU", "QTY",
-        "ORDER_DATE", "SHIP_BY",
-        "PRICE_USD", "PRICE_JPY", "COUNTRY"
-    ]    
-    all_rows = []
+
+    cn = get_sql_server_connection()
+    cur = cn.cursor()
 
     for account in load_accounts():
         print(f"[ACCOUNT] {account}")
@@ -119,48 +177,85 @@ def run():
         for order in orders:
             order_id = order.get("orderId")
             order_date = order.get("creationDate")
-            # Buyerの取得
+            status = order.get("orderFulfillmentStatus")
             buyer = order.get("buyer", {}).get("username")
 
-            # --- COUNTRY の取得 ---
+            # --- COUNTRY ---
             f_instructions = order.get("fulfillmentStartInstructions", [])
             country = None
+
             if f_instructions:
-                # 階層を深く掘り下げる
-                ship_to = f_instructions[0].get("shippingStep", {}).get("shipTo", {})
-                # address 直下、または contactAddress を確認
+                shipping_step = f_instructions[0].get("shippingStep", {})
+                ship_to = shipping_step.get("shipTo", {})
                 addr = ship_to.get("contactAddress") or ship_to.get("address") or {}
                 country = addr.get("countryCode")
-                if f_instructions:
-                    ship_by = (
-                        f_instructions[0]
-                        .get("shippingStep", {})
-                        .get("shipByDate")
-                    )
 
             for item in order.get("lineItems", []):
                 ebay_id = item.get("legacyItemId")
-                sku = item.get("sku")
+                vendor_item_id = item.get("sku")
                 qty = item.get("quantity")
-               
- 
                 price_usd = Decimal(item.get("lineItemCost", {}).get("value", "0"))
-                price_jpy = int(price_usd * Decimal(USD_JPY_RATE))
 
-                # カラムの順番を headers_csv と完全に一致させる
-                row = [
-                    account, order_id, buyer, ebay_id, sku, qty, 
-                    order_date, ship_by, float(price_usd), price_jpy, country
-                ]
-                all_rows.append(row)
+                # ---------------------------
+                # 既存チェック（超重要）
+                # ---------------------------
+                cur.execute("""
+                    SELECT 1
+                    FROM trx.ebay_orders
+                    WHERE order_id = ? AND ebay_id = ?
+                """, order_id, ebay_id)
 
-    # --- CSV書き出し ---
-    if all_rows:
-        with open(csv_file, "w", newline="", encoding="utf-8-sig") as f:
-            writer = csv.writer(f)
-            writer.writerow(headers_csv)
-            writer.writerows(all_rows)
-        print(f"✅ CSV保存完了: {csv_file} ({len(all_rows)} rows)")
+                if cur.fetchone():
+                    continue  # 既存 → スキップ
+
+
+                # 新規注文
+                print(f"NEW ORDER: {order_id} / {vendor_item_id}")
+
+                send_new_order_mail(
+                    account=account,
+                    order_id=order_id,
+                    buyer=buyer,
+                    vendor_item_id=vendor_item_id,
+                    price_usd=float(price_usd),
+                    country=country
+                )
+
+                # ---------------------------
+                # INSERT
+                # ---------------------------
+                cur.execute("""
+                    INSERT INTO trx.ebay_orders (
+                        account,
+                        order_id,
+                        buyer,
+                        status,
+                        ebay_id,
+                        sku,
+                        qty,
+                        order_date,
+                        price_usd,
+                        country
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                    account,
+                    order_id,
+                    buyer,
+                    status,
+                    ebay_id,
+                    sku,
+                    qty,
+                    order_date,
+                    float(price_usd),
+                    country
+                )
+
+                print(f"NEW ORDER: {order_id} / {sku}")
+
+    cn.commit()
+    cur.close()
+    cn.close()
 
 if __name__ == "__main__":
     run()
