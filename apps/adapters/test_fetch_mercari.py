@@ -5,46 +5,51 @@ from typing import Optional, Dict, Any
 
 URL = "https://jp.mercari.com/shops/product/2JGVWPfEwRDg9sqRWqgUxE"
 
-def fetch_shops_data(page, url: str) -> Optional[Dict[str, Any]]:
-    api_payload = {"data": None}
-
-    def handle_response(response):
-            # 画像にあるような、IDが含まれ、かつ 'view=FULL' が含まれるURLを狙い撃ちする
-            if "view=FULL" in response.url:
-                try:
-                    # このレスポンスの中身に productDetail が入っているはずです
-                    data = response.json()
-                    print(f"🎯 ターゲットAPIを捕捉しました: {response.url[:50]}...")
-                    api_payload["data"] = data
-                except:
-                    pass
-
-
-    page.on("response", handle_response)
-    
+def fetch_shops_data(page, url: str):
     try:
-        # ヘッドレスでない状態で起動するので、動きが見えます
-        page.goto(url, wait_until="load", timeout=30000)
-        
-        # 1. メルカリ特有の「同意する」ボタンなどがあれば適当にクリック（必要なら手動でもOK）
-        # 2. APIが走るように少しスクロール
-        for _ in range(5):
-            if api_payload["data"]: break
-            page.mouse.wheel(0, 500)
-            page.wait_for_timeout(1000)
+        # XHRフック
+        page.add_init_script("""
+        (function() {
+            const origOpen = XMLHttpRequest.prototype.open;
+            const origSend = XMLHttpRequest.prototype.send;
 
-        # APIが捕捉できるまで最大10秒待機
-        timeout = time.time() + 10
-        while api_payload["data"] is None and time.time() < timeout:
+            XMLHttpRequest.prototype.open = function(method, url) {
+                this._url = url;
+                return origOpen.apply(this, arguments);
+            };
+
+            XMLHttpRequest.prototype.send = function() {
+                this.addEventListener('load', function() {
+                    try {
+                        if (this._url && this._url.includes('products') && this._url.includes('view=FULL')) {
+                            const json = JSON.parse(this.responseText);
+                            window.__XHR_DATA__ = json;
+                        }
+                    } catch (e) {}
+                });
+                return origSend.apply(this, arguments);
+            };
+        })();
+        """)
+
+        page.goto(url, wait_until="domcontentloaded", timeout=30000)
+
+        # 最大10秒待つ
+        data = None
+        for _ in range(20):
+            data = page.evaluate("() => window.__XHR_DATA__")
+            if data:
+                break
             page.wait_for_timeout(500)
 
-        res = api_payload["data"]
-        if not res: return None
+        if not data:
+            return None
 
-        # --- Shops専用マッピング ---
+        res = data
+
         detail = res.get("productDetail", {})
         shop = detail.get("shop", {})
-        
+
         return {
             "vendor_name": "メルカリshops",
             "item_id": res.get("name"),
@@ -59,19 +64,19 @@ def fetch_shops_data(page, url: str) -> Optional[Dict[str, Any]]:
             "rating_count": int(shop.get("shopStats", {}).get("reviewCount", 0)),
             "last_updated_str": res.get("updateTime"),
         }
+
     except Exception as e:
         print(f"Error during fetch: {e}")
         return None
-    finally:
-        page.remove_listener("response", handle_response)
-
+    
 def run():
     with sync_playwright() as p:
-        # ★ 目視確認のため headless=False に設定
-        browser = p.chromium.launch(headless=False) 
+        browser = p.chromium.launch(headless=False)
+
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         )
+
         page = context.new_page()
 
         print(f"Testing Shops URL: {URL}")
@@ -90,11 +95,10 @@ def run():
                     print(f"{k}: {v}")
         else:
             print("\n❌ Failed to capture payload.")
-            print("ブラウザ画面を確認してください。ボット判定や同意画面で止まっていませんか？")
-        
-        # 結果を確認するために少し待機してから閉じる
+
         time.sleep(5)
         browser.close()
+
 
 if __name__ == "__main__":
     run()

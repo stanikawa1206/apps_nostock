@@ -65,37 +65,54 @@ def extract_price_jpy_from(main: BeautifulSoup) -> Optional[int]:
 # ================================
 def fetch_mercari_api_data(page, url: str) -> Tuple[Optional[Dict[str, Any]], str]:
     """
-    既存のpageを使用して、APIレスポンスとページテキストを取得する。
+    XHRフックでメルカリAPIを取得（安定版）
     """
-    api_payload = {"data": None}
-
-    def handle_response(response):
-        if "api.mercari.jp/items/get?id=" in response.url:
-            try:
-                api_payload["data"] = response.json()
-            except:
-                pass
-
-    # リスナー登録
-    page.on("response", handle_response)
-
+    print("evaluate")
     try:
-        # expect_response でAPIのキャプチャを待機
-        with page.expect_response(lambda res: "api.mercari.jp/items/get?id=" in res.url, timeout=10000) as response_info:
-            page.goto(url, wait_until="commit")
-        
-        res_json = api_payload["data"]
+        # XHRフック
+        page.add_init_script("""
+        (function() {
+            const origOpen = XMLHttpRequest.prototype.open;
+            const origSend = XMLHttpRequest.prototype.send;
+
+            XMLHttpRequest.prototype.open = function(method, url) {
+                this._url = url;
+                return origOpen.apply(this, arguments);
+            };
+
+            XMLHttpRequest.prototype.send = function() {
+                this.addEventListener('load', function() {
+                    try {
+                        if (this._url && this._url.includes('api.mercari.jp/items/get')) {
+                            const json = JSON.parse(this.responseText);
+                            window.__MERCARI_DATA__ = json;
+                        }
+                    } catch (e) {}
+                });
+                return origSend.apply(this, arguments);
+            };
+        })();
+        """)
+
+        page.goto(url, wait_until="domcontentloaded", timeout=30000)
+
+        # 最大10秒待つ
+        data = None
+        for _ in range(20):
+            data = page.evaluate("() => window.__MERCARI_DATA__")
+            if data:
+                break
+            page.wait_for_timeout(500)
+
         html_content = page.content()
-        return res_json, html_content
+
+        return data, html_content
 
     except Exception:
         try:
             return None, page.content()
         except:
             return None, ""
-    finally:
-        # 次のURLでリスナーが重複しないように解除
-        page.remove_listener("response", handle_response)
 
 def detect_status_from_mercari(page, url: str) -> Tuple[str, Optional[int]]:
     """
