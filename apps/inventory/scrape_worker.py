@@ -65,7 +65,7 @@ BROWSER_RESTART_EVERY = 25
 # page寿命
 PAGE_RESTART_EVERY = 10
 
-FETCH_TIMEOUT_MS = 100000
+FETCH_TIMEOUT_MS = 30000
 
 # =========================
 # SQL
@@ -425,10 +425,8 @@ def release_job(conn, job_id):
             pass
 
 def fetch_page_json(page, url, conn, job_id):
+    print("************* evaluate版2 *************", flush=True)
 
-    print("************* evaluate版 *************")
-
-    # XHRフック
     page.add_init_script("""
     (function() {
         const origOpen = XMLHttpRequest.prototype.open;
@@ -453,7 +451,7 @@ def fetch_page_json(page, url, conn, job_id):
     })();
     """)
 
-    page.goto(url, wait_until="domcontentloaded", timeout=FETCH_TIMEOUT_MS)
+    page.goto(url, wait_until="commit", timeout=FETCH_TIMEOUT_MS)
 
     data = None
     for _ in range(20):
