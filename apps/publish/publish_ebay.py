@@ -21,7 +21,7 @@ from dotenv import load_dotenv
 import boto3
 from datetime import timedelta  # 追加（mainのstateで使う）
 from dataclasses import dataclass
-
+from playwright.sync_api import sync_playwright
 
 # =========================
 # Third-party
@@ -442,10 +442,6 @@ def parse_detail_personal(driver, url: str, preset: str, vendor_name: str) -> Di
     driver.get(url)
     WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, 'body')))
     _close_any_modal(driver)
-
-    status, _ = detect_status_from_mercari(driver)
-    if status != "販売中":
-        raise MercariItemUnavailableError(status)
 
     title = _try_extract_title(driver)
     price = 0
@@ -1045,6 +1041,7 @@ JSON format:
 # =========================
 def heavy_check_detail(
     conn,
+    page,
     driver,
     item_url,
     sku,
@@ -1064,13 +1061,33 @@ def heavy_check_detail(
     ✅ ここでは「詳細解析」「NG判定」「翻訳生成」まで。
     ✅ 画像URLの最終決定（NORMAL/CDN）は post_to_ebay 側でやる（重要）
     """
-    # === 1) scrape ===
+ 
+    # === STEP 1: Playwright (API) で最速生存確認 ===
+    if vendor_name == "メルカリ":
+        # 在庫管理で完成させた「判定関数」をそのまま使う
+        # これにより、削除/売り切れの商品に重い Selenium を動かさずに済む
+        status, _ = detect_status_from_mercari(page, item_url)
+        
+        if status != "販売中":
+            # 判定不可（エラー）の場合は今回はスルー
+            if status == "判定不可":
+                return None, debug_unavailable_dump, writes_since_commit, 0, 0
+            
+            # 削除・売り切れ・オークション等は不可として記録
+            mark_vendor_item_unavailable(conn, vendor_name, sku, status)
+            writes_since_commit += 1
+            writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
+            return None, debug_unavailable_dump, writes_since_commit, 1, 0
+
+    # === STEP 2: 生きている商品のみ、既存の Selenium 解析を実行 ===
     try:
-        rec = (
-            parse_detail_shops(driver, item_url, preset, vendor_name)
-            if vendor_name == "メルカリshops"
-            else parse_detail_personal(driver, item_url, preset, vendor_name)
-        )
+        if vendor_name == "メルカリshops":
+            # Shopsは現状維持（Selenium）
+            rec = parse_detail_shops(driver, item_url, preset, vendor_name)
+        else:
+            # 通常メルカリも、解析ロジック（recの生成）は一切変えず Selenium に任せる
+            rec = parse_detail_personal(driver, item_url, preset, vendor_name)
+
     except MercariItemUnavailableError as e:
         status = e.state
 
@@ -1810,117 +1827,133 @@ def main():
         # マスターデータのロード
         presets = fetch_active_presets(conn)
 
-        # ===== 動的アカウントループ：実行可能な仕事がある限り回し続ける =====
-        while not stop_all:
-            # 1. 次に担当すべきアカウントをDBから1つ確保（ロック）
-            acct = fetch_next_account_and_lock(conn, current_pc)
-            
-            if not acct:
-                print("[INFO] 実行可能なアカウントがありません。全タスク完了または制限により終了します。")
-                break
+        # ★ Playwrightの起動（ブラウザ1回起動で使い回す）
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(user_agent="...")
+            page = context.new_page()
 
-            print(f"🚀 アカウント開始: {acct.account} (Target: {acct.post_target})")
-            
-            # アカウント固有のポリシーをロード
-            acct_policies_map = {}
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT fulfillment_policy_id, payment_policy_id, return_policy_id
-                    FROM mst.ebay_accounts WHERE account = ?
-                """, (acct.account,))
-                row = cur.fetchone()
-                if not row:
-                    print(f"[ERROR] policy未設定のためスキップ: {acct.account}")
-                    release_pc_and_close_account(conn, current_pc)
-                    continue
+            # 不要リソース遮断（画像・CSS・フォントを止めてAPIだけを速く取る）
+            page.route("**/*", lambda route: 
+                route.abort() if route.request.resource_type in ["image", "media", "font", "stylesheet"] 
+                else route.continue_()
+            )
 
-                acct_policies_map[acct.account] = {
-                    "fulfillment_policy_id": str(row[0]),
-                    "payment_policy_id": str(row[1]),
-                    "return_policy_id": str(row[2]),
-                    "merchant_location_key": "Default",
-                }
-
-            # アカウント処理中のステータス初期化
-            acct_success = {acct.account: 0}
-            acct_targets = {acct.account: acct.post_target}
-            close_reason = None
-
-            # ===== アカウント内メインループ =====
+            # ===== 動的アカウントループ：実行可能な仕事がある限り回し続ける =====
             while not stop_all:
-                # 当日の出品済み数を正確に把握（案2）
+                # 1. 次に担当すべきアカウントをDBから1つ確保（ロック）
+                acct = fetch_next_account_and_lock(conn, current_pc)
+                
+                if not acct:
+                    print("[INFO] 実行可能なアカウントがありません。全タスク完了または制限により終了します。")
+                    break
+
+                print(f"🚀 アカウント開始: {acct.account} (Target: {acct.post_target})")
+                
+                # アカウント固有のポリシーをロード
+                acct_policies_map = {}
                 with conn.cursor() as cur:
                     cur.execute("""
-                        SELECT COUNT(*) FROM trx.listings 
-                        WHERE account = ? AND CAST(start_time AS DATE) = CAST(GETDATE() AS DATE)
+                        SELECT fulfillment_policy_id, payment_policy_id, return_policy_id
+                        FROM mst.ebay_accounts WHERE account = ?
                     """, (acct.account,))
-                    sent_now = cur.fetchone()[0]
+                    row = cur.fetchone()
+                    if not row:
+                        print(f"[ERROR] policy未設定のためスキップ: {acct.account}")
+                        release_pc_and_close_account(conn, current_pc)
+                        continue
 
-                if sent_now >= acct.post_target:
-                    print(f"✅ {acct.account} 当日目標数に達しました。")
-                    break
+                    acct_policies_map[acct.account] = {
+                        "fulfillment_policy_id": str(row[0]),
+                        "payment_policy_id": str(row[1]),
+                        "return_policy_id": str(row[2]),
+                        "merchant_location_key": "Default",
+                    }
 
-                # CDNモードの解除判定
-                if image_mode == "CDN" and cdn_mode_until and datetime.now() > cdn_mode_until:
-                    print("[IMG_ERR] CDN timeout reached. Resetting to NORMAL.")
-                    image_mode = "NORMAL"
-                    image_error_count = 0
-                    cdn_mode_until = None
+                # アカウント処理中のステータス初期化
+                acct_success = {acct.account: 0}
+                acct_targets = {acct.account: acct.post_target}
+                close_reason = None
 
-                # 商品確保
-                row = take_one_vendor_item(conn, acct.preset_group, processing_by, acct.account)
-                if not row:
-                    print(f"[INFO] {acct.account} 在庫枯渇")
-                    close_reason = "EMPTY"
-                    break
+                # ===== アカウント内メインループ =====
+                while not stop_all:
+                    # 当日の出品済み数を正確に把握
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            SELECT COUNT(*) FROM trx.listings 
+                            WHERE account = ? AND CAST(start_time AS DATE) = CAST(GETDATE() AS DATE)
+                        """, (acct.account,))
+                        sent_now = cur.fetchone()[0]
 
-                sku = row["vendor_item_id"].strip()
-                vendor_name = row["vendor_name"]
-                item_url = f"https://mercari-shops.com/products/{sku}" if vendor_name == "メルカリshops" else f"https://jp.mercari.com/item/{sku}"
+                    if sent_now >= acct.post_target:
+                        print(f"✅ {acct.account} 当日目標数に達しました。")
+                        break
 
-                # 解析とチェック
-                try:
-                    heavy, _, writes_since_commit, _, _ = heavy_check_detail(
-                        conn, driver, item_url, sku, row["preset"], vendor_name, row["mode"],
-                        row["default_brand_en"], row["category_id_ebay"], row["department"], row["type_ebay"],
-                        {}, writes_since_commit,row["low_jpy_target"],row["high_jpy_target"]
+                    # CDNモードの解除判定
+                    if image_mode == "CDN" and cdn_mode_until and datetime.now() > cdn_mode_until:
+                        print("[IMG_ERR] CDN timeout reached. Resetting to NORMAL.")
+                        image_mode = "NORMAL"
+                        image_error_count = 0
+                        cdn_mode_until = None
+
+                    # 商品確保
+                    row = take_one_vendor_item(conn, acct.preset_group, processing_by, acct.account)
+                    if not row:
+                        print(f"[INFO] {acct.account} 在庫枯渇")
+                        close_reason = "EMPTY"
+                        break
+
+                    sku = row["vendor_item_id"].strip()
+                    vendor_name = row["vendor_name"]
+                    item_url = f"https://mercari-shops.com/products/{sku}" if vendor_name == "メルカリshops" else f"https://jp.mercari.com/item/{sku}"
+
+                    # 解析とチェック（★pageを引数に追加）
+                    try:
+                        heavy, _, writes_since_commit, _, _ = heavy_check_detail(
+                            conn, page, driver, item_url, sku, row["preset"], vendor_name, row["mode"],
+                            row["default_brand_en"], row["category_id_ebay"], row["department"], row["type_ebay"],
+                            {}, writes_since_commit, row["low_jpy_target"], row["high_jpy_target"]
+                        )
+                    except FatalRendererError:
+                        print("[FATAL] Renderer crash → exit 1")
+                        sys.exit(1)
+
+                    if not heavy:
+                        # 解析失敗やNG判定時は次の商品へ
+                        continue
+
+                    # 出品実行
+                    (
+                        acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
+                        _, image_mode, image_error_count, cdn_mode_until,
+                    ) = post_to_ebay(
+                        conn=conn, p=None, acct=acct.account, heavy=heavy,
+                        acct_targets=acct_targets, acct_success=acct_success,
+                        acct_policies_map=acct_policies_map,
+                        total_listings=total_listings, MAX_LISTINGS=MAX_LISTINGS,
+                        stop_all=stop_all, writes_since_commit=writes_since_commit,
+                        BATCH_COMMIT=BATCH_COMMIT, image_mode=image_mode,
+                        image_error_count=image_error_count, cdn_mode_until=cdn_mode_until,
+                        r2=r2, r2_bucket=r2_bucket_name, r2_public_base=r2_public_base,
+                        cdn_cache=cdn_cache, now_dt=datetime.now(),
                     )
-                except FatalRendererError:
-                    print("[FATAL] Renderer crash → exit 1")
-                    sys.exit(1)
 
-                if not heavy:
-                    continue
+                    # API Limit検知時
+                    if acct_targets.get(acct.account) == 0:
+                        print(f"🚫 {acct.account} APIリミットを検知しました。")
+                        close_reason = "LIMIT"
+                        break
 
-                # 出品実行
-                (
-                    acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
-                    _, image_mode, image_error_count, cdn_mode_until,
-                ) = post_to_ebay(
-                    conn=conn, p=None, acct=acct.account, heavy=heavy,
-                    acct_targets=acct_targets, acct_success=acct_success,
-                    acct_policies_map=acct_policies_map,
-                    total_listings=total_listings, MAX_LISTINGS=MAX_LISTINGS,
-                    stop_all=stop_all, writes_since_commit=writes_since_commit,
-                    BATCH_COMMIT=BATCH_COMMIT, image_mode=image_mode,
-                    image_error_count=image_error_count, cdn_mode_until=cdn_mode_until,
-                    r2=r2, r2_bucket=r2_bucket_name, r2_public_base=r2_public_base,
-                    cdn_cache=cdn_cache, now_dt=datetime.now(),
-                )
+                    if writes_since_commit > 0:
+                        conn.commit()
 
-                # API Limit検知時（post_to_ebay内で acct_targets が 0 にされる）
-                if acct_targets.get(acct.account) == 0:
-                    print(f"🚫 {acct.account} APIリミットを検知しました。")
-                    close_reason = "LIMIT"
-                    break
+                # アカウント終了処理（PC解放とフラグ更新）
+                release_pc_and_close_account(conn, current_pc, acct.account, close_reason)
+                summary_success[acct.account] = summary_success.get(acct.account, 0) + acct_success[acct.account]
+                print(f"🏁 アカウント終了: {acct.account} (Reason: {close_reason or 'DONE'})")
 
-                if writes_since_commit > 0:
-                    conn.commit()
-
-            # アカウント終了処理（PC解放とフラグ更新）
-            release_pc_and_close_account(conn, current_pc, acct.account, close_reason)
-            summary_success[acct.account] = summary_success.get(acct.account, 0) + acct_success[acct.account]
-            print(f"🏁 アカウント終了: {acct.account} (Reason: {close_reason or 'DONE'})")
+            # Playwrightのブラウザを閉じる
+            browser.close()
 
         # ===== 完了後の処理（メール通知など） =====
         end_time = datetime.now()
