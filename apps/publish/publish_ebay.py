@@ -108,19 +108,18 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str) -> Dict[st
     
     try:
         # ページ遷移。ShopsはLazy Loadが強いので少しスクロール
-        try:
-            page.goto(url, wait_until="domcontentloaded", timeout=20000)
-        except Exception as e:
-            # タイムアウトしても「APIさえ拾えていればOK」として無視して進む
-            pass  
+        page.goto(url, wait_until="domcontentloaded", timeout=20000)
         
         # 2. 強制的にスクロールさせてAPIを叩かせる
         # goto が終わっていなくても、ブラウザ内では読み込みが続いているので操作可能です
-        retry_count = 0
-        while api_payload["data"] is None and retry_count < 15: # 15回（約15秒）で強制終了
+        start = time.time()
+
+        while api_payload["data"] is None:
+            if time.time() - start > 15:
+                raise Exception("API timeout")
+
             page.mouse.wheel(0, 800)
-            time.sleep(1) # page.wait_for_timeout ではなく time.sleep を推奨
-            retry_count += 1
+            time.sleep(1)
 
         res = api_payload["data"]
         if not res:
@@ -145,7 +144,6 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str) -> Dict[st
 
         return {
             "vendor_name": vendor_name,
-            "item_id": res.get("name"),
             "title_jp": res.get("displayName"),
             "title_en": "",
             "price": int(res.get("price", 0)),
@@ -205,7 +203,6 @@ def parse_detail_personal(page, url: str, preset: str, vendor_name: str) -> Dict
     # 4. rec の組み立て
     return {
         "vendor_name": vendor_name,
-        "item_id": item.get("id"),
         "title_jp": item.get("name"),
         "title_en": "",
         "price": int(item.get("price", 0)),
@@ -402,7 +399,7 @@ def upsert_vendor_item(conn, rec: Dict[str, Any]):
 
     params = (
         rec["vendor_name"],
-        rec["item_id"],
+        rec["vendor_item_id"],
 
         title_jp,
         title_en,
@@ -813,7 +810,7 @@ def heavy_check_detail(
 
         rec_fail = {
             "vendor_name": vendor_name,
-            "item_id": sku,          # これが SQL の 2番目の引数になる
+            "vendor_item_id": sku,          # これが SQL の 2番目の引数になる
             "listing_head": "解析失敗",
             "listing_detail": _truncate_for_db2(str(e), 200),
             
@@ -1529,18 +1526,14 @@ def main():
 
     conn = get_sql_server_connection()
 
-    # メール通知用の集計データ
+    conn = get_sql_server_connection()
     summary_success = {}
 
     try:
-        # マスターデータのロード
         presets = fetch_active_presets(conn)
 
-        # ★ Playwrightの起動（ブラウザ本体を1回起動）
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
 
-            # ===== 動的アカウントループ =====
             while not stop_all:
                 acct = fetch_next_account_and_lock(conn, current_pc)
                 if not acct:
@@ -1548,8 +1541,7 @@ def main():
                     break
 
                 print(f"🚀 アカウント開始: {acct.account} (Target: {acct.post_target})")
-                
-                # アカウント固有のポリシーをロード
+
                 acct_policies_map = {}
                 with conn.cursor() as cur:
                     cur.execute("""
@@ -1573,9 +1565,7 @@ def main():
                 acct_targets = {acct.account: acct.post_target}
                 close_reason = None
 
-                # ===== アカウント内メインループ =====
                 while not stop_all:
-                    # 出品済み数の正確な把握
                     with conn.cursor() as cur:
                         cur.execute("""
                             SELECT COUNT(*) FROM trx.listings 
@@ -1587,37 +1577,43 @@ def main():
                         print(f"✅ {acct.account} 当日目標数に達しました。")
                         break
 
-                    # CDNモードの解除判定
                     if image_mode == "CDN" and cdn_mode_until and datetime.now() > cdn_mode_until:
                         print("[IMG_ERR] CDN timeout reached. Resetting to NORMAL.")
                         image_mode = "NORMAL"
                         image_error_count = 0
                         cdn_mode_until = None
 
-                    # 1. 商品確保
                     row = take_one_vendor_item(conn, acct.preset_group, processing_by, acct.account)
                     if not row:
                         print(f"[INFO] {acct.account} 在庫枯渇")
                         close_reason = "EMPTY"
                         break
 
-                    # 2. 【重要修正】商品ごとに Context と Page を生成
-                    context = browser.new_context(user_agent="...")
-                    page = context.new_page()
-                    page.set_default_timeout(30000) # 30秒で必ずタイムアウトさせる設定
-
-                    # 不要リソース遮断
-                    page.route("**/*", lambda route: 
-                        route.abort() if route.request.resource_type in ["image", "media", "font"] 
-                        else route.continue_()
-                    )
-
                     sku = row["vendor_item_id"].strip()
                     vendor_name = row["vendor_name"]
-                    item_url = f"https://mercari-shops.com/products/{sku}" if vendor_name == "メルカリshops" else f"https://jp.mercari.com/item/{sku}"
+                    item_url = (
+                        f"https://mercari-shops.com/products/{sku}"
+                        if vendor_name == "メルカリshops"
+                        else f"https://jp.mercari.com/item/{sku}"
+                    )
+
+                    browser = None
+                    context = None
+                    page = None
 
                     try:
-                        # 解析とチェック
+                        browser = p.chromium.launch(headless=True)
+                        context = browser.new_context(user_agent="...")
+                        page = context.new_page()
+                        page.set_default_timeout(30000)
+
+                        page.route(
+                            "**/*",
+                            lambda route: route.abort()
+                            if route.request.resource_type in ["image", "media", "font"]
+                            else route.continue_()
+                        )
+
                         heavy, _, writes_since_commit, _, _ = heavy_check_detail(
                             conn, page, item_url, sku, row["preset"], vendor_name, row["mode"],
                             row["default_brand_en"], row["category_id_ebay"], row["department"], row["type_ebay"],
@@ -1625,7 +1621,6 @@ def main():
                         )
 
                         if heavy:
-                            # 出品実行
                             (
                                 acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
                                 _, image_mode, image_error_count, cdn_mode_until,
@@ -1652,25 +1647,40 @@ def main():
                     except FatalRendererError:
                         print("[FATAL] Renderer crash → exit 1")
                         sys.exit(1)
+
                     except Exception as e:
                         print(f" [ERROR] SKU={sku} 処理中に例外発生: {e}")
-                    finally:
-                        # 3. 【重要修正】成否に関わらずPageを確実に閉じてリセット
-                        page.close()
-                        context.close()
 
-                # アカウント終了処理
+                    finally:
+                        try:
+                            if page:
+                                page.close()
+                        except:
+                            pass
+
+                        try:
+                            if context:
+                                context.close()
+                        except:
+                            pass
+
+                        try:
+                            if browser:
+                                browser.close()
+                        except:
+                            pass
+
                 release_pc_and_close_account(conn, current_pc, acct.account, close_reason)
                 summary_success[acct.account] = summary_success.get(acct.account, 0) + acct_success.get(acct.account, 0)
                 print(f"🏁 アカウント終了: {acct.account} (Reason: {close_reason or 'DONE'})")
 
-            browser.close()
-
-        # ===== 完了後の処理 =====
         end_time = datetime.now()
         elapsed = end_time - start_time
         lines = [f"{a}: 成功 {s}" for a, s in summary_success.items()]
-        body = (f"PC: {current_pc}\n開始: {start_time}\n終了: {end_time}\n処理時間: {elapsed}\n\n" + "\n".join(lines))
+        body = (
+            f"PC: {current_pc}\n開始: {start_time}\n終了: {end_time}\n処理時間: {elapsed}\n\n"
+            + "\n".join(lines)
+        )
         send_mail("✅ eBay出品処理 完了通知", body)
 
         print(f"[EXIT] 処理完了（合計出品数: {total_listings}）")
