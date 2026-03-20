@@ -15,7 +15,6 @@ from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
-from selenium.common.exceptions import TimeoutException, WebDriverException
 import os
 from dotenv import load_dotenv
 import boto3
@@ -27,12 +26,6 @@ from playwright.sync_api import sync_playwright
 # Third-party
 # =========================
 import pyodbc
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
 
 # =========================
 # sys.path bootstrap: file-direct run safe
@@ -53,7 +46,6 @@ from apps.common.utils import (
     send_mail,
     translate_to_english,
     contains_risky_word,
-    build_driver,
     get_openai_client,
 )
 
@@ -61,9 +53,6 @@ from apps.adapters.ebay_api import ApiHandledError, ListingLimitError, post_one_
 from apps.adapters.mercari_search import fetch_active_presets
 from apps.adapters.mercari_item_status import (
     MercariItemUnavailableError,
-    detect_status_from_mercari,
-    detect_status_from_mercari_shops,
-    handle_listing_delete,
     mark_vendor_item_unavailable,
 )
 
@@ -98,171 +87,6 @@ def is_fatal_renderer_error(e: Exception) -> bool:
 class FatalRendererError(Exception):
     pass
 
-# ========= UI 補助 =========
-def _close_any_modal(driver):
-    """同意/閉じる系のボタンがあれば雑に閉じる。"""
-    try:
-        js = """
-          return Array.from(document.querySelectorAll('button,[role=button]')).find(b=>{
-            const t=(b.innerText||'').trim();
-            return ['同意','閉じる','OK','Accept','Close','許可しない'].some(k=>t.includes(k));
-          });
-        """
-        btn = driver.execute_script(js)
-        if btn:
-            driver.execute_script("arguments[0].click();", btn)
-            time.sleep(0.2)
-    except Exception:
-        pass
-
-def extract_mercari_description_from_dom(driver, timeout: int = 10) -> str:
-    """
-    現在表示中のメルカリ(通常/shops 共通)の商品ページから
-    <pre data-testid="description"> のテキストを取得する。
-    見つからなければ空文字。
-    """
-    try:
-        pre = WebDriverWait(driver, timeout).until(
-            EC.presence_of_element_located(
-                (By.CSS_SELECTOR, "pre[data-testid='description']")
-            )
-        )
-        return (pre.text or "").strip()
-    except TimeoutException:
-        return ""
-    except Exception:
-        return ""
-
-def _try_extract_title(driver, vis_timeout=8.0) -> str:
-    """通常メルカリ詳細からタイトル抽出（最低限）。"""
-    sels: List[Tuple[str, str]] = [
-        (By.CSS_SELECTOR, '#item-info h1'),
-        (By.CSS_SELECTOR, '[data-testid="item-name"]'),
-        (By.CSS_SELECTOR, 'h1[role="heading"]'),
-        (By.CSS_SELECTOR, 'h1'),
-    ]
-    for by, sel in sels:
-        try:
-            el = WebDriverWait(driver, vis_timeout).until(EC.visibility_of_element_located((by, sel)))
-            t = (el.text or "").strip()
-            if t:
-                return t
-        except Exception:
-            continue
-    try:
-        og = driver.find_element(By.CSS_SELECTOR, 'meta[property="og:title"]')
-        t = (og.get_attribute("content") or "").strip()
-        return t
-    except Exception:
-        return ""
-
-def _find_seller_info(driver, url: str):
-    """
-    通常メルカリ商品の seller_id / seller_name / rating_count を取得する。
-    ※ driver.get(url) は呼び出し側で済んでいる前提
-    """
-    try:
-        a = WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located(
-                (By.CSS_SELECTOR, "a[href*='/user/profile/']")
-            )
-        )
-    except TimeoutException:
-        print(f"[DBG] seller link not found: {url}")
-        return None, None, None
-
-    href = (a.get_attribute("href") or "").strip()
-
-    seller_name = (a.get_attribute("aria-label") or a.text or "").strip()
-    if "," in seller_name:
-        seller_name = seller_name.split(",", 1)[0].strip()
-
-    if not href:
-        return None, None, None
-
-    seller_id = href.rstrip("/").split("/")[-1]
-    if not seller_id:
-        return None, None, None
-
-    rating_count = None
-    try:
-        container = driver.find_element(By.CSS_SELECTOR, "[data-testid='seller-link']")
-        for span in container.find_elements(By.TAG_NAME, "span"):
-            txt = (span.text or "").strip().replace(",", "")
-            if txt.isdigit():
-                rating_count = int(txt)
-                break
-    except Exception:
-        pass
-
-    return seller_id, seller_name, rating_count
-
-# ========= Shops向けセラー抽出・画像収集 =========
-def _extract_shops_seller(driver) -> Tuple[str, str, int]:
-    """ShopsのセラーID/名前/評価数を取得。"""
-    a = WebDriverWait(driver, 6).until(
-        EC.visibility_of_element_located((By.CSS_SELECTOR, 'a[data-testid="shops-profile-link"]'))
-    )
-    href = (a.get_attribute("href") or "").strip()
-    seller_id = href.rstrip("/").split("/")[-1] if href else ""
-
-    block = (a.text or "").strip()
-    lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
-    name = lines[0] if lines else ""
-
-    m = re.search(r"(\d[\d,]*)", block)
-    rating = int(m.group(1).replace(",", "")) if m else 0
-
-    return seller_id, name, rating
-
-_RE_IMAGE_N = re.compile(r"^image-(\d+)$")
-
-def collect_images_shops(driver, limit: int = IMG_LIMIT) -> List[Optional[str]]:
-    """
-    メルカリShopsの商品画像URLを取得（カルーセル内の img[src] のみ）
-    """
-    WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-
-    carousel = WebDriverWait(driver, 15).until(
-        EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="carousel"]'))
-    )
-
-    t_end = time.time() + 5
-    while time.time() < t_end:
-        if carousel.find_elements(By.CSS_SELECTOR, "img[src]"):
-            break
-        time.sleep(0.2)
-
-    urls: List[str] = []
-    seen = set()
-
-    for el in carousel.find_elements(By.CSS_SELECTOR, "img[src]"):
-        src = (el.get_attribute("src") or "").strip()
-        if not src:
-            continue
-        if src in seen:
-            continue
-        seen.add(src)
-        urls.append(src)
-        if len(urls) >= limit:
-            break
-
-    if not urls:
-        img_count = len(carousel.find_elements(By.CSS_SELECTOR, "img"))
-        img_src_count = len(carousel.find_elements(By.CSS_SELECTOR, "img[src]"))
-        indicator = ""
-        try:
-            indicator = carousel.find_element(By.CSS_SELECTOR, '[data-testid="page-indicator-numeric"]').text
-        except Exception:
-            pass
-        raise RuntimeError(
-            f"[collect_images_shops] urls empty. img={img_count}, img[src]={img_src_count}, indicator={indicator!r}"
-        )
-
-    out: List[Optional[str]] = urls[:limit]
-    out += [None] * (limit - len(out))
-    return out
-
 # ========= 詳細解析（Shops / 通常） =========
 def parse_detail_shops(page, url: str, preset: str, vendor_name: str) -> Dict[str, Any]:
     """
@@ -284,7 +108,11 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str) -> Dict[st
     
     try:
         # ページ遷移。ShopsはLazy Loadが強いので少しスクロール
-        page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        except Exception as e:
+            # ページ遷移自体がタイムアウトしても、APIさえ拾えていれば続行させる
+            print(f"[DEBUG] goto timeout/error but checking API: {e}")        
         
         # APIが発火するまでスクロールしながら待機
         timeout = time.time() + 10
@@ -332,92 +160,6 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str) -> Dict[st
         }
     finally:
         page.remove_listener("response", handle_response)
-
-def extract_last_updated_personal(driver, timeout: float = 8.0, tries: int = 3) -> str:
-    """#item-info配下から「◯分前/◯時間前/◯日前/◯秒前/◯か月前/◯年前/半年以上前」を位置非依存で抽出。"""
-    try:
-        WebDriverWait(driver, timeout).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "#item-info"))
-        )
-    except TimeoutException:
-        pass
-
-    selectors = [
-        "#item-info p",
-        "#item-info time",
-        "#item-info span",
-        "#item-info div",
-    ]
-
-    for _ in range(tries):
-        for sel in selectors:
-            try:
-                for el in driver.find_elements(By.CSS_SELECTOR, sel):
-                    txt = (el.text or "").strip()
-                    if not txt:
-                        continue
-                    m = LAST_UPDATED_RE.search(txt)
-                    if m:
-                        return m.group(0)
-            except Exception:
-                continue
-        try:
-            all_text = driver.execute_script(
-                "return (document.querySelector('#item-info')?.innerText"
-                " || document.body.innerText || '')"
-            ) or ""
-            m = LAST_UPDATED_RE.search(all_text)
-            if m:
-                return m.group(0)
-        except Exception:
-            pass
-        time.sleep(0.4 + random.uniform(0.0, 0.2))
-
-    return ""
-
-def collect_images_personal(driver, limit: int = IMG_LIMIT) -> List[Optional[str]]:
-    """
-    通常メルカリ（personal）の商品画像URLを取得する。
-    - data-testid="carousel" 内の img[src] のみ取得
-    """
-    WebDriverWait(driver, 15).until(
-        EC.presence_of_element_located((By.TAG_NAME, "body"))
-    )
-
-    carousel = WebDriverWait(driver, 15).until(
-        EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="carousel"]'))
-    )
-
-    t_end = time.time() + 5
-    while time.time() < t_end:
-        if carousel.find_elements(By.CSS_SELECTOR, "img[src]"):
-            break
-        time.sleep(0.2)
-
-    urls: List[str] = []
-    seen = set()
-
-    for el in carousel.find_elements(By.CSS_SELECTOR, "img[src]"):
-        src = (el.get_attribute("src") or "").strip()
-        if not src:
-            continue
-        if src in seen:
-            continue
-        seen.add(src)
-        urls.append(src)
-        if len(urls) >= limit:
-            break
-
-    if not urls:
-        img_count = len(carousel.find_elements(By.CSS_SELECTOR, "img"))
-        img_src_count = len(carousel.find_elements(By.CSS_SELECTOR, "img[src]"))
-        raise RuntimeError(
-            f"[collect_images_personal] urls empty. img={img_count}, img[src]={img_src_count}"
-        )
-
-    out: List[Optional[str]] = urls[:limit]
-    out += [None] * (limit - len(out))
-    return out
 
 def parse_detail_personal(page, url: str, preset: str, vendor_name: str) -> Dict[str, Any]:
     """
@@ -1014,7 +756,6 @@ JSON format:
 def heavy_check_detail(
     conn,
     page,
-    driver,
     item_url,
     sku,
     preset,
@@ -1777,7 +1518,6 @@ def main():
     stop_all = False
 
     conn = get_sql_server_connection()
-    driver = build_driver()
 
     # メール通知用の集計データ
     summary_success = {}
@@ -1869,7 +1609,7 @@ def main():
                     # 解析とチェック（★pageを引数に追加）
                     try:
                         heavy, _, writes_since_commit, _, _ = heavy_check_detail(
-                            conn, page, driver, item_url, sku, row["preset"], vendor_name, row["mode"],
+                            conn, page,  item_url, sku, row["preset"], vendor_name, row["mode"],
                             row["default_brand_en"], row["category_id_ebay"], row["department"], row["type_ebay"],
                             {}, writes_since_commit, row["low_jpy_target"], row["high_jpy_target"]
                         )
@@ -1930,7 +1670,6 @@ def main():
             release_pc_and_close_account(conn, current_pc)
         except:
             pass
-        driver.quit()
         conn.close()
 
 if __name__ == "__main__":
