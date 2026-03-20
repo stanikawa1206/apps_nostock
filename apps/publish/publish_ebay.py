@@ -109,16 +109,18 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str) -> Dict[st
     try:
         # ページ遷移。ShopsはLazy Loadが強いので少しスクロール
         try:
-            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            page.goto(url, wait_until="domcontentloaded", timeout=20000)
         except Exception as e:
-            # ページ遷移自体がタイムアウトしても、APIさえ拾えていれば続行させる
-            print(f"[DEBUG] goto timeout/error but checking API: {e}")        
+            # タイムアウトしても「APIさえ拾えていればOK」として無視して進む
+            pass  
         
-        # APIが発火するまでスクロールしながら待機
-        timeout = time.time() + 10
-        while api_payload["data"] is None and time.time() < timeout:
-            page.mouse.wheel(0, 500)
-            page.wait_for_timeout(500)
+        # 2. 強制的にスクロールさせてAPIを叩かせる
+        # goto が終わっていなくても、ブラウザ内では読み込みが続いているので操作可能です
+        api_wait_timeout = time.time() + 15
+        while api_payload["data"] is None and time.time() < api_wait_timeout:
+            # スクロールでLazy Loadを発火させる
+            page.mouse.wheel(0, 800)
+            page.wait_for_timeout(1000) # 1秒ごとにチェック
 
         res = api_payload["data"]
         if not res:
@@ -784,8 +786,9 @@ def heavy_check_detail(
         else:
             # 通常メルカリ
             rec = parse_detail_personal(page, item_url, preset, vendor_name)
-        if rec is None:
-            raise Exception("APIデータのキャプチャに失敗しました（None）")
+ 
+        if not isinstance(rec, dict):
+            raise Exception(f"解析失敗（データが空です）: SKU={sku}")
         rec["vendor_item_id"] = sku
 
     except MercariItemUnavailableError as e:
