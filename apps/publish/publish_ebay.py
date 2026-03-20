@@ -264,92 +264,74 @@ def collect_images_shops(driver, limit: int = IMG_LIMIT) -> List[Optional[str]]:
     return out
 
 # ========= 詳細解析（Shops / 通常） =========
-def parse_detail_shops(driver, url: str, preset: str, vendor_name: str) -> Dict[str, Any]:
-    """メルカリShopsの商品詳細を解析し、必要最低限の情報を返す。"""
-    driver.get(url)
-    WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-    _close_any_modal(driver)
+def parse_detail_shops(page, url: str, preset: str, vendor_name: str) -> Dict[str, Any]:
+    """
+    【Newer Version】メルカリShops: Playwright(API)で全データを解析。
+    'view=FULL' を含むレスポンスをキャプチャして高速に処理します。
+    """
+    import time
+    from datetime import datetime
+    
+    api_payload = {"data": None}
 
-    status, _ = detect_status_from_mercari_shops(driver)
-    if status != "販売中":
-        raise MercariItemUnavailableError(status)
+    def handle_response(response):
+        if "view=FULL" in response.url:
+            try:
+                api_payload["data"] = response.json()
+            except: pass
 
-    description_jp = extract_mercari_description_from_dom(driver)
-
-    title, price, last_updated_str = "", 0, ""
-
+    page.on("response", handle_response)
+    
     try:
-        container = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="product-title-section"]'))
-        )
+        # ページ遷移。ShopsはLazy Loadが強いので少しスクロール
+        page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        
+        # APIが発火するまでスクロールしながら待機
+        timeout = time.time() + 10
+        while api_payload["data"] is None and time.time() < timeout:
+            page.mouse.wheel(0, 500)
+            page.wait_for_timeout(500)
 
-        for h in container.find_elements(By.TAG_NAME, "h1"):
-            t = (h.text or "").strip()
-            if t:
-                title = t
-                break
+        res = api_payload["data"]
+        if not res:
+            raise MercariItemUnavailableError("削除")
 
-        if not title:
-            snippet = (container.text or "").replace("\n", " ")[:80]
-            print(f"[DBG_SHOPS_TITLE] url={url}  h1空 or なし  snippet={snippet!r}")
-    except Exception as e:
-        print(f"[DBG_SHOPS_TITLE] url={url}  タイトル取得失敗: {e}")
-        title = ""
+        detail = res.get("productDetail", {})
+        shop = detail.get("shop", {})
+        
+        # Shopsの時間 (ISO 8601: 2025-11-04T01:10:26Z) を "◯日前" に変換
+        last_updated_str = "不明"
+        update_time_str = res.get("updateTime")
+        if update_time_str:
+            try:
+                # Zをカットしてパース
+                dt = datetime.fromisoformat(update_time_str.replace('Z', '+00:00'))
+                diff = datetime.now().timestamp() - dt.timestamp()
+                days = int(diff // 86400)
+                if days < 1: last_updated_str = "今日"
+                elif days < 30: last_updated_str = f"{days}日前"
+                else: last_updated_str = "1ヶ月以上前"
+            except: pass
 
-    try:
-        box = driver.find_element(By.CSS_SELECTOR, '[data-testid="product-price"]').text
-        price = int(re.sub(r"[^\d]", "", box))
-    except Exception:
-        pass
-    try:
-        dt_el = driver.find_element(By.CSS_SELECTOR, '#product-info > section:nth-child(2) > p')
-        last_updated_str = (dt_el.text or "").strip()
-    except Exception:
-        pass
-
-    shipping_region = ""
-    shipping_days = ""
-    try:
-        el = driver.find_element(By.CSS_SELECTOR, 'span[data-testid="発送元の地域"]')
-        shipping_region = (el.text or "").strip()
-    except Exception:
-        pass
-
-    try:
-        el = driver.find_element(By.CSS_SELECTOR, 'span[data-testid="発送までの日数"]')
-        shipping_days = (el.text or "").strip()
-    except Exception:
-        pass
-
-    try:
-        seller_id, seller_name, rating_count = _extract_shops_seller(driver)
-    except Exception:
-        seller_id, seller_name, rating_count = "", "", 0
-
-    images = collect_images_shops(driver, limit=IMG_LIMIT)
-
-    return {
-        "vendor_name": vendor_name,
-        "item_id": url.rstrip("/").split("/")[-1],
-        "title_jp": title,
-        "title_en": "",
-        "price": price,
-        "last_updated_str": last_updated_str,
-        "shipping_region": shipping_region,
-        "shipping_days": shipping_days,
-        "seller_id": seller_id,
-        "seller_name": seller_name,
-        "rating_count": rating_count,
-        "images": images,
-        "preset": preset,
-        "description": description_jp,
-        "description_en": "",
-    }
-
-LAST_UPDATED_RE = re.compile(
-    r"(?:\d+\s*(?:秒|分|時間|日|か月|年)\s*前|半年以上前)",
-    flags=re.UNICODE,
-)
+        return {
+            "vendor_name": vendor_name,
+            "item_id": res.get("name"),
+            "title_jp": res.get("displayName"),
+            "title_en": "",
+            "price": int(res.get("price", 0)),
+            "last_updated_str": last_updated_str,
+            "shipping_region": detail.get("shippingFromArea", {}).get("displayName", ""),
+            "shipping_days": detail.get("shippingDuration", {}).get("displayName", ""),
+            "seller_id": shop.get("name", ""),
+            "seller_name": shop.get("displayName", ""),
+            "rating_count": int(shop.get("shopStats", {}).get("reviewCount", 0)),
+            "images": detail.get("photos", []),
+            "preset": preset,
+            "description": detail.get("description", ""),
+            "description_en": "",
+        }
+    finally:
+        page.remove_listener("response", handle_response)
 
 def extract_last_updated_personal(driver, timeout: float = 8.0, tries: int = 3) -> str:
     """#item-info配下から「◯分前/◯時間前/◯日前/◯秒前/◯か月前/◯年前/半年以上前」を位置非依存で抽出。"""
@@ -1054,13 +1036,16 @@ def heavy_check_detail(
  
     # === STEP 1: Playwright (API) で最速生存確認 ===
     try:
-        # === 解析実行 ===
+        # === 解析実行 (すべて Playwright 1回完結) ===
         if vendor_name == "メルカリshops":
-            # Shopsは現状維持 (Selenium)
-            rec = parse_detail_shops(driver, item_url, preset, vendor_name)
+            # ★ ShopsもPlaywright化！
+            rec = parse_detail_shops(page, item_url, preset, vendor_name)
         else:
-            # ★ 通常メルカリは Playwright 1回のみの解析に移行！
+            # 通常メルカリ
             rec = parse_detail_personal(page, item_url, preset, vendor_name)
+        if rec is None:
+            raise Exception("APIデータのキャプチャに失敗しました（None）")
+        rec["vendor_item_id"] = sku
 
     except MercariItemUnavailableError as e:
         status = e.state
