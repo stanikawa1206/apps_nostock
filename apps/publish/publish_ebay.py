@@ -437,71 +437,61 @@ def collect_images_personal(driver, limit: int = IMG_LIMIT) -> List[Optional[str
     out += [None] * (limit - len(out))
     return out
 
-def parse_detail_personal(driver, url: str, preset: str, vendor_name: str) -> Dict[str, Any]:
-    """通常メルカリの商品詳細を解析し、必要最低限の情報を返す。"""
-    driver.get(url)
-    WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, 'body')))
-    _close_any_modal(driver)
+def parse_detail_personal(page, url: str, preset: str, vendor_name: str) -> Dict[str, Any]:
+    """
+    【Newer Version】通常メルカリ: Playwright(API) 1回で全データを解析。
+    Seleniumを使わず、JSONから直接「39分前」や「セラー評価」を抽出します。
+    """
+    from apps.adapters.mercari_item_status import fetch_mercari_api_data
+    from datetime import datetime
 
-    title = _try_extract_title(driver)
-    price = 0
-    last_updated_str = ""
+    # 1. APIからJSONデータを取得
+    res, _ = fetch_mercari_api_data(page, url)
+    
+    if not res or res.get("result") != "OK":
+        # データが取れない（404等）場合は削除扱い
+        raise MercariItemUnavailableError("削除")
 
-    try:
-        element = driver.find_element(By.CSS_SELECTOR, '[data-testid*="price"]')
-        price = int(re.sub(r"[^\d]", "", (element.text or "")))
-    except Exception:
-        pass
+    item = res.get("data", {})
+    
+    # 2. ステータスチェック
+    status = item.get("status")
+    if status != "on_sale":
+        # 売り切れ(sold_out)等の場合は例外を投げて判定終了
+        raise MercariItemUnavailableError(status)
 
-    try:
-        last_updated_str = extract_last_updated_personal(driver)
-    except Exception:
-        pass
+    # 3. 更新日時の変換ロジック (UNIX time -> メルカリ表示文字列)
+    def _format_mercari_time(unix_ts: Optional[int]) -> str:
+        if not unix_ts:
+            return "不明"
+        diff = datetime.now().timestamp() - unix_ts
+        if diff < 60: return "数秒前"
+        if diff < 3600: return f"{int(diff // 60)}分前"
+        if diff < 86400: return f"{int(diff // 3600)}時間前"
+        days = int(diff // 86400)
+        if days < 30: return f"{days}日前"
+        months = int(days // 30)
+        if months >= 6: return "半年以上前"
+        return f"{months}ヶ月前"
 
-    description_jp = extract_mercari_description_from_dom(driver)
+    last_updated_str = _format_mercari_time(item.get("updated"))
 
-    shipping_region = ""
-    shipping_days = ""
-    try:
-        el = driver.find_element(By.CSS_SELECTOR, 'span[data-testid="発送元の地域"]')
-        shipping_region = (el.text or "").strip()
-    except Exception:
-        pass
-
-    try:
-        el = driver.find_element(By.CSS_SELECTOR, 'span[data-testid="発送までの日数"]')
-        shipping_days = (el.text or "").strip()
-    except Exception:
-        pass
-
-    seller_id, seller_name, rating_count = _find_seller_info(driver, url)
-
-    if not seller_id:
-        try:
-            _ = driver.title
-            _ = driver.execute_script(
-                "return (document.body.innerText || '').slice(0, 300);"
-            )
-        except Exception as e:
-            print(f"[DBG_PAGE_WHEN_NO_SELLER_ERR] url={url} err={e}")
-
-    images = collect_images_personal(driver, IMG_LIMIT)
-
+    # 4. rec の組み立て
     return {
         "vendor_name": vendor_name,
-        "item_id": url.rstrip("/").split("/")[-1],
-        "title_jp": title,
+        "item_id": item.get("id"),
+        "title_jp": item.get("name"),
         "title_en": "",
-        "price": price,
-        "last_updated_str": last_updated_str,
-        "shipping_region": shipping_region,
-        "shipping_days": shipping_days,
-        "seller_id": seller_id,
-        "seller_name": seller_name,
-        "rating_count": rating_count,
-        "images": images,
+        "price": int(item.get("price", 0)),
+        "last_updated_str": last_updated_str, # 例: "39分前", "1日前"
+        "shipping_region": item.get("shipping_from_area", {}).get("name", ""),
+        "shipping_days": item.get("shipping_duration", {}).get("name", ""),
+        "seller_id": str(item.get("seller", {}).get("id", "")),
+        "seller_name": item.get("seller", {}).get("name", ""),
+        "rating_count": int(item.get("seller", {}).get("num_ratings", 0)),
+        "images": item.get("photos", []),
         "preset": preset,
-        "description": description_jp,
+        "description": item.get("description", ""),
         "description_en": "",
     }
 
@@ -1063,30 +1053,14 @@ def heavy_check_detail(
     """
  
     # === STEP 1: Playwright (API) で最速生存確認 ===
-    if vendor_name == "メルカリ":
-        # 在庫管理で完成させた「判定関数」をそのまま使う
-        # これにより、削除/売り切れの商品に重い Selenium を動かさずに済む
-        status, _ = detect_status_from_mercari(page, item_url)
-        
-        if status != "販売中":
-            # 判定不可（エラー）の場合は今回はスルー
-            if status == "判定不可":
-                return None, debug_unavailable_dump, writes_since_commit, 0, 0
-            
-            # 削除・売り切れ・オークション等は不可として記録
-            mark_vendor_item_unavailable(conn, vendor_name, sku, status)
-            writes_since_commit += 1
-            writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
-            return None, debug_unavailable_dump, writes_since_commit, 1, 0
-
-    # === STEP 2: 生きている商品のみ、既存の Selenium 解析を実行 ===
     try:
+        # === 解析実行 ===
         if vendor_name == "メルカリshops":
-            # Shopsは現状維持（Selenium）
+            # Shopsは現状維持 (Selenium)
             rec = parse_detail_shops(driver, item_url, preset, vendor_name)
         else:
-            # 通常メルカリも、解析ロジック（recの生成）は一切変えず Selenium に任せる
-            rec = parse_detail_personal(driver, item_url, preset, vendor_name)
+            # ★ 通常メルカリは Playwright 1回のみの解析に移行！
+            rec = parse_detail_personal(page, item_url, preset, vendor_name)
 
     except MercariItemUnavailableError as e:
         status = e.state
