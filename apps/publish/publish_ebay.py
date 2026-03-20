@@ -116,11 +116,11 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str) -> Dict[st
         
         # 2. 強制的にスクロールさせてAPIを叩かせる
         # goto が終わっていなくても、ブラウザ内では読み込みが続いているので操作可能です
-        api_wait_timeout = time.time() + 15
-        while api_payload["data"] is None and time.time() < api_wait_timeout:
-            # スクロールでLazy Loadを発火させる
+        retry_count = 0
+        while api_payload["data"] is None and retry_count < 15: # 15回（約15秒）で強制終了
             page.mouse.wheel(0, 800)
-            page.wait_for_timeout(1000) # 1秒ごとにチェック
+            time.sleep(1) # page.wait_for_timeout ではなく time.sleep を推奨
+            retry_count += 1
 
         res = api_payload["data"]
         if not res:
@@ -812,10 +812,14 @@ def heavy_check_detail(
             raise FatalRendererError(str(e))
 
         rec_fail = {
-            "vendor_name": vendor_name,
-            "item_id": sku,
-            "listing_head": "解析失敗",
-            "listing_detail": _truncate_for_db2(str(e), 200),
+                    "vendor_name": vendor_name,
+                    "item_id": sku,          # これが NULL だと SQL エラー 23000 になる
+                    "listing_head": "解析失敗",
+                    "listing_detail": _truncate_for_db2(str(e), 200),
+                    "images": [],            # 空リストを入れておく（upsert内で None * 20 される）
+                    "price": None,           # 価格不明
+                    "preset": preset,        # 既存の値を維持するために渡す
+                    "vendor_page": item_url,
         }
         upsert_vendor_item(conn, rec_fail)
         writes_since_commit += 1
@@ -1532,8 +1536,10 @@ def main():
         # ★ Playwrightの起動（ブラウザ1回起動で使い回す）
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
-            context = browser.new_context(user_agent="...")
+            # タイムアウトを 30秒に強制設定（デフォルトは無制限に近い）
+            context = browser.new_context(user_agent="...", timeout=30000) 
             page = context.new_page()
+            page.set_default_timeout(30000) # これで Playwright の各操作に 30秒の寿命がつく
 
             # 不要リソース遮断（画像・CSS・フォントを止めてAPIだけを速く取る）
             page.route("**/*", lambda route: 
