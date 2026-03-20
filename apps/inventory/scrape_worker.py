@@ -425,6 +425,49 @@ def release_job(conn, job_id):
             pass
 
 def fetch_page_json(page, url, conn, job_id):
+
+    print("************* evaluate版 *************")
+
+    # XHRフック
+    page.add_init_script("""
+    (function() {
+        const origOpen = XMLHttpRequest.prototype.open;
+        const origSend = XMLHttpRequest.prototype.send;
+
+        XMLHttpRequest.prototype.open = function(method, url) {
+            this._url = url;
+            return origOpen.apply(this, arguments);
+        };
+
+        XMLHttpRequest.prototype.send = function() {
+            this.addEventListener('load', function() {
+                try {
+                    if (this._url && this._url.includes('entities:search')) {
+                        const json = JSON.parse(this.responseText);
+                        window.__SEARCH_DATA__ = json;
+                    }
+                } catch (e) {}
+            });
+            return origSend.apply(this, arguments);
+        };
+    })();
+    """)
+
+    page.goto(url, wait_until="domcontentloaded", timeout=FETCH_TIMEOUT_MS)
+
+    data = None
+    for _ in range(20):
+        data = page.evaluate("() => window.__SEARCH_DATA__")
+        if data:
+            break
+        page.wait_for_timeout(500)
+
+    if not data:
+        raise RuntimeError("FETCH_TIMEOUT")
+
+    return data
+
+def fetch_page_json_bk(page, url, conn, job_id):
     print("************* デッドロック対策版 *************")
 
     for attempt in range(2):
@@ -454,64 +497,6 @@ def fetch_page_json(page, url, conn, job_id):
             if attempt == 1:
                 raise RuntimeError("BROWSER_BROKEN")
         
-def fetch_page_json_bk(page, url, conn, job_id):
-
-    # ------------------------------
-    # 前のSPA状態をリセット
-    # ------------------------------
-
-    for attempt in range(2):
-
-        try:
-            print("A: expect_response start")
-            with page.expect_response(  # これから起きる response を待つ 準備を始める
-                lambda r: r.request.method == "POST" and "entities:search" in r.url, #response の中でも、「元の request が POST で、URL に entities:search を含むもの」
-                timeout=FETCH_TIMEOUT_MS
-            ) as resp_info: # 条件に合う response を後で resp_info に入れる
-                page.goto(url, wait_until="domcontentloaded",timeout=FETCH_TIMEOUT_MS)
-
-            resp = resp_info.value
-
-            if resp.status != 200:
-                raise RuntimeError(f"Mercari API status={resp.status}")
-
-            print("B: before body")
-            return json.loads(resp.body())
- 
-        except Exception  as e:
-            print("D: exception", type(e), e)
-            if attempt == 1:
-                raise RuntimeError("FETCH_TIMEOUT")
-
-
-def extract_items_from_json(json_data):
-
-    rows = []
-
-    items = json_data.get("items", [])
-
-    for item in items:
-
-        item_id = item.get("id")
-        title = item.get("name")
-        price = item.get("price")
-        seller = item.get("sellerId")
-
-        created = item.get("created")
-        updated = item.get("updated")
-
-        if created is not None:
-            created = datetime.fromtimestamp(int(created), JST)
-
-        if updated is not None:
-            updated = datetime.fromtimestamp(int(updated), JST)
-
-        if price is not None:
-            price = int(price)
-
-        rows.append((item_id, title, price, seller, created, updated))
-
-    return rows
 
 
 
