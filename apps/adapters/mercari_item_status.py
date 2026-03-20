@@ -63,55 +63,55 @@ def extract_price_jpy_from(main: BeautifulSoup) -> Optional[int]:
 # ================================
 # 通常メルカリ
 # ================================
-def fetch_mercari_api_data(url: str) -> Tuple[Optional[Dict[str, Any]], str]:
+def fetch_mercari_api_data(page, url: str) -> Tuple[Optional[Dict[str, Any]], str]:
     """
-    APIレスポンスと、その時のページテキストをセットで返す。
+    既存のpageを使用して、APIレスポンスとページテキストを取得する。
     """
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-        )
-        page = context.new_page()
+    api_payload = {"data": None}
 
-        # 高速化：画像・スタイル等を遮断
-        page.route("**/*", lambda route: 
-            route.abort() if route.request.resource_type in ["image", "media", "font", "stylesheet"] 
-            else route.continue_()
-        )
+    def handle_response(response):
+        if "api.mercari.jp/items/get?id=" in response.url:
+            try:
+                api_payload["data"] = response.json()
+            except:
+                pass
 
-        api_payload = None
+    # リスナー登録
+    page.on("response", handle_response)
+
+    try:
+        # expect_response でAPIのキャプチャを待機
+        with page.expect_response(lambda res: "api.mercari.jp/items/get?id=" in res.url, timeout=10000) as response_info:
+            page.goto(url, wait_until="commit")
+        
+        res_json = api_payload["data"]
+        html_content = page.content()
+        return res_json, html_content
+
+    except Exception:
         try:
-            # API受信を待機
-            with page.expect_response(lambda res: "api.mercari.jp/items/get?id=" in res.url, timeout=12000) as response_info:
-                page.goto(url, wait_until="commit")
-            api_payload = response_info.value.json()
+            return None, page.content()
         except:
-            pass # タイムアウト時はNoneのまま進む
+            return None, ""
+    finally:
+        # 次のURLでリスナーが重複しないように解除
+        page.remove_listener("response", handle_response)
 
-        # ページ内の全テキストを取得（JSONが取れなかった時のバックアップ用）
-        page_text = page.content() 
-        browser.close()
-        return api_payload, page_text
-
-def detect_status_from_mercari(url: str) -> Tuple[str, Optional[int]]:
+def detect_status_from_mercari(page, url: str) -> Tuple[str, Optional[int]]:
     """
-    メルカリ商品ステータス判定。
-    InvisibleItemException または 特定テキスト検知で「削除」と断定する。
+    pageを受け取り、ステータス判定を行う。
     """
-    max_retries = 3
+    max_retries = 2
     
     for attempt in range(max_retries):
-        res, html_content = fetch_mercari_api_data(url)
+        res, html_content = fetch_mercari_api_data(page, url)
         
-        # --- 1. 削除の確定判定（最優先） ---
-        # A. JSONから判定
+        # --- 1. 削除の確定判定 ---
         if res and res.get("result") == "error":
             errors = res.get("errors", [])
             if any(e.get("code") == "InvisibleItemException" for e in errors):
                 return "削除", None
         
-        # B. テキストから判定（JSONが取れなかった場合や直書きされている場合）
         if "該当する商品は削除されています" in html_content:
             return "削除", None
 
@@ -122,7 +122,8 @@ def detect_status_from_mercari(url: str) -> Tuple[str, Optional[int]]:
             # オークション判定
             auction_info = item.get("auction_info")
             if auction_info is not None:
-                return "オークション", auction_info.get("highest_bid")
+                price = auction_info.get("highest_bid") or auction_info.get("initial_price")
+                return "オークション", price
             
             # 通常ステータス判定
             status = item.get("status")
@@ -133,17 +134,13 @@ def detect_status_from_mercari(url: str) -> Tuple[str, Optional[int]]:
             
             return "判定不可", None
 
-        # --- 3. 通信失敗時のリトライ ---
-        # resが取れず、かつ「削除」テキストも見当たらない場合は通信エラーとみなす
+        # --- 3. 失敗時のリトライ ---
         if attempt < max_retries - 1:
-            time.sleep(2 * (attempt + 1))
+            time.sleep(1)
             continue
         break
 
-    # 全リトライ終了後、何も確証が得られなければ判定不可（スルー）
     return "判定不可", None
-
-
 
 
 def detect_status_from_mercari_bk(driver) -> tuple[str, Optional[int]]:

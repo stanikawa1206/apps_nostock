@@ -82,16 +82,18 @@ RATE = {
 def human_sleep(a: float, b: float):
     time.sleep(random.uniform(a, b))
 
-def get_status(driver: webdriver.Chrome, url: str) -> tuple[Status, Optional[int]]:
+def get_status(page, driver: webdriver.Chrome, url: str) -> tuple[Status, Optional[int]]:
+    """
+    page (Playwright) と driver (Selenium) 両方を受け取れるように拡張
+    """
     host_path = re.sub(r"^https?://", "", url)
     
-    # --- 1. メルカリ（通常）の場合：Seleniumを使わずPlaywright関数を直接呼ぶ ---
+    # --- 1. メルカリ（通常）の場合：Playwrightのpageを使って高速APIキャプチャ ---
     if "mercari.com" in host_path and "/shops/product/" not in host_path:
-        # driver.get(url) は実行せず、直接URLを渡す
-        return detect_status_from_mercari(url)
+        # 修正：pageオブジェクトを渡す
+        return detect_status_from_mercari(page, url)
     
     # --- 2. メルカリShopsの場合：従来通り Selenium を使用する ---
-    # ここで初めて driver.get を実行する（無駄なアクセスを防ぐ）
     driver.get(url)
     if "/shops/product/" in host_path:
         return detect_status_from_mercari_shops(driver)
@@ -247,91 +249,83 @@ def count_total_remaining(conn):
         return cur.fetchone()[0]
 
 def run_remaining_worker(worker_name: str):
-    driver = None
+    print(f"ver BATCH_MODE start (Worker: {worker_name})")
 
-    print("ver HASH_FIXED start")
-
-    N = 10000
+    # --- バッチ設定 ---
+    MAX_PER_RUN = 100  # 100件処理したら一度終了してShellに再起動させる
+    processed_count = 0
 
     pull_conn = None
     work_conn = None
+    driver = None
 
     try:
+        # Selenium (Shops用) と Playwright (通常用) 両方を準備
         driver = build_driver()
-
-        # 🔥 接続は1回だけ作る
         pull_conn = get_sql_server_connection()
         work_conn = get_sql_server_connection()
 
-        # 仕事が見つからなかった時の連続空振り回数      
-        empty_count = 0
-        max_retries = 10  # 10回連続で空だったら本当に終了
+        with sync_playwright() as p:
+            # Playwrightブラウザを1回だけ起動
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            )
+            page = context.new_page()
 
-        for i in range(N):
-            row = pull_one_remaining_target(pull_conn, worker_name)
+            # 画像やCSSを遮断（バッチ内全ページに適用）
+            page.route("**/*", lambda route: 
+                route.abort() if route.request.resource_type in ["image", "media", "font", "stylesheet"] 
+                else route.continue_()
+            )
 
-            if not row:
-                # 📢 ここが強化ポイント！
-                total_left = count_total_remaining(pull_conn)
+            while processed_count < MAX_PER_RUN:
+                row = pull_one_remaining_target(pull_conn, worker_name)
+
+                if not row:
+                    total_left = count_total_remaining(pull_conn)
+                    if total_left > 0:
+                        print(f"[RETRY] DB says {total_left} items left. Lock conflict? Wait 10s...")
+                        time.sleep(10)
+                        continue 
+                    else:
+                        print("[INFO] DB is empty. All tasks finished normally.")
+                        sys.exit(0) # 完全に仕事がない時だけ exit 0 (Shellのループが止まる)
+
+                print(f"\n[INFO] batch processing {processed_count + 1}/{MAX_PER_RUN} ...")
                 
-                if total_left > 0:
-                    # 仕事はあるはずなのに取れなかった（ロック衝突など）
-                    print(f"[RETRY] DB says {total_left} items left. I'll wait 10s...")
-                    time.sleep(10)
-                    continue # 終わらずにループの最初に戻る
-                else:
-                    # 本当に仕事がゼロになった
-                    print("[INFO] DB is empty. Good job everyone!")
-                    return
+                # 実処理を実行（page と driver の両方を渡す）
+                process_status_and_sync(work_conn, page, driver, row, worker_name)
+                
+                processed_count += 1
+                # サーバー負荷軽減のための短い待機
+                time.sleep(random.uniform(1.0, 2.0))
 
-
-            # 仕事が見つかったら空振りカウントをリセット
-            empty_count = 0
-
-            print(f"\n[INFO] remaining processing {i+1}/{N} ...")
-            
-            # (実処理を実行)
-            process_status_and_sync(work_conn, driver, row, worker_name)
-
-            time.sleep(random.uniform(2.0, 5.0))
-
-        print("[INFO] remaining worker finished")
+            # MAX_PER_RUN に達したら exit 1 で終了
+            print(f"[INFO] Reached {MAX_PER_RUN} items. Restarting for memory refresh...")
+            sys.exit(1) # Shellスクリプトがこれを検知して pkill & 再起動する
 
     finally:
         safe_quit(driver)
-
-        if pull_conn:
-            pull_conn.close()
-
-        if work_conn:
-            work_conn.close()
+        if pull_conn: pull_conn.close()
+        if work_conn: work_conn.close()
 
 
 def process_status_and_sync(
     conn,
-    driver,
+    page,   # Playwright用に追加
+    driver, # Selenium用
     row: dict,
     worker_name: str,
 ):
-    """
-    remaining チェック 1件分の実処理（確定版）
-
-    方針:
-    - 判定不可は一切確定しない（次回再処理）
-    - 判定できた場合のみ vendor_item / eBay / listings を同期
-    - 最後に remaining_check_at を確定
-    """
-    
     vendor_name = row["vendor_name"]
     sku = row["vendor_item_id"]
-
-
     url = build_mercari_url(vendor_name, sku)
-
+   
     # =====================
     # 1. Mercari 状態取得
     # =====================
-    status, price_jpy = get_status(driver, url)
+    status, price_jpy = get_status(page, driver, url)
     print(f"[STATUS] {url} -> {status} (price_jpy={price_jpy})")
     
     # =====================

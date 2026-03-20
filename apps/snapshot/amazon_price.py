@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import requests
 from dotenv import load_dotenv
 from sp_api.api import ProductsV0
@@ -28,24 +29,52 @@ def get_exchange_rates():
         print(f"⚠️ 為替レートの取得に失敗しました。仮レートで計算します。({e})\n")
         return {"USD": 150.0, "CAD": 110.0, "JPY": 1.0}
 
+def filter_and_sort_candidates(offers):
+    """
+    危険なセラーを除外し、残った安全な候補を価格の安い順にソートして返す
+    条件: カート未獲得 ＋ (評価10件未満 または 高評価80%未満) を除外
+    """
+    safe_offers = []
+
+    for offer in offers:
+        is_buybox = offer.get('is_buybox', False)
+        
+        count = int(offer.get('feedback_count', 0))
+        # "不明" などの文字列が入っている場合に備えてエラーハンドリング
+        try:
+            percent = float(offer.get('feedback_percent', 0.0))
+        except (ValueError, TypeError):
+            percent = 0.0
+
+        # 【足切り条件】カート未獲得 ＋ (評価10未満 または 高評価80%未満) は除外
+        if not is_buybox and (count < 10 or percent < 80.0):
+            continue 
+
+        # フィルターを生き残った安全なオファーをリストに追加
+        safe_offers.append(offer)
+
+    # 生き残ったオファーを単純に「合計価格（円）」が安い順にソート
+    safe_offers.sort(key=lambda x: x['total_jpy'])
+
+    return safe_offers
+
 def analyze_trade_opportunity(asin: str, exchange_rates: dict) -> dict:
     """
     ASINを受け取り、3カ国の価格を取得、比較し、仕入先候補を返す関数
     """
     targets = [
         {"code": "US", "marketplace": Marketplaces.US, "token": os.environ.get("REFRESH_TOKEN_US")},
-        {"code": "CA", "marketplace": Marketplaces.CA, "token": os.environ.get("REFRESH_TOKEN_US")},
+        {"code": "CA", "marketplace": Marketplaces.CA, "token": os.environ.get("REFRESH_TOKEN_US")}, 
         {"code": "JP", "marketplace": Marketplaces.JP, "token": os.environ.get("REFRESH_TOKEN")},
     ]
 
-    # 返り値としてまとめるデータ構造
     result_data = {
         "asin": asin,
         "lowest_prices": {"US": None, "CA": None, "JP": None},
         "all_offers": {"US": [], "CA": [], "JP": []},
-        "judgment": "判定不可",       # 輸出、輸入、双方向などの判定結果
-        "sourcing_country": None,   # どこから仕入れるべきか (US, CA, JP)
-        "sourcing_candidates": []   # 実際の仕入先となる最安出品者のリスト
+        "judgment": "判定不可",       
+        "sourcing_country": None,   
+        "sourcing_candidates": []   
     }
 
     # 1. 各国のデータを取得
@@ -67,7 +96,7 @@ def analyze_trade_opportunity(asin: str, exchange_rates: dict) -> dict:
             response = pricing_api.get_item_offers(asin=asin, item_condition="New")
             offers = response.payload.get('Offers', [])
             
-            lowest_jpy = None
+            lowest_price_data = None
             
             for offer in offers:
                 price = offer.get('ListingPrice', {}).get('Amount', 0.0)
@@ -78,9 +107,35 @@ def analyze_trade_opportunity(asin: str, exchange_rates: dict) -> dict:
                 rate = exchange_rates.get(currency, 1.0)
                 jpy_price = int(total_price * rate)
                 
-                if lowest_jpy is None or jpy_price < lowest_jpy:
-                    lowest_jpy = jpy_price
+                if lowest_price_data is None or jpy_price < lowest_price_data["jpy"]:
+                    lowest_price_data = {
+                        "jpy": jpy_price,
+                        "original": total_price,
+                        "currency": currency
+                    }
                 
+                # ハンドリングタイムの計算
+                shipping_time = offer.get('ShippingTime', {})
+                min_hours = shipping_time.get('minimumHours')
+                max_hours = shipping_time.get('maximumHours')
+                
+                handling_time_str = "不明"
+                if max_hours is not None:
+                    min_days = int(min_hours) // 24 if min_hours is not None else 0
+                    max_days = int(max_hours) // 24
+                    
+                    if min_days == 0 and max_days == 0:
+                        handling_time_str = "即日(0日)"
+                    elif min_days == max_days:
+                        handling_time_str = f"{max_days}日"
+                    else:
+                        handling_time_str = f"{min_days}-{max_days}日"
+
+                # 評価情報の取得
+                feedback_info = offer.get('SellerFeedbackRating', {})
+                feedback_count = feedback_info.get('FeedbackCount', 0)
+                feedback_percent = feedback_info.get('SellerPositiveFeedbackRating', '不明')
+
                 # 出品者情報をリストに保存
                 offer_detail = {
                     "total_jpy": jpy_price,
@@ -88,28 +143,32 @@ def analyze_trade_opportunity(asin: str, exchange_rates: dict) -> dict:
                     "currency": currency,
                     "is_buybox": offer.get('IsBuyBoxWinner', False),
                     "fulfillment": "FBA" if offer.get('IsFulfilledByAmazon', False) else "FBM",
-                    "feedback_count": offer.get('SellerFeedbackRating', {}).get('FeedbackCount', 0),
-                    "condition": offer.get('SubCondition', '不明')
+                    "feedback_count": feedback_count,
+                    "feedback_percent": feedback_percent,
+                    "condition": offer.get('SubCondition', '不明'),
+                    "handling_time": handling_time_str
                 }
                 result_data["all_offers"][country_code].append(offer_detail)
 
-            result_data["lowest_prices"][country_code] = lowest_jpy
+            result_data["lowest_prices"][country_code] = lowest_price_data
 
         except SellingApiException as e:
-            pass # カタログに存在しない場合はスキップ (Noneのままになる)
+            pass
         except Exception as e:
             pass
+            
+        # 💡 APIの制限(QuotaExceeded)を回避するために2秒待機
+        time.sleep(2)
 
     # 2. 輸出・輸入の判定処理
-    jp = result_data["lowest_prices"]["JP"]
-    us = result_data["lowest_prices"]["US"]
-    ca = result_data["lowest_prices"]["CA"]
+    jp = result_data["lowest_prices"]["JP"]["jpy"] if result_data["lowest_prices"]["JP"] else None
+    us = result_data["lowest_prices"]["US"]["jpy"] if result_data["lowest_prices"]["US"] else None
+    ca = result_data["lowest_prices"]["CA"]["jpy"] if result_data["lowest_prices"]["CA"] else None
 
     if jp is not None:
         if us is not None and ca is not None:
             if (us < jp < ca) or (ca < jp < us):
                 result_data["judgment"] = "双方向の可能性あり"
-                # 双方向の場合、一番安い国をメインの仕入先候補とする
                 cheapest = min(us, ca, jp)
                 result_data["sourcing_country"] = "US" if cheapest == us else ("CA" if cheapest == ca else "JP")
             elif jp < us and jp < ca:
@@ -137,42 +196,49 @@ def analyze_trade_opportunity(asin: str, exchange_rates: dict) -> dict:
                 result_data["judgment"] = "輸入向き"
                 result_data["sourcing_country"] = "CA"
 
-    # 3. 仕入先候補（一番安い国の出品者リスト）を価格順に並び替えて抽出
+    # 3. 仕入先候補の抽出とフィルタリング
     sourcing_ctry = result_data["sourcing_country"]
     if sourcing_ctry and result_data["all_offers"][sourcing_ctry]:
-        # 安い順にソートして格納
-        sorted_offers = sorted(result_data["all_offers"][sourcing_ctry], key=lambda x: x["total_jpy"])
-        result_data["sourcing_candidates"] = sorted_offers
+        raw_offers = result_data["all_offers"][sourcing_ctry]
+        # 💡 ここで新しく作成したフィルター関数を通す
+        result_data["sourcing_candidates"] = filter_and_sort_candidates(raw_offers)
 
     return result_data
 
 def print_price_result(result):
-    # 取得した辞書データを分かりやすく表示
-    print("\n【各国の最安値 (JPY)】")
-    print(f"JP: {result['lowest_prices']['JP']}")
-    print(f"US: {result['lowest_prices']['US']}")
-    print(f"CA: {result['lowest_prices']['CA']}")
+    print("\n【各国の最安値 (単純なカタログ最安値)】")
+    for country in ["JP", "US", "CA"]:
+        price_info = result['lowest_prices'][country]
+        if price_info:
+            print(f"{country}: {price_info['jpy']:,}円 ({price_info['original']:.2f} {price_info['currency']})")
+        else:
+            print(f"{country}: 出品なし / 取得不可")
 
     print(f"\n【判定結果】: {result['judgment']}")
     print(f"【仕入対象国】: {result['sourcing_country']}")
 
-    print("\n【仕入先候補の出品者一覧 (安い順)】")
-    for idx, cand in enumerate(result['sourcing_candidates'], 1):
-        buybox = "★カート" if cand['is_buybox'] else "　　　　"
-        print(f"{idx}. {buybox} | {cand['total_jpy']:,}円 ({cand['original_price']:.2f} {cand['currency']}) | {cand['fulfillment']} | 評価:{cand['feedback_count']}")
+    print("\n【✨ 安全な仕入先候補 (価格が安い順) ✨】")
+    if not result['sourcing_candidates']:
+        print("⚠️ 安全基準を満たす仕入先が見つかりませんでした (全員足切りされました)")
+    else:
+        for idx, cand in enumerate(result['sourcing_candidates'], 1):
+            buybox = "★カート" if cand['is_buybox'] else "　　　　"
+            percent_str = f"{cand['feedback_percent']}%" if cand['feedback_percent'] != '不明' else '不明'
+            
+            # 1番目を確定仕入先としてハイライト表示
+            if idx == 1:
+                print(f"🥇 確定仕入先 -> {buybox} | {cand['total_jpy']:,}円 ({cand['original_price']:.2f} {cand['currency']}) | {cand['fulfillment']} | 評価:{cand['feedback_count']}件 ({percent_str}) | 出荷目安: {cand['handling_time']}")
+            else:
+                print(f"   {idx}.         {buybox} | {cand['total_jpy']:,}円 ({cand['original_price']:.2f} {cand['currency']}) | {cand['fulfillment']} | 評価:{cand['feedback_count']}件 ({percent_str}) | 出荷目安: {cand['handling_time']}")
 
 # ==========================================
 # 実行テスト用ブロック
 # ==========================================
 if __name__ == "__main__":
     rates = get_exchange_rates()
-    test_asin = "B001P4ZR6C"  # 実際のASINに変更してください
+    test_asin = "B000VWDER8"  # 実際のASINに変更してください
 
     print(f"--- {test_asin} の分析を開始します ---")
     result = analyze_trade_opportunity(test_asin, rates)
 
     print_price_result(result)
-
-    # print("\n【分析結果 (JSON形式)】")
-    # print(json.dumps(result, ensure_ascii=False, indent=4))
-

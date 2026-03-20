@@ -87,6 +87,7 @@ def format_trx_listings_count_by_account(conn) -> str:
             """
             SELECT account, COUNT(*) AS cnt
             FROM trx.listings
+            WHERE is_deleted = 0
             GROUP BY account
             ORDER BY account
             """
@@ -279,14 +280,32 @@ def reset_remaining_flags(conn):
 
 def wait_until_remaining_exhausted(conn):
     """
-    remaining 対象（未完了 かつ タイムアウトしていない）が
-    なくなるまで待機
+    remaining 対象がなくなるまで待機
+    ＋ 処理件数を返す
     """
+
     print("⏳ remaining 対象がなくなるのを待機中…")
     cur = conn.cursor()
+
+    # ★ 初期件数
+    cur.execute("""
+        SELECT COUNT(*)
+        FROM trx.vendor_item AS v
+        INNER JOIN trx.listings AS l 
+            ON v.vendor_name = l.vendor_name
+           AND v.vendor_item_id = l.vendor_item_id
+        WHERE l.is_deleted = 0
+          AND v.vendor_name IN (N'メルカリ', N'メルカリshops')
+          AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')                               
+          AND v.remaining_check_at IS NULL
+          AND (
+                v.remaining_check_lock IS NULL 
+             OR v.remaining_check_lock < DATEADD(MINUTE, -15, SYSDATETIME())
+          )
+    """)
+    initial_cnt = cur.fetchone()[0]
+
     while True:
-        # 条件: 完了していない(at IS NULL)
-        # かつ (まだ誰も触っていない OR 15分以上生存確認がない)
         cur.execute("""
             SELECT COUNT(*)
             FROM trx.vendor_item AS v
@@ -294,23 +313,25 @@ def wait_until_remaining_exhausted(conn):
                 ON v.vendor_name = l.vendor_name
                AND v.vendor_item_id = l.vendor_item_id
             WHERE l.is_deleted = 0
-                AND v.vendor_name IN (N'メルカリ', N'メルカリshops')
-                AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')                               
-                AND v.remaining_check_at IS NULL
-                AND (
+              AND v.vendor_name IN (N'メルカリ', N'メルカリshops')
+              AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')                               
+              AND v.remaining_check_at IS NULL
+              AND (
                     v.remaining_check_lock IS NULL 
-                    OR v.remaining_check_lock < DATEADD(MINUTE, -15, SYSDATETIME())
-                )
+                 OR v.remaining_check_lock < DATEADD(MINUTE, -15, SYSDATETIME())
+              )
         """)
         cnt = cur.fetchone()[0]
 
         if cnt == 0:
             print("✅ remaining 対象消滅")
-            return
+            break
 
-        print(f"… 待機中: 残り約 {cnt} 件 (未着手またはリトライ待ち)")
+        print(f"… 待機中: 残り約 {cnt} 件")
         time.sleep(30)
 
+    # ★ 処理件数 = 初期件数
+    return initial_cnt
 def refresh_presets_lookup(conn):
     cursor = conn.cursor()
 
@@ -336,7 +357,7 @@ def main():
     refresh_presets_lookup(conn)
     
     try:
-        SET_N = 1
+        SET_N = 2
         print(f"=== 🧭 inventory_ebay_manager.py 開始（4工程×{SET_N}回転） ===")
 
         for set_no in range(1, SET_N + 1):
@@ -470,9 +491,11 @@ def main():
             launch_remaining_workers()
 
             # ★ 3. remaining対象が枯渇するまで待つ
-            wait_until_remaining_exhausted(conn)
+            processed_count = wait_until_remaining_exhausted(conn)
 
             rem_end = datetime.now()
+
+            extra = f"remaining 処理件数: {processed_count} 件"
 
             send_script_mail(
                 CHECK_REMAINING,
@@ -481,6 +504,7 @@ def main():
                 0,
                 round_no=set_no,
                 conn=conn,
+                extra_body=extra,   # ←ここ
             )
 
             print(f"=== ✅ セット{set_no}: フル在庫チェック完了 ===")
