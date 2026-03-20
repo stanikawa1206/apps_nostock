@@ -451,7 +451,12 @@ def fetch_page_json(page, url, conn, job_id):
     })();
     """)
 
-    page.goto(url, wait_until="commit", timeout=FETCH_TIMEOUT_MS)
+    try:
+        page.goto(url, wait_until="commit", timeout=FETCH_TIMEOUT_MS)
+    except Exception:
+        raise RuntimeError("BROWSER_BROKEN")
+    page.wait_for_timeout(1000)
+
 
     data = None
     for _ in range(20):
