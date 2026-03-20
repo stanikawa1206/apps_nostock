@@ -812,15 +812,18 @@ def heavy_check_detail(
             raise FatalRendererError(str(e))
 
         rec_fail = {
-                    "vendor_name": vendor_name,
-                    "item_id": sku,          # これが NULL だと SQL エラー 23000 になる
-                    "listing_head": "解析失敗",
-                    "listing_detail": _truncate_for_db2(str(e), 200),
-                    "images": [],            # 空リストを入れておく（upsert内で None * 20 される）
-                    "price": None,           # 価格不明
-                    "preset": preset,        # 既存の値を維持するために渡す
-                    "vendor_page": item_url,
+            "vendor_name": vendor_name,
+            "item_id": sku,          # これが SQL の 2番目の引数になる
+            "listing_head": "解析失敗",
+            "listing_detail": _truncate_for_db2(str(e), 200),
+            
+            # ↓ これらがないと upsert_vendor_item 内で変数の抽出がズレる
+            "images": [],            
+            "price": None,           
+            "preset": preset,        
+            "vendor_page": item_url, 
         }
+
         upsert_vendor_item(conn, rec_fail)
         writes_since_commit += 1
         writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
@@ -1533,27 +1536,15 @@ def main():
         # マスターデータのロード
         presets = fetch_active_presets(conn)
 
-        # ★ Playwrightの起動（ブラウザ1回起動で使い回す）
+        # ★ Playwrightの起動（ブラウザ本体を1回起動）
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
-            # タイムアウトを 30秒に強制設定（デフォルトは無制限に近い）
-            context = browser.new_context(user_agent="...", timeout=30000) 
-            page = context.new_page()
-            page.set_default_timeout(30000) # これで Playwright の各操作に 30秒の寿命がつく
 
-            # 不要リソース遮断（画像・CSS・フォントを止めてAPIだけを速く取る）
-            page.route("**/*", lambda route: 
-                route.abort() if route.request.resource_type in ["image", "media", "font", "stylesheet"] 
-                else route.continue_()
-            )
-
-            # ===== 動的アカウントループ：実行可能な仕事がある限り回し続ける =====
+            # ===== 動的アカウントループ =====
             while not stop_all:
-                # 1. 次に担当すべきアカウントをDBから1つ確保（ロック）
                 acct = fetch_next_account_and_lock(conn, current_pc)
-                
                 if not acct:
-                    print("[INFO] 実行可能なアカウントがありません。全タスク完了または制限により終了します。")
+                    print("[INFO] 実行可能なアカウントがありません。終了します。")
                     break
 
                 print(f"🚀 アカウント開始: {acct.account} (Target: {acct.post_target})")
@@ -1578,14 +1569,13 @@ def main():
                         "merchant_location_key": "Default",
                     }
 
-                # アカウント処理中のステータス初期化
                 acct_success = {acct.account: 0}
                 acct_targets = {acct.account: acct.post_target}
                 close_reason = None
 
                 # ===== アカウント内メインループ =====
                 while not stop_all:
-                    # 当日の出品済み数を正確に把握
+                    # 出品済み数の正確な把握
                     with conn.cursor() as cur:
                         cur.execute("""
                             SELECT COUNT(*) FROM trx.listings 
@@ -1604,66 +1594,79 @@ def main():
                         image_error_count = 0
                         cdn_mode_until = None
 
-                    # 商品確保
+                    # 1. 商品確保
                     row = take_one_vendor_item(conn, acct.preset_group, processing_by, acct.account)
                     if not row:
                         print(f"[INFO] {acct.account} 在庫枯渇")
                         close_reason = "EMPTY"
                         break
 
+                    # 2. 【重要修正】商品ごとに Context と Page を生成
+                    context = browser.new_context(user_agent="...")
+                    page = context.new_page()
+                    page.set_default_timeout(30000) # 30秒で必ずタイムアウトさせる設定
+
+                    # 不要リソース遮断
+                    page.route("**/*", lambda route: 
+                        route.abort() if route.request.resource_type in ["image", "media", "font"] 
+                        else route.continue_()
+                    )
+
                     sku = row["vendor_item_id"].strip()
                     vendor_name = row["vendor_name"]
                     item_url = f"https://mercari-shops.com/products/{sku}" if vendor_name == "メルカリshops" else f"https://jp.mercari.com/item/{sku}"
 
-                    # 解析とチェック（★pageを引数に追加）
                     try:
+                        # 解析とチェック
                         heavy, _, writes_since_commit, _, _ = heavy_check_detail(
-                            conn, page,  item_url, sku, row["preset"], vendor_name, row["mode"],
+                            conn, page, item_url, sku, row["preset"], vendor_name, row["mode"],
                             row["default_brand_en"], row["category_id_ebay"], row["department"], row["type_ebay"],
                             {}, writes_since_commit, row["low_jpy_target"], row["high_jpy_target"]
                         )
+
+                        if heavy:
+                            # 出品実行
+                            (
+                                acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
+                                _, image_mode, image_error_count, cdn_mode_until,
+                            ) = post_to_ebay(
+                                conn=conn, p=None, acct=acct.account, heavy=heavy,
+                                acct_targets=acct_targets, acct_success=acct_success,
+                                acct_policies_map=acct_policies_map,
+                                total_listings=total_listings, MAX_LISTINGS=MAX_LISTINGS,
+                                stop_all=stop_all, writes_since_commit=writes_since_commit,
+                                BATCH_COMMIT=BATCH_COMMIT, image_mode=image_mode,
+                                image_error_count=image_error_count, cdn_mode_until=cdn_mode_until,
+                                r2=r2, r2_bucket=r2_bucket_name, r2_public_base=r2_public_base,
+                                cdn_cache=cdn_cache, now_dt=datetime.now(),
+                            )
+
+                            if acct_targets.get(acct.account) == 0:
+                                print(f"🚫 {acct.account} APIリミットを検知しました。")
+                                close_reason = "LIMIT"
+                                break
+
+                        if writes_since_commit > 0:
+                            conn.commit()
+
                     except FatalRendererError:
                         print("[FATAL] Renderer crash → exit 1")
                         sys.exit(1)
+                    except Exception as e:
+                        print(f" [ERROR] SKU={sku} 処理中に例外発生: {e}")
+                    finally:
+                        # 3. 【重要修正】成否に関わらずPageを確実に閉じてリセット
+                        page.close()
+                        context.close()
 
-                    if not heavy:
-                        # 解析失敗やNG判定時は次の商品へ
-                        continue
-
-                    # 出品実行
-                    (
-                        acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
-                        _, image_mode, image_error_count, cdn_mode_until,
-                    ) = post_to_ebay(
-                        conn=conn, p=None, acct=acct.account, heavy=heavy,
-                        acct_targets=acct_targets, acct_success=acct_success,
-                        acct_policies_map=acct_policies_map,
-                        total_listings=total_listings, MAX_LISTINGS=MAX_LISTINGS,
-                        stop_all=stop_all, writes_since_commit=writes_since_commit,
-                        BATCH_COMMIT=BATCH_COMMIT, image_mode=image_mode,
-                        image_error_count=image_error_count, cdn_mode_until=cdn_mode_until,
-                        r2=r2, r2_bucket=r2_bucket_name, r2_public_base=r2_public_base,
-                        cdn_cache=cdn_cache, now_dt=datetime.now(),
-                    )
-
-                    # API Limit検知時
-                    if acct_targets.get(acct.account) == 0:
-                        print(f"🚫 {acct.account} APIリミットを検知しました。")
-                        close_reason = "LIMIT"
-                        break
-
-                    if writes_since_commit > 0:
-                        conn.commit()
-
-                # アカウント終了処理（PC解放とフラグ更新）
+                # アカウント終了処理
                 release_pc_and_close_account(conn, current_pc, acct.account, close_reason)
-                summary_success[acct.account] = summary_success.get(acct.account, 0) + acct_success[acct.account]
+                summary_success[acct.account] = summary_success.get(acct.account, 0) + acct_success.get(acct.account, 0)
                 print(f"🏁 アカウント終了: {acct.account} (Reason: {close_reason or 'DONE'})")
 
-            # Playwrightのブラウザを閉じる
             browser.close()
 
-        # ===== 完了後の処理（メール通知など） =====
+        # ===== 完了後の処理 =====
         end_time = datetime.now()
         elapsed = end_time - start_time
         lines = [f"{a}: 成功 {s}" for a, s in summary_success.items()]
@@ -1674,7 +1677,6 @@ def main():
         sys.exit(0)
 
     finally:
-        # PCが掴みっぱなしにならないよう最後に必ず解放を試みる
         try:
             release_pc_and_close_account(conn, current_pc)
         except:
