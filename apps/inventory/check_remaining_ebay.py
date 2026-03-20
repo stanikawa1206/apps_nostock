@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 from selenium import webdriver  # 型注釈用
+from playwright.sync_api import sync_playwright
 
 # ===== プロジェクトルートを sys.path に追加（最初にやる）=====
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
