@@ -498,6 +498,34 @@ def fetch_page_json_bk(page, url, conn, job_id):
                 raise RuntimeError("BROWSER_BROKEN")
         
 
+def extract_items_from_json(json_data):
+
+    rows = []
+
+    items = json_data.get("items", [])
+
+    for item in items:
+
+        item_id = item.get("id")
+        title = item.get("name")
+        price = item.get("price")
+        seller = item.get("sellerId")
+
+        created = item.get("created")
+        updated = item.get("updated")
+
+        if created is not None:
+            created = datetime.fromtimestamp(int(created), JST)
+
+        if updated is not None:
+            updated = datetime.fromtimestamp(int(updated), JST)
+
+        if price is not None:
+            price = int(price)
+
+        rows.append((item_id, title, price, seller, created, updated))
+
+    return rows
 
 
 def run_fetch_sold_ebay(page, payload: dict, job_id: int) -> Tuple[int, int]:
