@@ -15,13 +15,15 @@ if %code% == 0 (
 )
 
 :: 異常終了なら再起動
-echo CRASHED: Restarting in 15 seconds...
+echo CRASHED or RELOAD: Restarting in 15 seconds...
 
-:: ゾンビプロセスの掃除 (Windows版)
-taskkill /F /IM chrome.exe /T >nul 2>&1
+:: 【修正ポイント】名前で一括削除するのをやめる
+:: もしどうしても掃除したい場合は、Python側で処理を完結させるのがベストですが、
+:: ここでは「自分のChromeを巻き込まない」ために一旦コメントアウト（無効化）します。
+:: taskkill /F /IM chrome.exe /T >nul 2>&1
 taskkill /F /IM chromedriver.exe /T >nul 2>&1
 
-:: 15秒待機 (timeoutコマンド)
+:: 15秒待機
 timeout /t 15
 
 goto loop

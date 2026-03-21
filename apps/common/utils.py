@@ -120,6 +120,20 @@ def compute_cost_range_jpy_from_usd_range(
 
     return min_cost_jpy, max_cost_jpy
 
+from decimal import ROUND_UP
+
+# -------------------------
+# 価格の心理調整（ここ追加）
+# -------------------------
+def adjust_price(price: Decimal) -> Decimal:
+    """
+    例:
+    315.27 → 320 → 319.99
+    """
+    rounded = (price / Decimal("10")).to_integral_value(rounding=ROUND_UP) * Decimal("10")
+    adjusted = rounded - Decimal("0.01")
+    return adjusted
+
 def compute_start_price_usd(
     cost_jpy: int,
     mode: str,
@@ -250,6 +264,7 @@ def compute_start_price_usd(
         # ここにあった return を外に出す
 
     # low, high が None の場合でも、ここを通るようにする
+    final_price = adjust_price(final_price)
     return f"{final_price:.2f}"
 
 

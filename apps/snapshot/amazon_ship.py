@@ -167,5 +167,5 @@ def get_item_dimensions(asin: str):
         print(f"予期せぬエラーが発生しました: {e}")
 
 if __name__ == "__main__":
-    target_asin = "B000VWDER8"  # ← 実際のASINに変更してください
+    target_asin = "B00008B3QH"  # ← 実際のASINに変更してください
     get_item_dimensions(target_asin)

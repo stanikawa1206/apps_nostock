@@ -1,90 +1,93 @@
 import json
 import time
+import requests
 from playwright.sync_api import sync_playwright
-from typing import Optional, Dict, Any
 
 URL = "https://jp.mercari.com/shops/product/2JGVWPfEwRDg9sqRWqgUxE"
 
-def fetch_shops_data(page, url: str):
-    try:
-        # XHRフック
-        page.add_init_script("""
-        (function() {
-            const origOpen = XMLHttpRequest.prototype.open;
-            const origSend = XMLHttpRequest.prototype.send;
 
-            XMLHttpRequest.prototype.open = function(method, url) {
-                this._url = url;
-                return origOpen.apply(this, arguments);
-            };
+def build_cookie_header(cookies):
+    return "; ".join([f"{c['name']}={c['value']}" for c in cookies])
 
-            XMLHttpRequest.prototype.send = function() {
-                this.addEventListener('load', function() {
-                    try {
-                        if (this._url && this._url.includes('products') && this._url.includes('view=FULL')) {
-                            const json = JSON.parse(this.responseText);
-                            window.__XHR_DATA__ = json;
-                        }
-                    } catch (e) {}
-                });
-                return origSend.apply(this, arguments);
-            };
-        })();
-        """)
 
-        page.goto(url, wait_until="domcontentloaded", timeout=30000)
+def fetch_shops_data_requests(cookie_header: str):
 
-        # 最大10秒待つ
-        data = None
-        for _ in range(20):
-            data = page.evaluate("() => window.__XHR_DATA__")
-            if data:
-                break
-            page.wait_for_timeout(500)
+    product_id = URL.split("/")[-1] 
+    # ★ APIエンドポイント（Shops詳細）
+    api_url = "https://api.mercari.jp/shops/v1/products/get"
 
-        if not data:
-            return None
+    params = {
+        "view": "FULL"
+    }
 
-        res = data
+    # ★ URLからID取り出し
+    product_id = URL.split("/")[-1]
 
-        detail = res.get("productDetail", {})
-        shop = detail.get("shop", {})
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "ja-JP,ja;q=0.9",
+        "Content-Type": "application/json",
+        "Origin": "https://jp.mercari.com",
+        "Referer": URL,
+        "Cookie": cookie_header,
+    }
 
-        return {
-            "vendor_name": "メルカリshops",
-            "item_id": res.get("name"),
-            "title_jp": res.get("displayName"),
-            "price": int(res.get("price", 0)),
-            "description": detail.get("description"),
-            "images": detail.get("photos", []),
-            "shipping_region": detail.get("shippingFromArea", {}).get("displayName"),
-            "shipping_days": detail.get("shippingDuration", {}).get("displayName"),
-            "seller_id": shop.get("name"),
-            "seller_name": shop.get("displayName"),
-            "rating_count": int(shop.get("shopStats", {}).get("reviewCount", 0)),
-            "last_updated_str": res.get("updateTime"),
-        }
+    params = {
+        "id": product_id,
+        "view": "FULL"
+    }
 
-    except Exception as e:
-        print(f"Error during fetch: {e}")
+    res = requests.get(api_url, headers=headers, params=params)
+
+    if res.status_code != 200:
+        print("❌ status:", res.status_code)
         return None
-    
+
+    data = res.json()
+
+    detail = data.get("productDetail", {})
+    shop = detail.get("shop", {})
+
+    return {
+        "vendor_name": "メルカリshops",
+        "item_id": data.get("name"),
+        "title_jp": data.get("displayName"),
+        "price": int(data.get("price", 0)),
+        "description": detail.get("description"),
+        "images": detail.get("photos", []),
+        "shipping_region": detail.get("shippingFromArea", {}).get("displayName"),
+        "shipping_days": detail.get("shippingDuration", {}).get("displayName"),
+        "seller_id": shop.get("name"),
+        "seller_name": shop.get("displayName"),
+        "rating_count": int(shop.get("shopStats", {}).get("reviewCount", 0)),
+        "last_updated_str": data.get("updateTime"),
+    }
+
+
 def run():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
 
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
         )
 
         page = context.new_page()
 
-        print(f"Testing Shops URL: {URL}")
-        rec = fetch_shops_data(page, URL)
+        # ★ cookie取得用に1回アクセス
+        page.goto("https://jp.mercari.com", wait_until="domcontentloaded")
+
+        cookies = context.cookies()
+        cookie_header = build_cookie_header(cookies)
+
+        print("🍪 Cookie取得完了")
+
+        rec = fetch_shops_data_requests(cookie_header)
 
         if rec:
             print("\n" + "="*30)
-            print("✨ SHOPS SCRAPE SUCCESS ✨")
+            print("✨ REQUESTS SUCCESS ✨")
             print("="*30)
             for k, v in rec.items():
                 if k == "description" and v:
@@ -94,9 +97,9 @@ def run():
                 else:
                     print(f"{k}: {v}")
         else:
-            print("\n❌ Failed to capture payload.")
+            print("\n❌ Failed")
 
-        time.sleep(5)
+        time.sleep(3)
         browser.close()
 
 
