@@ -59,7 +59,7 @@ from apps.adapters.mercari_item_status import (
 # ========= 固定値／運用設定 =========
 IMG_LIMIT     = 20
 BATCH_COMMIT  = 10
-MAX_PARALLEL_PC = 6  # 1アカウントあたりの最大同時稼働PC数
+MAX_PARALLEL_PC = 8  # 1アカウントあたりの最大同時稼働PC数
 
 # ========= NG打刻・スキップ関連定義 =========
 NG_HEADS_FOR_TIMESTAMP: Set[str] = {
@@ -182,6 +182,12 @@ def parse_detail_personal(page, url: str, preset: str, vendor_name: str) -> Dict
     status = item.get("status")
     if status != "on_sale":
         # 売り切れ(sold_out)等の場合は例外を投げて判定終了
+        if status == "sold_out":
+            status = "売り切れ"
+        elif status == "trading":
+            status = "売り切れ"
+        elif status is None:
+            status = "削除"
         raise MercariItemUnavailableError(status)
 
     # 3. 更新日時の変換ロジック (UNIX time -> メルカリ表示文字列)
@@ -1605,6 +1611,30 @@ def main():
                         browser = p.chromium.launch(headless=True)
                         context = browser.new_context(user_agent="...")
                         page = context.new_page()
+                        page.add_init_script("""
+                        (function() {
+                            const origOpen = XMLHttpRequest.prototype.open;
+                            const origSend = XMLHttpRequest.prototype.send;
+
+                            XMLHttpRequest.prototype.open = function(method, url) {
+                                this._url = url;
+                                return origOpen.apply(this, arguments);
+                            };
+
+                            XMLHttpRequest.prototype.send = function() {
+                                window.__MERCARI_DATA__ = null; 
+                                this.addEventListener('load', function() {
+                                    try {
+                                        if (this._url && this._url.includes('api.mercari.jp/items/get')) {
+                                            const json = JSON.parse(this.responseText);
+                                            window.__MERCARI_DATA__ = json;
+                                        }
+                                    } catch (e) {}
+                                });
+                                return origSend.apply(this, arguments);
+                            };
+                        })();
+                        """)
                         page.set_default_timeout(30000)
 
                         page.route(

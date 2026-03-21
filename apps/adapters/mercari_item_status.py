@@ -63,40 +63,25 @@ def extract_price_jpy_from(main: BeautifulSoup) -> Optional[int]:
 # ================================
 # 通常メルカリ
 # ================================
-def fetch_mercari_api_data(page, url: str) -> Tuple[Optional[Dict[str, Any]], str]:
-    """
-    XHRフックでメルカリAPIを取得（安定版）
-    """
+
+# ============================================
+# 調査メモ（2026-03-21）
+# ============================================
+
+# ■目的
+# worker停止（page.gotoハング）の原因切り分け
+
+# ■やること
+# ⑥ fetch_mercari_api_data から page.add_init_script(...) を削除
+# ⑦ page生成直後に page.add_init_script(...) を1回だけ実行
+# ============================================
+
+
+def fetch_mercari_api_data(page, url):
     print("evaluate")
     try:
-        # XHRフック
-        page.add_init_script("""
-        (function() {
-            const origOpen = XMLHttpRequest.prototype.open;
-            const origSend = XMLHttpRequest.prototype.send;
-
-            XMLHttpRequest.prototype.open = function(method, url) {
-                this._url = url;
-                return origOpen.apply(this, arguments);
-            };
-
-            XMLHttpRequest.prototype.send = function() {
-                this.addEventListener('load', function() {
-                    try {
-                        if (this._url && this._url.includes('api.mercari.jp/items/get')) {
-                            const json = JSON.parse(this.responseText);
-                            window.__MERCARI_DATA__ = json;
-                        }
-                    } catch (e) {}
-                });
-                return origSend.apply(this, arguments);
-            };
-        })();
-        """)
-
         page.goto(url, wait_until="domcontentloaded", timeout=30000)
 
-        # 最大10秒待つ
         data = None
         for _ in range(20):
             data = page.evaluate("() => window.__MERCARI_DATA__")
@@ -104,15 +89,10 @@ def fetch_mercari_api_data(page, url: str) -> Tuple[Optional[Dict[str, Any]], st
                 break
             page.wait_for_timeout(500)
 
-        html_content = page.content()
-
-        return data, html_content
+        return data, page.content()
 
     except Exception:
-        try:
-            return None, page.content()
-        except:
-            return None, ""
+        return None, ""
 
 def detect_status_from_mercari(page, url: str) -> Tuple[str, Optional[int]]:
     """
