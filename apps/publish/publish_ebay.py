@@ -374,7 +374,8 @@ WHEN NOT MATCHED THEN
         COALESCE(src.listing_detail, N''),
 
         CASE
-            WHEN src.listing_head IN (...) THEN SYSDATETIME()
+            WHEN src.listing_head IN (N'古い更新', N'計算価格が範囲外', N'NG(セラー評価)')
+            THEN SYSDATETIME()
             ELSE NULL
         END
     )
@@ -827,15 +828,25 @@ def heavy_check_detail(
 
         rec_fail = {
             "vendor_name": vendor_name,
-            "vendor_item_id": sku,          # これが SQL の 2番目の引数になる
+            "vendor_item_id": sku,
+
+            "title_jp": None,
+            "title_en": None,
+            "description": None,
+            "description_en": None,
+
+            "price": None,
+            "last_updated_str": None,
+            "shipping_region": None,
+            "shipping_days": None,
+            "seller_id": None,
+
+            "preset": preset,
+            "vendor_page": None,
+            "images": [],
+
             "listing_head": "解析失敗",
             "listing_detail": _truncate_for_db2(str(e), 200),
-            
-            # ↓ これらがないと upsert_vendor_item 内で変数の抽出がズレる
-            "images": [],            
-            "price": None,           
-            "preset": preset,        
-            "vendor_page": item_url, 
         }
 
         upsert_vendor_item(conn, rec_fail)
