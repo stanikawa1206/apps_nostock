@@ -91,7 +91,9 @@ def fetch_mercari_api_data(page, url):
 
     try:
         # 1. ページ遷移
-        page.goto(url, wait_until="networkidle", timeout=30000)
+        print("domcontentloaded")
+        # page.goto(url, wait_until="networkidle", timeout=30000)
+        page.goto(url, wait_until="domcontentloaded", timeout=30000)
         
         # 2. 【重要】APIが取得できるまで最大5秒間、小刻みに待機する
         # これがデバッグ用 print の代わり（かつより正確）になります

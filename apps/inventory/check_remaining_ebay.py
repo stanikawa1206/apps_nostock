@@ -392,7 +392,13 @@ def run_remaining_worker(worker_name: str):
             context = browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
             )
-            
+            page = context.new_page()
+
+            # 画像やCSSを遮断（バッチ内全ページに適用）
+            page.route("**/*", lambda route: 
+                route.abort() if route.request.resource_type in ["image", "media", "font", "stylesheet"] 
+                else route.continue_()
+            )
 
             while processed_count < MAX_PER_RUN:
                 rows = pull_remaining_targets(pull_conn, worker_name, batch_size=1)
@@ -408,13 +414,6 @@ def run_remaining_worker(worker_name: str):
                         sys.exit(0)
 
                 for row in rows:
-                    print("中に入れた")
-                    page = context.new_page()
-                    page.route("**/*", lambda route: 
-                        route.abort() if route.request.resource_type in ["image", "media", "font", "stylesheet"] 
-                        else route.continue_()
-                    )
-
                     print(f"\n[INFO] batch processing {processed_count + 1}/{MAX_PER_RUN} ...")
                     process_status_and_sync(work_conn, page, driver, row, worker_name)
                     processed_count += 1
