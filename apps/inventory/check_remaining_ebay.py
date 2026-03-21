@@ -423,6 +423,7 @@ def run_remaining_worker(worker_name: str):
 
             # MAX_PER_RUN に達したら exit 1 で終了
             print(f"[INFO] Reached {MAX_PER_RUN} items. Restarting for memory refresh...")
+            browser.close()
             sys.exit(1) # Shellスクリプトがこれを検知して pkill & 再起動する
 
     finally:
@@ -483,11 +484,14 @@ def process_status_and_sync(
                     flush=True,
                 )
 
+                print(">>> DELETE START レンジ外", sku)
+
                 handle_listing_delete(
                     conn,
                     sku,
                     vendor_name,
                 )
+                print(">>> DELETE END", sku)
 
             # =====================
             # 3-B. レンジ内 → eBay価格改定
@@ -529,11 +533,13 @@ def process_status_and_sync(
     if status in {"削除", "オークション", "売り切れ", "公開停止"}:
         print(f"[FINAL_DELETE] sku={sku} status={status}", flush=True)
 
+        print(">>> DELETE START  終了系ステータス", sku)
         handle_listing_delete(
             conn,
             sku,
             vendor_name,
         )
+        print(">>> DELETE END", sku)
 
     # =====================
     # ★ 6. remaining 確定 (関数の最後に配置)
