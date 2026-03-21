@@ -76,23 +76,36 @@ def extract_price_jpy_from(main: BeautifulSoup) -> Optional[int]:
 # ⑦ page生成直後に page.add_init_script(...) を1回だけ実行
 # ============================================
 
-
 def fetch_mercari_api_data(page, url):
-    print("evaluate")
+    storage = {"json": None}
+
+    def handle_response(response):
+        if "items/get?id=" in response.url:
+            if "application/json" in response.headers.get("content-type", ""):
+                try:
+                    storage["json"] = response.json()
+                except Exception:
+                    pass
+
+    page.on("response", handle_response)
+
     try:
-        page.goto(url, wait_until="domcontentloaded", timeout=30000)
-
-        data = None
-        for _ in range(20):
-            data = page.evaluate("() => window.__MERCARI_DATA__")
-            if data:
+        # 1. ページ遷移
+        page.goto(url, wait_until="networkidle", timeout=30000)
+        
+        # 2. 【重要】APIが取得できるまで最大5秒間、小刻みに待機する
+        # これがデバッグ用 print の代わり（かつより正確）になります
+        for _ in range(25):  # 0.2秒 × 25回 = 最大5秒
+            if storage["json"] is not None:
                 break
-            page.wait_for_timeout(500)
+            page.wait_for_timeout(200)
 
-        return data, page.content()
-
+        return storage["json"], page.content()
     except Exception:
         return None, ""
+    finally:
+        page.remove_listener("response", handle_response)
+
 
 def detect_status_from_mercari(page, url: str) -> Tuple[str, Optional[int]]:
     """

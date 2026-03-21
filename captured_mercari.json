@@ -25,9 +25,9 @@
             "is_inactive": false,
             "star_rating_score": 4.5
         },
-        "status": "on_sale",
+        "status": "trading",
         "name": "ルイ・ヴィトン 二つ折り財布 モノグラム",
-        "price": 6500,
+        "price": 5000,
         "description": "叔母から貰った物です。\n購入した時期はわからないのですが、多少の年季は感じられます。\n\n中古品ですので、神経質な方はお控えください。\n商品すり替え防止のため、返品不可でお願いします",
         "photos": [
             "https://static.mercdn.net/item/detail/orig/photos/m86222654096_1.jpg?1773888180",
@@ -123,15 +123,38 @@
             "total_fee": 0,
             "is_pickup": false
         },
-        "num_likes": 0,
-        "num_comments": 0,
+        "num_likes": 2,
+        "num_comments": 2,
         "registered_prices_count": 0,
-        "comments": [],
-        "updated": 1773888484,
+        "comments": [
+            {
+                "id": 8757974039119264786,
+                "user": {
+                    "id": 721871284,
+                    "name": "かずさん",
+                    "photo_url": "https://static.mercdn.net/images/member_photo_noimage.png",
+                    "photo_thumbnail_url": "https://static.mercdn.net/images/member_photo_noimage_thumb.png"
+                },
+                "message": "先ほど値下げしたばかりで、4500円が限界です。すみません🙇",
+                "created": 1774051693
+            },
+            {
+                "id": 2015329928335679622,
+                "user": {
+                    "id": 465618430,
+                    "name": "値下げ依頼歓迎@次回発送23日（月）",
+                    "photo_url": "https://static.mercdn.net/members/resized/webp/465618430.jpg?1582329429",
+                    "photo_thumbnail_url": "https://static.mercdn.net/thumb/members/webp/465618430.jpg?1582329429"
+                },
+                "message": "コメント失礼します。\nこち3800円にて購入させていただけないでしょうか？",
+                "created": 1774051598
+            }
+        ],
+        "updated": 1774051753,
         "created": 1773888180,
         "pager_id": 5742130523,
         "liked": false,
-        "checksum": "b804fe3fb2176c501fcbfda8d5249f09",
+        "checksum": "e5eb04bb03daa31753d0d0449a123fdc",
         "is_dynamic_shipping_fee": false,
         "application_attributes": {},
         "is_shop_item": "no",
@@ -144,6 +167,10 @@
         "is_stock_item": false,
         "is_cancelable": true,
         "shipped_by_worker": false,
+        "transaction_evidence": {
+            "id": 2195992041,
+            "status": "wait_shipping"
+        },
         "additional_services": [
             {
                 "service_code": "anshin_item_authentication_in_house",
@@ -215,16 +242,6 @@
             "",
             ""
         ],
-        "auction_info": {
-            "id": "21930705",
-            "start_time": 1773888181,
-            "expected_end_time": 1774005393,
-            "total_bids": 0,
-            "initial_price": 6500,
-            "highest_bid": 6500,
-            "state": "STATE_NO_BID",
-            "auction_type": "AUCTION_TYPE_NORMAL"
-        },
         "meta_title": "ルイ・ヴィトン 二つ折り財布 モノグラム",
         "meta_subtitle": "LOUIS VUITTON・目立った傷や汚れなし"
     },
