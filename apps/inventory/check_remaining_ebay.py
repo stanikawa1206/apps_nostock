@@ -394,12 +394,6 @@ def run_remaining_worker(worker_name: str):
             )
             
 
-            # 画像やCSSを遮断（バッチ内全ページに適用）
-            page.route("**/*", lambda route: 
-                route.abort() if route.request.resource_type in ["image", "media", "font", "stylesheet"] 
-                else route.continue_()
-            )
-
             while processed_count < MAX_PER_RUN:
                 rows = pull_remaining_targets(pull_conn, worker_name, batch_size=1)
 
@@ -416,6 +410,11 @@ def run_remaining_worker(worker_name: str):
                 for row in rows:
                     print("中に入れた")
                     page = context.new_page()
+                    page.route("**/*", lambda route: 
+                        route.abort() if route.request.resource_type in ["image", "media", "font", "stylesheet"] 
+                        else route.continue_()
+                    )
+
                     print(f"\n[INFO] batch processing {processed_count + 1}/{MAX_PER_RUN} ...")
                     process_status_and_sync(work_conn, page, driver, row, worker_name)
                     processed_count += 1
