@@ -401,6 +401,7 @@ def run_remaining_worker(worker_name: str):
             )
 
             while processed_count < MAX_PER_RUN:
+                print("1にしてみた")
                 rows = pull_remaining_targets(pull_conn, worker_name, batch_size=1)
 
                 if not rows:
