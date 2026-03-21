@@ -135,7 +135,11 @@ def detect_status_from_mercari(page, url: str) -> Tuple[str, Optional[int]]:
         # --- 2. 正常データの解析 ---
         if res and res.get("result") == "OK":
             item = res.get("data", {})
-            
+            if isinstance(item, list):
+                if not item:
+                    return "判定不可", None
+                item = item[0]
+
             # オークション判定
             auction_info = item.get("auction_info")
             if auction_info is not None:

@@ -1,54 +1,3 @@
-# ============================================
-# 改善方針メモ（2026-03-21）
-# ============================================
-
-# ■目的
-# パフォーマンス改善（原因切り分け優先）
-# 一度に複数変更は行わない
-
-# ----------------------------
-# ■やること（今回）
-# ----------------------------
-# ③ pullバッチ化
-# - pull_one_remaining_target を複数件取得に変更（TOP(5) or TOP(10)）
-# - UPDATE + OUTPUT のロック方式は維持
-# - Python側はループ処理に変更
-
-# ----------------------------
-# ■やらないこと（今回は触らない）
-# ----------------------------
-# ② 並列化（worker内並列）
-# - メモリ増加・不安定化リスクのため保留
-
-# ① ページアクセス最適化（API化など）
-# - 影響範囲が大きいため後回し
-
-# ④ Selenium整理
-# - 現状維持（shops対応のため）
-
-# ----------------------------
-# ■想定効果
-# ----------------------------
-# ・DBアクセス回数削減
-# ・lock競合軽減
-# ・1.5〜2倍程度の速度改善を期待
-
-# ----------------------------
-# ■注意点
-# ----------------------------
-# ・SELECT → 後UPDATE は禁止（競合発生）
-# ・必ず UPDATE + OUTPUT で一括取得する
-# ・既存ロック設計は絶対に崩さない
-
-# ----------------------------
-# ■次の判断
-# ----------------------------
-# ・③適用後の速度を確認
-# ・まだ遅い場合のみ②（並列化）を検討
-# ============================================
-
-
-
 from __future__ import annotations
 
 import os
@@ -297,78 +246,6 @@ def count_total_remaining(conn):
         """)
         return cur.fetchone()[0]
 
-def pull_remaining_targets(conn, worker_name: str, batch_size: int = 5):
-    sql = f"""
-        ;WITH cte AS (
-            SELECT TOP ({batch_size})
-                v.vendor_name,
-                v.vendor_item_id,
-                l.account,
-                l.listing_id,
-                v.preset,
-                p.mode,
-                p.low_usd_target,
-                p.high_usd_target
-            FROM trx.vendor_item AS v WITH (UPDLOCK, ROWLOCK, READPAST)
-            INNER JOIN trx.listings AS l
-                ON l.vendor_name    = v.vendor_name
-               AND l.vendor_item_id = v.vendor_item_id
-            INNER JOIN mst.v_presets AS p
-                ON p.preset = v.preset
-            WHERE
-                l.is_deleted = 0
-                AND v.vendor_name IN (N'メルカリ', N'メルカリshops')
-                AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')
-                AND v.remaining_check_at IS NULL
-                AND (
-                    v.remaining_check_lock IS NULL
-                    OR v.remaining_check_lock < DATEADD(MINUTE, -5, SYSDATETIME())
-                )
-            ORDER BY v.remaining_check_lock ASC
-        )
-        UPDATE v
-        SET
-            remaining_check_by = ?,
-            remaining_check_lock = SYSDATETIME()
-        OUTPUT
-            inserted.vendor_name,
-            inserted.vendor_item_id,
-            cte.account,
-            cte.listing_id,
-            cte.preset,
-            cte.mode,
-            cte.low_usd_target,
-            cte.high_usd_target
-        FROM trx.vendor_item AS v
-        INNER JOIN cte
-            ON v.vendor_name     = cte.vendor_name
-           AND v.vendor_item_id  = cte.vendor_item_id;
-    """
-
-    cur = conn.cursor()
-    cur.execute(sql, (worker_name,))
-    rows = cur.fetchall()
-    conn.commit()
-
-    if not rows:
-        return []
-
-    result = []
-    for row in rows:
-        result.append({
-            "vendor_name": row[0],
-            "vendor_item_id": row[1],
-            "account": row[2],
-            "listing_id": row[3],
-            "preset": row[4],
-            "mode": row[5],
-            "low_usd_target": float(row[6]),
-            "high_usd_target": float(row[7]),
-        })
-
-    return result
-
-
 def run_remaining_worker(worker_name: str):
     print(f"ver BATCH_MODE start (Worker: {worker_name})")
 
@@ -401,25 +278,26 @@ def run_remaining_worker(worker_name: str):
             )
 
             while processed_count < MAX_PER_RUN:
-                rows = pull_remaining_targets(pull_conn, worker_name, batch_size=5)
+                row = pull_one_remaining_target(pull_conn, worker_name)
 
-                if not rows:
+                if not row:
                     total_left = count_total_remaining(pull_conn)
                     if total_left > 0:
-                        print(f"[RETRY] DB says {total_left} items left. Wait 10s...")
+                        print(f"[RETRY] DB says {total_left} items left. Lock conflict? Wait 10s...")
                         time.sleep(10)
-                        continue
+                        continue 
                     else:
                         print("[INFO] DB is empty. All tasks finished normally.")
-                        sys.exit(0)
+                        sys.exit(0) # 完全に仕事がない時だけ exit 0 (Shellのループが止まる)
 
-                for row in rows:
-                    print(f"\n[INFO] batch processing {processed_count + 1}/{MAX_PER_RUN} ...")
-                    process_status_and_sync(work_conn, page, driver, row, worker_name)
-                    processed_count += 1
-                    if processed_count >= MAX_PER_RUN:
-                        break 
-                    time.sleep(random.uniform(1.0, 2.0))
+                print(f"\n[INFO] batch processing {processed_count + 1}/{MAX_PER_RUN} ...")
+                
+                # 実処理を実行（page と driver の両方を渡す）
+                process_status_and_sync(work_conn, page, driver, row, worker_name)
+                
+                processed_count += 1
+                # サーバー負荷軽減のための短い待機
+                time.sleep(random.uniform(1.0, 2.0))
 
             # MAX_PER_RUN に達したら exit 1 で終了
             print(f"[INFO] Reached {MAX_PER_RUN} items. Restarting for memory refresh...")
