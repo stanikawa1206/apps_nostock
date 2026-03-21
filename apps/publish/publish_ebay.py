@@ -322,6 +322,7 @@ WHEN NOT MATCHED THEN
         [出品状況], [出品状況詳細],
         last_ng_at
     )
+
     VALUES (
         src.vendor_name,
         src.vendor_item_id,
@@ -337,6 +338,8 @@ WHEN NOT MATCHED THEN
         src.seller_id,
         src.preset,
         src.vendor_page,
+
+        -- ① まず image1〜10
         src.image_url1,
         src.image_url2,
         src.image_url3,
@@ -347,6 +350,14 @@ WHEN NOT MATCHED THEN
         src.image_url8,
         src.image_url9,
         src.image_url10,
+
+        -- ② 次に日付系
+        SYSDATETIME(),   -- created_at
+        SYSDATETIME(),   -- last_checked_at
+        NULL,            -- prev_price
+        N'販売中',        -- status
+
+        -- ③ そのあと image11〜20
         src.image_url11,
         src.image_url12,
         src.image_url13,
@@ -357,17 +368,17 @@ WHEN NOT MATCHED THEN
         src.image_url18,
         src.image_url19,
         src.image_url20,
-        SYSDATETIME(),
-        SYSDATETIME(),
-        NULL,
-        N'販売中',
+
+        -- ④ 最後
         COALESCE(src.listing_head, N''),
         COALESCE(src.listing_detail, N''),
+
         CASE
-          WHEN src.listing_head IN (N'古い更新', N'計算価格が範囲外', N'NG(セラー評価)') THEN SYSDATETIME()
-          ELSE NULL
+            WHEN src.listing_head IN (...) THEN SYSDATETIME()
+            ELSE NULL
         END
     )
+    
 OUTPUT
     $action                 AS action,
     inserted.vendor_item_id AS vendor_item_id,
@@ -401,7 +412,7 @@ def upsert_vendor_item(conn, rec: Dict[str, Any]):
             price_val = None
 
     listing_head   = _none_if_blank(rec.get("listing_head"))
-    listing_detail = _none_if_blank(rec.get("listing_detail"))
+    listing_detail = _none_if_blank(rec.get("listinhig_detail"))
 
     params = (
         rec["vendor_name"],
