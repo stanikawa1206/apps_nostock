@@ -387,6 +387,7 @@ def run_remaining_worker(worker_name: str):
         work_conn = get_sql_server_connection()
 
         with sync_playwright() as p:
+
             # Playwrightブラウザを1回だけ起動
             browser = p.chromium.launch(headless=True)
             context = browser.new_context(
@@ -401,6 +402,22 @@ def run_remaining_worker(worker_name: str):
             )
 
             while processed_count < MAX_PER_RUN:
+                if processed_count > 0 and processed_count % 10 == 0:                
+                    try:
+                        browser.close()
+                    except:
+                        pass
+                    browser = p.chromium.launch(headless=True)
+                    context = browser.new_context(
+                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                    )
+                    page = context.new_page()
+
+                    page.route("**/*", lambda route: 
+                        route.abort() if route.request.resource_type in ["image", "media", "font", "stylesheet"] 
+                        else route.continue_()
+                    )
+
                 rows = pull_remaining_targets(pull_conn, worker_name, batch_size=1)
 
                 if not rows:
