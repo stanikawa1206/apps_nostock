@@ -424,7 +424,7 @@ def release_job(conn, job_id):
         except Exception:
             pass
 
-def fetch_page_json(page, url, conn, job_id):
+def fetch_page_json_bk(page, url, conn, job_id):
     print("************* evaluate版2 *************", flush=True)
 
     page.add_init_script("""
@@ -470,7 +470,7 @@ def fetch_page_json(page, url, conn, job_id):
 
     return data
 
-def fetch_page_json_bk(page, url, conn, job_id):
+def fetch_page_json(page, url, conn, job_id):
     print("************* デッドロック対策版 *************")
 
     for attempt in range(2):
