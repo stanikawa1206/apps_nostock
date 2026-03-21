@@ -91,7 +91,7 @@ def fetch_mercari_api_data(page, url):
 
     try:
         # 1. ページ遷移
-        print("domcontentloaded")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] domcontentloaded")
         # page.goto(url, wait_until="networkidle", timeout=30000)
         page.goto(url, wait_until="domcontentloaded", timeout=30000)
         
