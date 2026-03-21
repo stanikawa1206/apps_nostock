@@ -401,7 +401,7 @@ def run_remaining_worker(worker_name: str):
             )
 
             while processed_count < MAX_PER_RUN:
-                rows = pull_remaining_targets(pull_conn, worker_name, batch_size=5)
+                rows = pull_remaining_targets(pull_conn, worker_name, batch_size=2)
 
                 if not rows:
                     total_left = count_total_remaining(pull_conn)
