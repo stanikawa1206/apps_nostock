@@ -127,20 +127,17 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str) -> Dict[st
 
         detail = res.get("productDetail", {})
         shop = detail.get("shop", {})
-        
-        # Shopsの時間 (ISO 8601: 2025-11-04T01:10:26Z) を "◯日前" に変換
-        last_updated_str = "不明"
+
+        vendor_updated_at = None
         update_time_str = res.get("updateTime")
+
         if update_time_str:
             try:
-                # Zをカットしてパース
-                dt = datetime.fromisoformat(update_time_str.replace('Z', '+00:00'))
-                diff = datetime.now().timestamp() - dt.timestamp()
-                days = int(diff // 86400)
-                if days < 1: last_updated_str = "今日"
-                elif days < 30: last_updated_str = f"{days}日前"
-                else: last_updated_str = "1ヶ月以上前"
-            except: pass
+                vendor_updated_at = datetime.fromisoformat(
+                    update_time_str.replace('Z', '+00:00')
+                )
+            except:
+                pass
 
         return {
             "vendor_name": vendor_name,
@@ -157,6 +154,7 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str) -> Dict[st
             "preset": preset,
             "description": detail.get("description", ""),
             "description_en": "",
+            "vendor_updated_at": vendor_updated_at,  
         }
     finally:
         page.remove_listener("response", handle_response)

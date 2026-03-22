@@ -95,14 +95,12 @@ def fetch_mercari_api_data(page, url):
         # page.goto(url, wait_until="networkidle", timeout=30000)
         # page.goto(url, wait_until="domcontentloaded", timeout=30000)
         page.goto(url, wait_until="domcontentloaded", timeout=10000)
-
         
         #  responseイベントでAPIが取得されるのを待機する（このループ自体は取得処理ではない）
         start = time.time()
-        for _ in range(40):  # 0.2秒 × 40回 = 最大8秒
+        for _ in range(40):  # 0.2秒ごとに × 40回のAPI待ち = 最大8秒 
             if storage["json"] is not None:
                 break
-            print("10sec wait")
             # API待機が無限ループ化するのを防ぐため、
             # 最大待機時間（ここでは10秒）を超えたら強制的に抜ける
             if time.time() - start > 10:  # 最大10秒
