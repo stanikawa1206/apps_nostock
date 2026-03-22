@@ -93,11 +93,13 @@ def fetch_mercari_api_data(page, url):
         # 1. ページ遷移
         print(f"[{datetime.now().strftime('%H:%M:%S')}] domcontentloaded")
         # page.goto(url, wait_until="networkidle", timeout=30000)
-        page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        # page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        page.goto(url, wait_until="domcontentloaded", timeout=10000)
+
+        print("10000")
         
         # 2. 【重要】APIが取得できるまで最大5秒間、小刻みに待機する
         # これがデバッグ用 print の代わり（かつより正確）になります
-        print("0.2秒 × 40回 = 最大8秒")
         for _ in range(40):  # 0.2秒 × 40回 = 最大8秒
             if storage["json"] is not None:
                 break
