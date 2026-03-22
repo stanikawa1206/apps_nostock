@@ -902,13 +902,16 @@ def heavy_check_detail(
         return None, debug_unavailable_dump, writes_since_commit, 1, 0
 
     # === 3) 古い更新（NG） ===
-    if re.search(r'(半年以上前|\d+\s*[ヶか]月前|数\s*[ヶか]月前)', rec.get("last_updated_str") or ""):
-        rec["listing_head"] = "古い更新"
-        rec["listing_detail"] = rec.get("last_updated_str") or ""
-        upsert_vendor_item(conn, rec)
-        writes_since_commit += 1
-        writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
-        return None, debug_unavailable_dump, writes_since_commit, 1, 0
+    vendor_updated_at = rec.get("vendor_updated_at")
+
+    if vendor_updated_at is not None:
+        if vendor_updated_at < datetime.now() - timedelta(days=40):
+            rec["listing_head"] = "古い更新"
+            rec["listing_detail"] = str(vendor_updated_at)
+            upsert_vendor_item(conn, rec)
+            writes_since_commit += 1
+            writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
+            return None, debug_unavailable_dump, writes_since_commit, 1, 0
 
     # === 4.5) セラー判定 ===
     rating_count = rec.get("rating_count")
@@ -1462,7 +1465,7 @@ def take_one_vendor_item(conn, preset_group, processing_by, account_name):
             -- 基本的なNG条件の除外
             AND (
                 v.vendor_updated_at IS NULL
-                OR v.vendor_updated_at >= DATEADD(MONTH, -1, SYSDATETIME())
+                OR v.vendor_updated_at >= DATEADD(DAY, -40, SYSDATETIME())
             )
             AND ISNULL(v.[出品状況], N'') NOT IN (N'NG(GA補色)', N'NG(危険素材)')
             AND ISNULL(v.shipping_days, N'') NOT IN (

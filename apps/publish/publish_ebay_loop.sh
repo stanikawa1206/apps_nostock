@@ -1,6 +1,8 @@
 #!/bin/bash
 
 SESSION="pub"
+rm -rf /tmp/*
+
 
 # tmux が無い場合はエラー
 if ! command -v tmux &> /dev/null; then
