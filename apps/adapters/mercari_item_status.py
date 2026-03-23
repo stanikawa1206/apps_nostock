@@ -95,6 +95,7 @@ def fetch_mercari_api_data(page, url):
         # page.goto(url, wait_until="networkidle", timeout=30000)
         # page.goto(url, wait_until="domcontentloaded", timeout=30000)
         page.goto(url, wait_until="domcontentloaded", timeout=10000)
+        print("goto end")
         
         #  responseイベントでAPIが取得されるのを待機する（このループ自体は取得処理ではない）
         start = time.time()

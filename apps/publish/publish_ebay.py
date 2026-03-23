@@ -130,24 +130,18 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str) -> Dict[st
         detail = res.get("productDetail", {})
         shop = detail.get("shop", {})
 
-        vendor_updated_at = None
-        update_time_str = res.get("updateTime")
+        updated = item.get("updated")
 
-        if update_time_str:
-            try:
-                vendor_updated_at = datetime.fromisoformat(
-                    update_time_str.replace('Z', '+00:00')
-                )
-            except:
-                pass
-        last_updated_str = _format_mercari_time(item.get("updated"))
+        vendor_updated_at = None
+        if updated:
+            vendor_updated_at = datetime.fromtimestamp(updated)
 
         return {
             "vendor_name": vendor_name,
             "title_jp": res.get("displayName"),
             "title_en": "",
             "price": int(res.get("price", 0)),
-            "last_updated_str": last_updated_str,
+            "vendor_updated_at": vendor_updated_at,   #
             "shipping_region": detail.get("shippingFromArea", {}).get("displayName", ""),
             "shipping_days": detail.get("shippingDuration", {}).get("displayName", ""),
             "seller_id": shop.get("name", ""),
@@ -180,21 +174,11 @@ def parse_detail_personal(page, url: str, preset: str, vendor_name: str) -> Dict
     
     item = res.get("data", {})
 
-    # 3. 更新日時の変換ロジック (UNIX time -> メルカリ表示文字列)
-    def _format_mercari_time(unix_ts: Optional[int]) -> str:
-        if not unix_ts:
-            return "不明"
-        diff = datetime.now().timestamp() - unix_ts
-        if diff < 60: return "数秒前"
-        if diff < 3600: return f"{int(diff // 60)}分前"
-        if diff < 86400: return f"{int(diff // 3600)}時間前"
-        days = int(diff // 86400)
-        if days < 30: return f"{days}日前"
-        months = int(days // 30)
-        if months >= 6: return "半年以上前"
-        return f"{months}ヶ月前"
+    updated = item.get("updated")
 
-    last_updated_str = _format_mercari_time(item.get("updated"))
+    vendor_updated_at = None
+    if updated:
+        vendor_updated_at = datetime.fromtimestamp(updated)
 
     # 4. rec の組み立て
     return {
@@ -202,7 +186,7 @@ def parse_detail_personal(page, url: str, preset: str, vendor_name: str) -> Dict
         "title_jp": item.get("name"),
         "title_en": "",
         "price": int(item.get("price", 0)),
-        "last_updated_str": last_updated_str, # 例: "39分前", "1日前"
+        "vendor_updated_at": vendor_updated_at,   #
         "shipping_region": item.get("shipping_from_area", {}).get("name", ""),
         "shipping_days": item.get("shipping_duration", {}).get("name", ""),
         "seller_id": str(item.get("seller", {}).get("id", "")),
