@@ -55,6 +55,8 @@ from apps.adapters.mercari_item_status import (
     MercariItemUnavailableError,
     mark_vendor_item_unavailable,
 )
+from apps.adapters.mercari_item_status import fetch_mercari_api_data,_parse_status_from_res
+from datetime import datetime
 
 # ========= 固定値／運用設定 =========
 IMG_LIMIT     = 20
@@ -138,6 +140,7 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str) -> Dict[st
                 )
             except:
                 pass
+        last_updated_str = _format_mercari_time(item.get("updated"))
 
         return {
             "vendor_name": vendor_name,
@@ -154,7 +157,7 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str) -> Dict[st
             "preset": preset,
             "description": detail.get("description", ""),
             "description_en": "",
-            "vendor_updated_at": vendor_updated_at,  
+            
         }
     finally:
         page.remove_listener("response", handle_response)
@@ -164,29 +167,18 @@ def parse_detail_personal(page, url: str, preset: str, vendor_name: str) -> Dict
     【Newer Version】通常メルカリ: Playwright(API) 1回で全データを解析。
     Seleniumを使わず、JSONから直接「39分前」や「セラー評価」を抽出します。
     """
-    from apps.adapters.mercari_item_status import fetch_mercari_api_data
-    from datetime import datetime
-
     # 1. APIからJSONデータを取得
     res, _ = fetch_mercari_api_data(page, url)
-    
     if not res or res.get("result") != "OK":
         # データが取れない（404等）場合は削除扱い
         raise MercariItemUnavailableError("削除")
-
-    item = res.get("data", {})
     
     # 2. ステータスチェック
-    status = item.get("status")
-    if status != "on_sale":
-        # 売り切れ(sold_out)等の場合は例外を投げて判定終了
-        if status == "sold_out":
-            status = "売り切れ"
-        elif status == "trading":
-            status = "売り切れ"
-        elif status is None:
-            status = "削除"
+    status, _ = _parse_status_from_res(res)
+    if status != "販売中":
         raise MercariItemUnavailableError(status)
+    
+    item = res.get("data", {})
 
     # 3. 更新日時の変換ロジック (UNIX time -> メルカリ表示文字列)
     def _format_mercari_time(unix_ts: Optional[int]) -> str:

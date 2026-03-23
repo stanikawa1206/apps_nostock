@@ -114,11 +114,39 @@ def fetch_mercari_api_data(page, url):
     finally:
         page.remove_listener("response", handle_response)
 
+def _parse_status_from_res(res) -> Tuple[str, Optional[int]]:
+    # --- 1. 削除の確定判定 ---
+    if res and res.get("result") == "error":
+        errors = res.get("errors", [])
+        if any(e.get("code") == "InvisibleItemException" for e in errors):
+            return "削除", None
+
+    # --- 2. 正常データの解析 ---
+    if res and res.get("result") == "OK":
+        item = res.get("data", {})
+        if isinstance(item, list):
+            if not item:
+                return "判定不可", None
+            item = item[0]
+
+        # オークション判定
+        auction_info = item.get("auction_info")
+        if auction_info and auction_info.get("id"):
+            return "オークション", None
+
+        # 通常ステータス判定
+        status = item.get("status")
+        if status == "on_sale":
+            return "販売中", item.get("price")
+        elif status in ["trading", "sold_out", "finished"]:
+            return "売り切れ", None
+
+        return "判定不可", None
+
+    return "判定不可", None
+
 
 def detect_status_from_mercari(page, url: str) -> Tuple[str, Optional[int]]:
-    """
-    pageを受け取り、ステータス判定を行う。
-    """
     max_retries = 2
     
     for attempt in range(max_retries):
@@ -139,36 +167,12 @@ def detect_status_from_mercari(page, url: str) -> Tuple[str, Optional[int]]:
             print(f"[DEBUG ERROR] {e}")
         # ===== DEBUG LOG END =====
 
+        status, price = _parse_status_from_res(res)
 
-        # --- 1. 削除の確定判定 ---
-        if res and res.get("result") == "error":
-            errors = res.get("errors", [])
-            if any(e.get("code") == "InvisibleItemException" for e in errors):
-                return "削除", None
- 
-        # --- 2. 正常データの解析 ---
-        if res and res.get("result") == "OK":
-            item = res.get("data", {})
-            if isinstance(item, list):
-                if not item:
-                    return "判定不可", None
-                item = item[0]
+        if status != "判定不可":
+            return status, price
 
-            # オークション判定
-            auction_info = item.get("auction_info")
-            if auction_info and auction_info.get("id"):
-                return "オークション", None
-                        
-            # 通常ステータス判定
-            status = item.get("status")
-            if status == "on_sale":
-                return "販売中", item.get("price")
-            elif status in ["trading", "sold_out", "finished"]:
-                return "売り切れ", None
-            
-            return "判定不可", None
-
-        # --- 3. 失敗時のリトライ ---
+        # --- リトライ ---
         if attempt < max_retries - 1:
             time.sleep(1)
             continue
