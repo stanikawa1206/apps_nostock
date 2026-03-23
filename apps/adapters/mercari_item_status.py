@@ -124,15 +124,28 @@ def detect_status_from_mercari(page, url: str) -> Tuple[str, Optional[int]]:
     for attempt in range(max_retries):
         res, html_content = fetch_mercari_api_data(page, url)
         
+        # ===== DEBUG LOG START =====
+        try:
+            item_id = url.split("/")[-1]
+
+            if res is None:
+                print(f"[DEBUG] item_id={item_id} res=None")
+            else:
+                result = res.get("result")
+                error_codes = [e.get("code") for e in res.get("errors", [])] if res.get("errors") else []
+
+                print(f"[DEBUG] item_id={item_id} result={result} errors={error_codes}")
+        except Exception as e:
+            print(f"[DEBUG ERROR] {e}")
+        # ===== DEBUG LOG END =====
+
+
         # --- 1. 削除の確定判定 ---
         if res and res.get("result") == "error":
             errors = res.get("errors", [])
             if any(e.get("code") == "InvisibleItemException" for e in errors):
                 return "削除", None
-        
-        if "該当する商品は削除されています" in html_content:
-            return "削除", None
-
+ 
         # --- 2. 正常データの解析 ---
         if res and res.get("result") == "OK":
             item = res.get("data", {})
@@ -143,10 +156,9 @@ def detect_status_from_mercari(page, url: str) -> Tuple[str, Optional[int]]:
 
             # オークション判定
             auction_info = item.get("auction_info")
-            if auction_info is not None:
-                price = auction_info.get("highest_bid") or auction_info.get("initial_price")
-                return "オークション", price
-            
+            if auction_info and auction_info.get("id"):
+                return "オークション", None
+                        
             # 通常ステータス判定
             status = item.get("status")
             if status == "on_sale":

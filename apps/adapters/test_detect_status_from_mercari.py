@@ -2,7 +2,7 @@
 from playwright.sync_api import sync_playwright
 from apps.adapters.mercari_item_status import detect_status_from_mercari
 
-URL = "https://jp.mercari.com/item/m82308235069"
+URL = "https://jp.mercari.com/item/m62459242284"
 
 def run():
     print(f"Checking URL: {URL}")
