@@ -388,12 +388,17 @@ def run_remaining_worker(worker_name: str):
 
         with sync_playwright() as p:
 
-            # Playwrightブラウザを1回だけ起動
+            # browserとcontextを１回だけ起動=使いまわし
+            # この２つは起動が重いので、使いまわしすべき
             browser = p.chromium.launch(headless=True)
             context = browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
             )
-            page = context.new_page()
+
+            # ここでpageを起動＝使いまわしている
+            # page自体は軽いが、使いまわしていると、重くなる 
+            # だから、コメントout　　26/3/23
+            # page = context.new_page()
 
             # 画像やCSSを遮断（バッチ内全ページに適用）
             page.route("**/*", lambda route: 
@@ -432,6 +437,9 @@ def run_remaining_worker(worker_name: str):
 
                 for row in rows:
                     print(f"\n[INFO] batch processing {processed_count + 1}/{MAX_PER_RUN} ...")
+                    # ★ここで毎回 new_page 26/3/26
+                    page = context.new_page()
+
                     process_status_and_sync(work_conn, page, driver, row, worker_name)
                     processed_count += 1
                     if processed_count >= MAX_PER_RUN:
