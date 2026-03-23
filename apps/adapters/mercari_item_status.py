@@ -79,6 +79,7 @@ def extract_price_jpy_from(main: BeautifulSoup) -> Optional[int]:
 def fetch_mercari_api_data(page, url):
     storage = {"json": None}
 
+    # api きたら拾う
     def handle_response(response):
         if "items/get?id=" in response.url:
             if "application/json" in response.headers.get("content-type", ""):
@@ -87,16 +88,16 @@ def fetch_mercari_api_data(page, url):
                 except Exception:
                     pass
 
-    page.on("response", handle_response)
+    page.on("response", handle_response) # 監視 start
 
     try:
-        # 1. ページ遷移
+        # 1. ページ開く
         print(f"[{datetime.now().strftime('%H:%M:%S')}] domcontentloaded")
         # page.goto(url, wait_until="networkidle", timeout=30000)
         # page.goto(url, wait_until="domcontentloaded", timeout=30000)
         page.goto(url, wait_until="domcontentloaded", timeout=10000)
         print("goto end")
-        
+
         #  responseイベントでAPIが取得されるのを待機する（このループ自体は取得処理ではない）
         start = time.time()
         for _ in range(40):  # 0.2秒ごとに × 40回のAPI待ち = 最大8秒 

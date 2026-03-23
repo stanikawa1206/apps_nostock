@@ -438,15 +438,12 @@ def run_remaining_worker(worker_name: str):
                 for row in rows:
                     print(f"\n[INFO] batch processing {processed_count + 1}/{MAX_PER_RUN} ...")
                     # ★ここで毎回 new_page 26/3/26
-                    print("page作り直してるよ")
                     page = context.new_page()
                     # リクエストを制御して軽量化してる処理
-                    page.route("**/*", lambda route: 
-                        route.abort() if route.request.resource_type in ["image", "media", "font", "stylesheet"] 
-                        else route.continue_()
-                    )
-
-
+                    # page.route("**/*", lambda route: 
+                    #    route.abort() if route.request.resource_type in ["image", "media", "font", "stylesheet"] 
+                    #    else route.continue_()
+                    #)
 
                     process_status_and_sync(work_conn, page, driver, row, worker_name)
                     processed_count += 1
