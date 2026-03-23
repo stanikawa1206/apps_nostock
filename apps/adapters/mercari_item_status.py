@@ -100,6 +100,7 @@ def fetch_mercari_api_data(page, url):
 
         # --- ▼追加①：API発火を促すためにスクロール ---
         # （メルカリはスクロールでAPIが発火することがある）
+        print("scroll")
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
 
         # --- ▼追加②：API発火待ちのため少し待機 ---
