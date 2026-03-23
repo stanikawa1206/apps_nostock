@@ -98,6 +98,14 @@ def fetch_mercari_api_data(page, url):
         page.goto(url, wait_until="domcontentloaded", timeout=10000)
         print("goto end")
 
+        # --- ▼追加①：API発火を促すためにスクロール ---
+        # （メルカリはスクロールでAPIが発火することがある）
+        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+
+        # --- ▼追加②：API発火待ちのため少し待機 ---
+        # （即evaluateするとAPIがまだ来てないことがある）
+        page.wait_for_timeout(1000)
+
         #  responseイベントでAPIが取得されるのを待機する（このループ自体は取得処理ではない）
         start = time.time()
         for _ in range(40):  # 0.2秒ごとに × 40回のAPI待ち = 最大8秒 

@@ -446,6 +446,20 @@ def run_remaining_worker(worker_name: str):
                     #    else route.continue_()
                     #)
 
+                    # ↓　こちらに変更
+
+                    # --- ▼変更：軽量化しつつ、APIは止めないように修正 ---
+                    page.route("**/*", lambda route:
+                        # API（items/get）は必要なので必ず通す
+                        route.continue_() if "items/get" in route.request.url else
+
+                        # 画像・動画・フォント・CSSは不要なので遮断（軽量化）
+                        route.abort() if route.request.resource_type in ["image", "media", "font", "stylesheet"] else
+
+                        # それ以外はそのまま通す
+                        route.continue_()
+                    )
+
                     process_status_and_sync(work_conn, page, driver, row, worker_name)
                     processed_count += 1
                     if processed_count >= MAX_PER_RUN:
