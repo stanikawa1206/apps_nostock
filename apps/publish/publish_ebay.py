@@ -130,16 +130,10 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str) -> Dict[st
         detail = res.get("productDetail", {})
         shop = detail.get("shop", {})
 
-        print("res")
-        print(res)
-        print("detail")
-        print(detail)
-
-        updated = detail.get("updated")
-
+        update_time_str = res.get("updateTime")
         vendor_updated_at = None
-        if updated:
-            vendor_updated_at = datetime.fromtimestamp(updated)
+        if update_time_str:
+            vendor_updated_at = datetime.fromisoformat(update_time_str.replace("Z", "+00:00"))
 
         return {
             "vendor_name": vendor_name,
