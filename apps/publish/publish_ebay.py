@@ -130,7 +130,12 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str) -> Dict[st
         detail = res.get("productDetail", {})
         shop = detail.get("shop", {})
 
-        updated = item.get("updated")
+        print("res")
+        print(res)
+        print("detail")
+        print(detail)
+
+        updated = detail.get("updated")
 
         vendor_updated_at = None
         if updated:
@@ -387,7 +392,7 @@ def upsert_vendor_item(conn, rec: Dict[str, Any]):
             price_val = None
 
     listing_head   = _none_if_blank(rec.get("listing_head"))
-    listing_detail = _none_if_blank(rec.get("listinhig_detail"))
+    listing_detail = _none_if_blank(rec.get("listing_detail"))
 
     params = (
         rec["vendor_name"],
