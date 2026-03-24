@@ -103,6 +103,7 @@ def fetch_mercari_api_data(page, url):
         # --- ▼追加：scrollは例外で落とさない ---
         print("scroll")
         try:
+            print("evaluate")
             page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         except Exception:
             print("[WARN] scroll失敗（無視して続行）")
