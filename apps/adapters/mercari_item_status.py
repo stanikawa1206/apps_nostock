@@ -185,7 +185,10 @@ def detect_status_from_mercari(page, url: str) -> Tuple[str, Optional[int]]:
 
         # --- リトライ ---
         if attempt < max_retries - 1:
+            print("retry")
             time.sleep(1)
+            page.close()
+            page = page.context.new_page()
             continue
         break
 

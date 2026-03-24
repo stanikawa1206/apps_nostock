@@ -1,23 +1,33 @@
-# filename: test_detect_status_from_mercari.py
 from playwright.sync_api import sync_playwright
-from apps.adapters.mercari_item_status import detect_status_from_mercari
+from apps.adapters.mercari_item_status import (
+    detect_status_from_mercari,
+    detect_status_from_mercari_shops
+)
 
-URL = "https://jp.mercari.com/item/m62459242284"
+URL = "https://jp.mercari.com/shops/product/2JMuJobBJFXDw8iQ9gvanK"
 
+
+def detect_status_auto(page, driver, url):
+    if "/shops/" in url:
+        driver.get(url)   
+        return detect_status_from_mercari_shops(driver)
+    else:
+        return detect_status_from_mercari(page, url)
+    
 def run():
     print(f"Checking URL: {URL}")
     
-    # Playwrightを開始してpageを作成する
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        # 本番と同じようにcontextを作成
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         )
         page = context.new_page()
-
-        # 第一引数に page を渡す
-        status, price = detect_status_from_mercari(page, URL)
+        
+        from selenium import webdriver
+        driver = webdriver.Chrome()
+        # ★ここだけ変える
+        status, price = detect_status_auto(page, driver, URL)
 
         print("--- RESULT ---")
         print("STATUS:", status)
