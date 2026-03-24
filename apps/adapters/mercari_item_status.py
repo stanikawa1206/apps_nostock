@@ -100,8 +100,12 @@ def fetch_mercari_api_data(page, url):
 
         # --- ▼追加①：API発火を促すためにスクロール ---
         # （メルカリはスクロールでAPIが発火することがある）
+        # --- ▼追加：scrollは例外で落とさない ---
         print("scroll")
-        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        try:
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        except Exception:
+            print("[WARN] scroll失敗（無視して続行）")
 
         # --- ▼追加②：API発火待ちのため少し待機 ---
         # （即evaluateするとAPIがまだ来てないことがある）
