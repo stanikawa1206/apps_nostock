@@ -21,6 +21,7 @@ import boto3
 from datetime import timedelta  # 追加（mainのstateで使う）
 from dataclasses import dataclass
 from playwright.sync_api import sync_playwright
+from selenium import webdriver
 
 # =========================
 # Third-party
@@ -97,11 +98,11 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str, driver) ->
     データ取得 → Playwright(API)
     """
     import time
-    from datetime import datetime
     
     # =========================
     # ① 状態判定（Selenium）
     # =========================
+    driver.get(url)
     status, price = detect_status_from_mercari_shops(driver)
 
     if status != "販売中":
@@ -769,13 +770,14 @@ def heavy_check_detail(
     debug_unavailable_dump,
     writes_since_commit,
     low_jpy_target,   # ★追加
-    high_jpy_target   # ★追加
+    high_jpy_target,   # ★追加
+    driver 
 ):
     """
     ✅ ここでは「詳細解析」「NG判定」「翻訳生成」まで。
     ✅ 画像URLの最終決定（NORMAL/CDN）は post_to_ebay 側でやる（重要）
     """
- 
+
     # === STEP 1: Playwright (API) で最速生存確認 ===
     try:
         # === 解析実行 (すべて Playwright 1回完結) ===
@@ -1538,16 +1540,17 @@ def main():
     total_listings = 0
     MAX_LISTINGS = 10**9
     stop_all = False
-
-    conn = get_sql_server_connection()
-
     conn = get_sql_server_connection()
     summary_success = {}
+    driver = None
 
     try:
         presets = fetch_active_presets(conn)
+        driver = webdriver.Chrome() 
 
         with sync_playwright() as p:
+
+            
 
             while not stop_all:
                 acct = fetch_next_account_and_lock(conn, current_pc)
@@ -1599,6 +1602,8 @@ def main():
                         cdn_mode_until = None
 
                     row = take_one_vendor_item(conn, acct.preset_group, processing_by, acct.account)
+                    if row:
+                        print(f"[DEBUG] picked SKU={row['vendor_item_id']} price={row['price']} shipping_days={row['shipping_days']} 出品状況={row.get('出品状況')}")
                     if not row:
                         print(f"[INFO] {acct.account} 在庫枯渇")
                         close_reason = "EMPTY"
@@ -1656,7 +1661,7 @@ def main():
                         heavy, _, writes_since_commit, _, _ = heavy_check_detail(
                             conn, page, item_url, sku, row["preset"], vendor_name, row["mode"],
                             row["default_brand_en"], row["category_id_ebay"], row["department"], row["type_ebay"],
-                            {}, writes_since_commit, row["low_jpy_target"], row["high_jpy_target"]
+                            {}, writes_since_commit, row["low_jpy_target"], row["high_jpy_target"],driver
                         )
 
                         if heavy:
@@ -1730,6 +1735,8 @@ def main():
             release_pc_and_close_account(conn, current_pc)
         except:
             pass
+        if driver:  
+            driver.quit()        
         conn.close()
 
 if __name__ == "__main__":
