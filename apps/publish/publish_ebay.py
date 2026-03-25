@@ -55,7 +55,7 @@ from apps.adapters.mercari_item_status import (
     MercariItemUnavailableError,
     mark_vendor_item_unavailable,
 )
-from apps.adapters.mercari_item_status import fetch_mercari_api_data,_parse_status_from_res
+from apps.adapters.mercari_item_status import fetch_mercari_api_data,_parse_status_from_res,detect_status_from_mercari_shops
 from datetime import datetime
 
 # ========= 固定値／運用設定 =========
@@ -90,32 +90,41 @@ class FatalRendererError(Exception):
     pass
 
 # ========= 詳細解析（Shops / 通常） =========
-def parse_detail_shops(page, url: str, preset: str, vendor_name: str) -> Dict[str, Any]:
+def parse_detail_shops(page, url: str, preset: str, vendor_name: str, driver) -> Dict[str, Any]:
     """
-    【Newer Version】メルカリShops: Playwright(API)で全データを解析。
-    'view=FULL' を含むレスポンスをキャプチャして高速に処理します。
+    メルカリShops:
+    状態判定 → Selenium
+    データ取得 → Playwright(API)
     """
     import time
     from datetime import datetime
     
+    # =========================
+    # ① 状態判定（Selenium）
+    # =========================
+    status, price = detect_status_from_mercari_shops(driver)
+
+    if status != "販売中":
+        raise MercariItemUnavailableError(status)
+
+    # =========================
+    # ② API取得（Playwright）
+    # =========================
     api_payload = {"data": None}
 
     def handle_response(response):
         if "view=FULL" in response.url:
             try:
                 api_payload["data"] = response.json()
-            except: pass
+            except:
+                pass
 
     page.on("response", handle_response)
     
     try:
-        # ページ遷移。ShopsはLazy Loadが強いので少しスクロール
         page.goto(url, wait_until="domcontentloaded", timeout=20000)
-        
-        # 2. 強制的にスクロールさせてAPIを叩かせる
-        # goto が終わっていなくても、ブラウザ内では読み込みが続いているので操作可能です
-        start = time.time()
 
+        start = time.time()
         while api_payload["data"] is None:
             if time.time() - start > 15:
                 raise Exception("API timeout")
@@ -124,8 +133,10 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str) -> Dict[st
             time.sleep(1)
 
         res = api_payload["data"]
-        if not res:
-            raise MercariItemUnavailableError("削除")
+
+        # ❌ ここで削除判定しない（Seleniumに任せる）
+        if res is None:
+            raise Exception("API取得失敗")  # ← retry対象
 
         detail = res.get("productDetail", {})
         shop = detail.get("shop", {})
@@ -139,8 +150,8 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str) -> Dict[st
             "vendor_name": vendor_name,
             "title_jp": res.get("displayName"),
             "title_en": "",
-            "price": int(res.get("price", 0)),
-            "vendor_updated_at": vendor_updated_at,   #
+            "price": int(res.get("price", 0)),  # ← JSON優先
+            "vendor_updated_at": vendor_updated_at,
             "shipping_region": detail.get("shippingFromArea", {}).get("displayName", ""),
             "shipping_days": detail.get("shippingDuration", {}).get("displayName", ""),
             "seller_id": shop.get("name", ""),
@@ -150,8 +161,8 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str) -> Dict[st
             "preset": preset,
             "description": detail.get("description", ""),
             "description_en": "",
-            
         }
+
     finally:
         page.remove_listener("response", handle_response)
 
@@ -770,7 +781,7 @@ def heavy_check_detail(
         # === 解析実行 (すべて Playwright 1回完結) ===
         if vendor_name == "メルカリshops":
             # ★ ShopsもPlaywright化！
-            rec = parse_detail_shops(page, item_url, preset, vendor_name)
+            rec = parse_detail_shops(page, item_url, preset, vendor_name, driver)
         else:
             # 通常メルカリ
             rec = parse_detail_personal(page, item_url, preset, vendor_name)
@@ -1712,7 +1723,7 @@ def main():
         send_mail("✅ eBay出品処理 完了通知", body)
 
         print(f"[EXIT] 処理完了（合計出品数: {total_listings}）")
-        sys.exit(0)
+        sys.exit(10)
 
     finally:
         try:

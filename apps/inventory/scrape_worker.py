@@ -471,11 +471,10 @@ def fetch_page_json_bk(page, url, conn, job_id):
     return data
 
 def fetch_page_json(page, url, conn, job_id):
-    print("************* デッドロック対策版 *************")
 
     for attempt in range(2):
         try:
-            print("A: expect_response start")
+            print(f"A: expect_response start {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             # 1. 応答を待機する「入れ物」だけ用意
             with page.expect_response(
                 lambda r: r.request.method == "POST" and "entities:search" in r.url,
@@ -488,15 +487,15 @@ def fetch_page_json(page, url, conn, job_id):
 
             if resp.status != 200:
                 raise RuntimeError(f"Mercari API status={resp.status}")
-
-            print("B: before body (using resp.json())")
+            
+            print(f"B: before body (using resp.json()) {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             # 3. body() ではなく json() を直接使い、かつ変数を分離
             json_data = resp.json() 
-            print("C: after body")
+            print(f"C: after body {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             return json_data
  
         except Exception as e:
-            print("D: exception", type(e), e)
+            print(f"D: exception {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} {type(e)} {e}")
             if attempt == 1:
                 raise RuntimeError("BROWSER_BROKEN")
         

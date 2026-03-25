@@ -192,10 +192,11 @@ def launch_remaining_workers():
         "210.131.209.232",
     ]
 
-    for idx, ip in enumerate(VPS_LIST, start=1):
+
+    for ip in VPS_LIST:
 
         vps_cmd = (
-            f'start "VPS_CHECK_{idx}" '
+            f'start "{ip}" '
             f'ssh -tt root@{ip} '
             '"cd /opt/apps_nostock && '
             'git pull && '
