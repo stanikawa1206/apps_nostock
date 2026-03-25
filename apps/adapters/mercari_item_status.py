@@ -120,13 +120,17 @@ def fetch_mercari_api_data(page, url):
             # API待機が無限ループ化するのを防ぐため、
             # 最大待機時間（ここでは10秒）を超えたら強制的に抜ける
             if time.time() - start > 10:  # 最大10秒
-                break
-
+                #break  timeoutはerror処理すべき
+                raise TimeoutError("API来ない")
             page.wait_for_timeout(200)
 
-        return storage["json"], page.content()
-    except Exception:
-        return None, ""
+        print("json取得")
+        # return storage["json"], page.content()   page.content()はHTML（ページの中身全部）　HTMLは不要 26/03/25
+        return storage["json"], None
+    except Exception  as e:
+        # return None, ""  エラーとして処理すべき
+        print("[ERROR fetch]", e)
+        raise SystemExit("fetch失敗 → worker終了")
     finally:
         page.remove_listener("response", handle_response)
 
