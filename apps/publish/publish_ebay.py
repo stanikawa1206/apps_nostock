@@ -1545,9 +1545,15 @@ def main():
     driver = None
 
     try:
+        from selenium.webdriver.chrome.options import Options
         presets = fetch_active_presets(conn)
-        driver = webdriver.Chrome() 
+        options = Options()
+        options.add_argument("--headless=new")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
 
+        driver = webdriver.Chrome(options=options)
+    
         with sync_playwright() as p:
 
             
