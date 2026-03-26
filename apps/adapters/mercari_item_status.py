@@ -71,6 +71,7 @@ def fetch_json_core(page, url, match_func):
 
     # api きたら拾う
     def handle_response(response):
+        print("test test *** URL:", response.url)
         if match_func(response):
             try:
                 storage["json"] = response.json()
