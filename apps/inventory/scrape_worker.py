@@ -14,7 +14,7 @@ from playwright.sync_api import sync_playwright
 from typing import Any, Dict, List, Tuple, Optional
 from urllib.parse import urlencode, urlparse, parse_qsl, urlunparse
 from datetime import datetime, timezone, timedelta
-from apps.adapters.mercari_item_status import handle_listing_delete,handle_listing_price_update
+from apps.adapters.mercari_item_status import handle_listing_delete,handle_listing_price_update,fetch_json_core
 
 
 # =========================
@@ -471,6 +471,18 @@ def fetch_page_json_bk(page, url, conn, job_id):
     return data
 
 def fetch_page_json(page, url, conn, job_id):
+
+    json_data = fetch_json_core(
+        page,
+        url,
+        lambda r: r.request.method == "POST"
+                  and "entities:search" in r.url
+    )
+
+    return json_data
+
+
+def fetch_page_json_260326(page, url, conn, job_id):
 
     for attempt in range(2):
         try:
