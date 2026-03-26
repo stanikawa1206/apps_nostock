@@ -475,12 +475,10 @@ def fetch_page_json(page, url, conn, job_id):
     json_data = fetch_json_core(
         page,
         url,
-        lambda r: r.request.method == "POST"
-                  and "entities:search" in r.url
+        lambda r: "entities:search" in r.url
     )
 
     return json_data
-
 
 def fetch_page_json_260326(page, url, conn, job_id):
 
