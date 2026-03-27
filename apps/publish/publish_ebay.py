@@ -1116,6 +1116,7 @@ def post_to_ebay(
             "C:Type": type_ebay,
             "C:Country of Origin": "France",
         }
+        print(f"[DEBUG] preset_in_post={preset}")
         if "万年筆" in preset or "ボールペン" in preset:
             payload["C:Material"] = "Steel"
             payload["C:Ink Color"] = "Black"
