@@ -1688,8 +1688,6 @@ def main():
                             {}, writes_since_commit, row["low_jpy_target"], row["high_jpy_target"],driver
                         )
 
-                        print(f"[DEBUG] heavy={heavy}")
-
                         if heavy:
                             (
                                 acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
