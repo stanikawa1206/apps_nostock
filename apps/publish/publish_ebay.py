@@ -1101,6 +1101,7 @@ def post_to_ebay(
             cdn_cache=cdn_cache,
             limit=12,
         )
+        print(f"[DEBUG] preset={preset} type={type(preset)}")
         if "万年筆" in preset or "ボールペン" in preset:
             material = "Steel"
             ink_color = "Black"
