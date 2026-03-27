@@ -895,7 +895,8 @@ def heavy_check_detail(
     vendor_updated_at = rec.get("vendor_updated_at")
 
     if vendor_updated_at is not None:
-        if vendor_updated_at < datetime.now() - timedelta(days=40):
+        target_dt = vendor_updated_at.replace(tzinfo=None) 
+        if target_dt < datetime.now() - timedelta(days=40):
             rec["listing_head"] = "古い更新"
             rec["listing_detail"] = str(vendor_updated_at)
             upsert_vendor_item(conn, rec)
@@ -1455,6 +1456,7 @@ def take_one_vendor_item(conn, preset_group, processing_by, account_name):
             ON s.seller_id = v.seller_id
         WHERE
             v.processing_at IS NULL
+            AND (v.status = N'販売中' OR v.status IS NULL)
             AND (v.status = N'販売中' OR v.status IS NULL)
             AND ISNULL(v.出品不可flg, 0) = 0
             AND ISNULL(s.is_ng, 0) = 0

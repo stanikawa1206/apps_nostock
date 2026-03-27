@@ -23,7 +23,7 @@ if [ $? != 0 ]; then
             code=\$?
             echo \"=== exited with code=\$code ===\"
 
-            if [ \$code -eq 0 ]; then
+            if [ \$code -eq 0 ] || [ \$code -eq 10 ]; then
                 echo 'normal exit'
                 break
             fi
