@@ -1451,7 +1451,7 @@ def take_one_vendor_item(conn, preset_group, processing_by, account_name):
         INNER JOIN mst.presets_price_ranges r 
             ON r.preset_group = ? 
             AND r.category_group = pl.category_group
-        INNER JOIN mst.seller s
+        LEFT JOIN mst.seller s
             ON s.seller_id = v.seller_id
         WHERE
             v.processing_at IS NULL
