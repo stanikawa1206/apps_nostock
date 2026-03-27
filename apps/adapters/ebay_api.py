@@ -819,12 +819,14 @@ def update_ebay_price_rest(
             UPDATE trx.listings
             SET
                 error_message = ?,
+                delete_reason = ?,
                 error_at = SYSDATETIME(),
                 is_deleted = 1
             WHERE vendor_item_id = ?
             AND is_deleted=0
             """,
             error_message,
+            "価格更新失敗",  # delete_reason に入る値
             sku
         )
 
@@ -864,12 +866,21 @@ def update_ebay_price_rest(
 
         conn=get_sql_server_connection()
         cursor=conn.cursor()
-        cursor.execute("""
+        cursor.execute(
+            """
             UPDATE trx.listings
-            SET error_message=?,error_at=SYSDATETIME(),is_deleted=1
-            WHERE vendor_item_id=?
-            AND is_deleted=0
-            """,error_message,sku)
+            SET 
+                error_message = ?, 
+                delete_reason = ?,  -- 追加
+                error_at = SYSDATETIME(), 
+                is_deleted = 1
+            WHERE vendor_item_id = ?
+            AND is_deleted = 0
+            """,
+            error_message, 
+            "価格更新失敗",  # delete_reason に入る値
+            sku
+        )
         conn.commit()
         conn.close()
 

@@ -448,6 +448,7 @@ def handle_listing_delete(
     conn,
     vendor_item_id: str,
     vendor_name: str,
+    reason: str,
     simulate: bool = False,
 ):
     listing_id, account = get_active_listing_for_action(
@@ -475,7 +476,8 @@ def handle_listing_delete(
             cur.execute("""
                 UPDATE trx.listings
                    SET is_deleted = 1,
-                       deleted_at = ?
+                       deleted_at = ?,
+                       delete_reason = ?
                  WHERE listing_id = ?
                    AND account = ?
             """, (datetime.now(), listing_id, account))

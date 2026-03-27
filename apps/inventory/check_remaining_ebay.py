@@ -535,6 +535,7 @@ def process_status_and_sync(
                     conn,
                     sku,
                     vendor_name,
+                    "価格範囲外",
                 )
                 print(">>> DELETE END", sku)
 
@@ -583,6 +584,7 @@ def process_status_and_sync(
             conn,
             sku,
             vendor_name,
+            status,
         )
         print(">>> DELETE END", sku)
 

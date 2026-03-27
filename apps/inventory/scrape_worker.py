@@ -249,7 +249,7 @@ def handle_price_change_side_effects(
             f"[PRICE OUT] {sku}: {old_price} -> {new_price_jpy} JPY",
             flush=True,
         )
-        handle_listing_delete(conn, sku, vendor_name)
+        handle_listing_delete(conn, sku, vendor_name,"価格範囲外",)
         return
 
     # ─────────────────────────────
@@ -578,70 +578,72 @@ def run_fetch_sold_ebay(page, payload: dict, job_id: int) -> Tuple[int, int]:
 
     page_idx = 0
     seen_ids: set[str] = set()
+    conn = get_sql_server_connection()
 
+    try:
+        while True:
 
-    while True:
-
-        if page_idx >= MAX_PAGES:
-            print(f"[STOP] reached MAX_PAGES={MAX_PAGES}", flush=True)
-            break
-
-        target_url = page_url(base_url, page_idx)
-        print(f"[PAGE {page_idx+1}] GET {target_url}", flush=True)
-        conn = None
-
-        try:
-            conn = get_sql_server_connection()
-
-            json_data = fetch_page_json(page, target_url, conn, job_id)
-            items = extract_items_from_json(json_data)
-            print(f"[PAGE {page_idx+1}] scraped={len(items)}", flush=True)
-            fetched_pages += 1
-
-            if not items:
+            if page_idx >= MAX_PAGES:
+                print(f"[STOP] reached MAX_PAGES={MAX_PAGES}", flush=True)
                 break
 
-            rows = []
+            target_url = page_url(base_url, page_idx)
+            print(f"[PAGE {page_idx+1}] GET {target_url}", flush=True)
 
-            for iid, title, price, seller, created, updated in items:
-                iid = (iid or "").strip()
-                if not iid or iid in seen_ids:
-                    continue
-                seen_ids.add(iid)
-                fetched_items += 1
+            # --- ここからページ単位の try ---
+            try:
+                json_data = fetch_page_json(page, target_url, conn, job_id)
+                items = extract_items_from_json(json_data)
+                print(f"[PAGE {page_idx+1}] scraped={len(items)}", flush=True)
+                fetched_pages += 1
 
-                rows.append({
-                    "vendor_name": vendor_name,
-                    "vendor_item_id": iid,
-                    "status": "売り切れ",
-                    "preset": preset_name,
-                    "title_jp": title,
-                    "price": None,
-                    "vendor_created_at": created,
-                    "vendor_updated_at": updated,
-                })
-                handle_listing_delete(conn, iid, vendor_name)
+                if not items:
+                    break
 
-            if rows:
-                upsert_vendor_items(conn, rows, now_jst())
+                rows = []
 
-        except RuntimeError as e:
-            if "FETCH_TIMEOUT" in str(e) or "BROWSER_BROKEN" in str(e):
-                raise
-            print(f"[WARN] page error page={page_idx+1}: {e}", flush=True)
+                for iid, title, price, seller, created, updated in items:
+                    iid = (iid or "").strip()
+                    if not iid or iid in seen_ids:
+                        continue
+                    seen_ids.add(iid)
+                    fetched_items += 1
 
-        except Exception as e:
-            print(f"[WARN] page error page={page_idx+1}: {e}", flush=True)
+                    rows.append({
+                        "vendor_name": vendor_name,
+                        "vendor_item_id": iid,
+                        "status": "売り切れ",
+                        "preset": preset_name,
+                        "title_jp": title,
+                        "price": None,
+                        "vendor_created_at": created,
+                        "vendor_updated_at": updated,
+                    })
+                    handle_listing_delete(conn, iid, vendor_name,"売り切れ")
 
-        finally:
-            if conn:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
+                if rows:
+                    upsert_vendor_items(conn, rows, now_jst())
 
-        page_idx += 1
-        time.sleep(1)
+            except RuntimeError as e:
+                if "FETCH_TIMEOUT" in str(e) or "BROWSER_BROKEN" in str(e):
+                    raise
+                print(f"[WARN] page error page={page_idx+1}: {e}", flush=True)
+            except Exception as e:
+                print(f"[WARN] page error page={page_idx+1}: {e}", flush=True)
+
+            # ★ 3. ここでの conn.close() は削除（finallyブロックは外側に移動）
+
+            page_idx += 1
+            time.sleep(1)
+
+    finally:
+        # ★ 4. 全ページ終わったら（またはエラー時に）ここで確実に閉じる
+        if conn:
+            try:
+                conn.close()
+                print(f"[DB] sold_ebay connection closed.", flush=True)
+            except Exception:
+                pass
 
     print(
         f"[SCRAPE END][SOLD] preset='{preset_name}' "
@@ -650,6 +652,7 @@ def run_fetch_sold_ebay(page, payload: dict, job_id: int) -> Tuple[int, int]:
     )
 
     return fetched_pages, fetched_items
+
 
 # ============================================================
 # fetch_active_ebay scrape 本体（1 preset 分）
@@ -679,15 +682,11 @@ def run_fetch_active_ebay(page, payload: dict, job_id: int) -> Tuple[int, int]:
     print(f"🔍 {base_url}", flush=True)
 
     page_idx = 0
+    conn = get_sql_server_connection()
 
-
-    while True:
-        page_start = time.time()
-        conn = None
-
-        try:
-            conn = get_sql_server_connection()
-
+    try:
+        while True:
+            page_start = time.time()
             url = page_url(base_url, page_idx)
             print(f"[PAGE] {page_idx+1} {url}", flush=True)
 
@@ -758,16 +757,16 @@ def run_fetch_active_ebay(page, payload: dict, job_id: int) -> Tuple[int, int]:
             TARGET = 8.0
             if elapsed < TARGET:
                 time.sleep((TARGET - elapsed) + random.uniform(0.0, 5.0))
+            
+            page_idx += 1
+            time.sleep(1)
 
-        finally:
-            if conn:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-
-        page_idx += 1
-        time.sleep(1)
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     print(f"[SCRAPE END] preset={preset}", flush=True)
     return page_idx, total_items

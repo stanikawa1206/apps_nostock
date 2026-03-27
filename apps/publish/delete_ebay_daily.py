@@ -179,35 +179,6 @@ def fetch_delete_candidates_30d_all():
         items.append((acc, iid))
     return items
 
-
-def delete_rows_from_sql(account: str, item_ids):
-    """
-    eBay 側で正常終了した listing_id のみ、
-    trx.listings から DELETE する。
-    """
-    if not item_ids:
-        return 0
-
-    deleted = 0
-    with get_sql_server_connection() as conn:
-        cur = conn.cursor()
-        for iid in item_ids:
-            cur.execute("""
-                UPDATE [trx].[listings]
-                SET is_deleted = 1,
-                    deleted_at = SYSDATETIME()
-                WHERE [account] = ?
-                AND [listing_id] = ?
-                AND ISNULL(is_deleted, 0) = 0
-            """, account, iid)
-
-            if cur.rowcount:
-                deleted += cur.rowcount
-
-        conn.commit()
-    return deleted
-
-
 # ===== eBay 呼び出し =====
 
 def run_enditems_batch(account: str, batch_ids):
@@ -313,12 +284,12 @@ def delete_items_from_ebay_and_sql(account: str, item_ids):
                         cur.execute("""
                             UPDATE trx.listings
                                SET is_deleted = 1,
-                                   deleted_at = SYSDATETIME()
+                                   deleted_at = SYSDATETIME(),
+                                   delete_reason = ?  -- ★ここを追加
                              WHERE account = ?
                                AND listing_id = ?
                                AND ISNULL(is_deleted, 0) = 0
-                        """, (account, iid))
-
+                        """, ("定期削除", account, iid)) # ★引数に "定期削除" を追加
                 conn.commit()
 
                 deleted_total += len(res["ok_ids"])
