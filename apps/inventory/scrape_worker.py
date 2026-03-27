@@ -492,17 +492,22 @@ def fetch_page_json(page, url, conn, job_id):
             ) as resp_info:
                 page.goto(url, wait_until="domcontentloaded", timeout=FETCH_TIMEOUT_MS)
 
-            # 2. withを抜けてからレスポンスオブジェクトを取り出す
-            resp = resp_info.value
+                # 2. withを抜けてからレスポンスオブジェクトを取り出す　→　これはやめる
+                # ↓をwithの中にいれる
+                resp = resp_info.value
 
-            if resp.status != 200:
-                raise RuntimeError(f"Mercari API status={resp.status}")
-            
-            print(f"B: before body (using resp.json()) {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            # 3. body() ではなく json() を直接使い、かつ変数を分離
-            json_data = resp.json() 
-            print(f"C: after body {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            return json_data
+                if resp.status != 200:
+                    raise RuntimeError(f"Mercari API status={resp.status}")
+                
+                print(f"B1: before body() (Fetch Start) {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                raw_body = resp.body() # ← ここで止まるなら「通信」の問題
+                print(f"B2: before json() (Parse Start) {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                json_data = resp.json() # ← ここで止まるなら「データ巨大化」の問題
+
+                # 3. body() ではなく json() を直接使い、かつ変数を分離
+                # json_data = resp.json() 
+                print(f"C: after body {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                return json_data
  
         except Exception as e:
             print(f"D: exception {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} {type(e)} {e}")
