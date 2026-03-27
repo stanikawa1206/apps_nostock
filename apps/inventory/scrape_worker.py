@@ -470,7 +470,7 @@ def fetch_page_json_bk(page, url, conn, job_id):
 
     return data
 
-def fetch_page_json(page, url, conn, job_id):
+def fetch_page_json_new(page, url, conn, job_id):
 
     json_data = fetch_json_core(
         page,
@@ -480,7 +480,7 @@ def fetch_page_json(page, url, conn, job_id):
 
     return json_data
 
-def fetch_page_json_260326(page, url, conn, job_id):
+def fetch_page_json(page, url, conn, job_id):
 
     for attempt in range(2):
         try:
