@@ -1101,13 +1101,6 @@ def post_to_ebay(
             cdn_cache=cdn_cache,
             limit=12,
         )
-        print(f"[DEBUG] preset={preset} type={type(preset)}")
-        if "万年筆" in preset or "ボールペン" in preset:
-            material = "Steel"
-            ink_color = "Black"
-        else:
-            material = None
-            ink_color = None
 
         payload = {
             "CustomLabel": sku,
@@ -1122,9 +1115,10 @@ def post_to_ebay(
             "C:Color": "Multicolor",
             "C:Type": type_ebay,
             "C:Country of Origin": "France",
-            "C:Material": material,
-            "C:Ink Color": ink_color,
         }
+        if "万年筆" in preset or "ボールペン" in preset:
+            payload["C:Material"] = "Steel"
+            payload["C:Ink Color"] = "Black"
 
         return post_one_item(payload, acct, acct_policies_map[acct])
 
