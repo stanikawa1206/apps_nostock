@@ -122,11 +122,14 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str, driver) ->
 
     page.on("response", handle_response)
     
+    print("[DEBUG] before goto (shops)")
+
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=20000)
 
         start = time.time()
         while api_payload["data"] is None:
+            print("[DEBUG] waiting API...")
             if time.time() - start > 15:
                 raise Exception("API timeout")
 
@@ -134,7 +137,8 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str, driver) ->
             time.sleep(1)
 
         res = api_payload["data"]
-
+        print("[DEBUG] API取得成功")
+        
         # ❌ ここで削除判定しない（Seleniumに任せる）
         if res is None:
             raise Exception("API取得失敗")  # ← retry対象
@@ -1441,11 +1445,13 @@ def take_one_vendor_item(conn, preset_group, processing_by, account_name):
         INNER JOIN mst.presets_price_ranges r 
             ON r.preset_group = ? 
             AND r.category_group = pl.category_group
+        INNER JOIN mst.seller s
+            ON s.seller_id = v.seller_id
         WHERE
             v.processing_at IS NULL
             AND (v.status = N'販売中' OR v.status IS NULL)
             AND ISNULL(v.出品不可flg, 0) = 0
-            
+            AND ISNULL(s.is_ng, 0) = 0
             AND (v.price IS NULL OR (v.price >= r.low_jpy_target AND v.price <= r.high_jpy_target))
 
             -- 基本的なNG条件の除外
@@ -1623,6 +1629,8 @@ def main():
                         else f"https://jp.mercari.com/item/{sku}"
                     )
 
+                    print(f"[DEBUG] url={item_url}")
+
                     browser = None
                     context = None
                     page = None
@@ -1669,6 +1677,8 @@ def main():
                             row["default_brand_en"], row["category_id_ebay"], row["department"], row["type_ebay"],
                             {}, writes_since_commit, row["low_jpy_target"], row["high_jpy_target"],driver
                         )
+
+                        print(f"[DEBUG] heavy={heavy}")
 
                         if heavy:
                             (
