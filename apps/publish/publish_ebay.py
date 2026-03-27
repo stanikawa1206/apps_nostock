@@ -1117,10 +1117,12 @@ def post_to_ebay(
             "C:Country of Origin": "France",
         }
         print(f"[DEBUG] preset_in_post={preset}")
+
+        payload["itemSpecifics"] = {}
+
         if "万年筆" in preset or "ボールペン" in preset:
-            print("★条件ヒット")
-            payload["C:Material"] = "Steel"
-            payload["C:Ink Color"] = "Black"
+            payload["itemSpecifics"]["Ink Color"] = ["Black"]
+            payload["itemSpecifics"]["Material"] = ["Steel"]
 
         return post_one_item(payload, acct, acct_policies_map[acct])
 
