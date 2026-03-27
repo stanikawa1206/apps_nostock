@@ -1071,6 +1071,7 @@ def post_to_ebay(
     r2_public_base: str,
     cdn_cache: dict,
     now_dt: datetime,
+    preset
 ):
     """
     - PicURLはここで組み立てる（NORMAL/CDNの分岐は main state に従う）
@@ -1100,6 +1101,12 @@ def post_to_ebay(
             cdn_cache=cdn_cache,
             limit=12,
         )
+        if "万年筆" in preset or "ボールペン" in preset:
+            material = "Steel"
+            ink_color = "Black"
+        else:
+            material = None
+            ink_color = None
 
         payload = {
             "CustomLabel": sku,
@@ -1114,6 +1121,8 @@ def post_to_ebay(
             "C:Color": "Multicolor",
             "C:Type": type_ebay,
             "C:Country of Origin": "France",
+            "C:Material": material,
+            "C:Ink Color": ink_color,
         }
 
         return post_one_item(payload, acct, acct_policies_map[acct])
@@ -1693,8 +1702,10 @@ def main():
                                 BATCH_COMMIT=BATCH_COMMIT, image_mode=image_mode,
                                 image_error_count=image_error_count, cdn_mode_until=cdn_mode_until,
                                 r2=r2, r2_bucket=r2_bucket_name, r2_public_base=r2_public_base,
-                                cdn_cache=cdn_cache, now_dt=datetime.now(),
+                                cdn_cache=cdn_cache, now_dt=datetime.now(),preset=row["preset"]
                             )
+                            if stop_all:
+                                break
 
                             if acct_targets.get(acct.account) == 0:
                                 print(f"🚫 {acct.account} APIリミットを検知しました。")
