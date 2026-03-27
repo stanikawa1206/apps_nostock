@@ -224,6 +224,9 @@ def register_inventory_item(row: Dict[str, Any], token: str) -> Dict[str, Any]:
     platform = (row.get("platform") or row.get("C:Platform") or "").strip()
     game_name = (row.get("game_name") or row.get("C:Game Name") or "").strip()
 
+    ink_color = row.get("C:Ink Color")
+    material = row.get("C:Material")
+
     aspects: Dict[str, list[str]] = {"Brand": [brand]}
     if department:
         aspects["Department"] = [department]
@@ -235,6 +238,11 @@ def register_inventory_item(row: Dict[str, Any], token: str) -> Dict[str, Any]:
         aspects["Platform"] = [platform]
     if game_name:
         aspects["Game Name"] = [game_name]
+    if ink_color:
+        aspects["Ink Color"] = ink_color if isinstance(ink_color, list) else [str(ink_color)]
+    if material:
+        aspects["Material"] = material if isinstance(material, list) else [str(material)]
+
 
     payload = {
         "sku": sku,

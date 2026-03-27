@@ -1118,12 +1118,12 @@ def post_to_ebay(
         }
         print(f"[DEBUG] preset_in_post={preset}")
 
-        payload["itemSpecifics"] = {}
-
+        # [修正ポイント] payload["itemSpecifics"] を作らず、直接 payload に C: 形式で入れる
         if "万年筆" in preset or "ボールペン" in preset:
-            payload["itemSpecifics"]["Ink Color"] = ["Black"]
-            payload["itemSpecifics"]["Material"] = ["Steel"]
+            payload["C:Ink Color"] = ["Black"]
+            payload["C:Material"] = "Steel"
 
+        print(f"[DEBUG] payload to send: {payload}") 
         return post_one_item(payload, acct, acct_policies_map[acct])
 
     # 1回目（現モード）
