@@ -2279,3 +2279,112 @@ Category Breakdown (jp_category_id):
   - ID 637392: 12 items
   - ID 52033011: 2 items
 
+--- 2026-03-28 08:59:31 ---
+Trigger : Continuous Batch
+Output  : 260328_1.csv
+Total   : 10000 rows
+Category Breakdown (jp_category_id):
+  - ID 2229202051: 1658 items
+  - ID 2017304051: 1469 items
+  - ID 2016929051: 979 items
+  - ID 3445393051: 928 items
+  - ID 2127212051: 749 items
+  - ID 14304371: 672 items
+  - ID 2127209051: 566 items
+  - ID 3828871: 549 items
+  - ID 3210981: 506 items
+  - ID 344845011: 334 items
+  - ID 13299531: 332 items
+  - ID 86731051: 301 items
+  - ID 2277721051: 253 items
+  - ID 2123629051: 168 items
+  - ID 561958: 136 items
+  - ID 52033011: 119 items
+  - ID 160384011: 91 items
+  - ID 637394: 59 items
+  - ID 2277724051: 58 items
+  - ID 561956: 41 items
+  - ID 637392: 32 items
+
+--- 2026-03-28 09:02:49 ---
+Trigger : Continuous Batch
+Output  : 260328_2.csv
+Total   : 10000 rows
+Category Breakdown (jp_category_id):
+  - ID 3445393051: 3013 items
+  - ID 2229202051: 978 items
+  - ID 3828871: 895 items
+  - ID 2127212051: 772 items
+  - ID 2127209051: 687 items
+  - ID 14304371: 565 items
+  - ID 3210981: 535 items
+  - ID 344845011: 408 items
+  - ID 2017304051: 372 items
+  - ID 2016929051: 336 items
+  - ID 86731051: 299 items
+  - ID 2277721051: 285 items
+  - ID 13299531: 284 items
+  - ID 561958: 174 items
+  - ID 2123629051: 158 items
+  - ID 637394: 71 items
+  - ID 160384011: 65 items
+  - ID 561956: 51 items
+  - ID 2277724051: 39 items
+  - ID 637392: 8 items
+  - ID 52033011: 4 items
+  - ID 465392: 1 items
+
+--- 2026-03-28 09:03:16 ---
+Trigger : Continuous Batch
+Output  : 260328_3.csv
+Total   : 10000 rows
+Category Breakdown (jp_category_id):
+  - ID 2017304051: 1250 items
+  - ID 2016929051: 1186 items
+  - ID 2229202051: 1059 items
+  - ID 14304371: 915 items
+  - ID 2127209051: 862 items
+  - ID 3445393051: 789 items
+  - ID 3828871: 617 items
+  - ID 2127212051: 586 items
+  - ID 86731051: 458 items
+  - ID 2277721051: 432 items
+  - ID 3210981: 419 items
+  - ID 561958: 365 items
+  - ID 13299531: 354 items
+  - ID 344845011: 246 items
+  - ID 2123629051: 150 items
+  - ID 160384011: 100 items
+  - ID 561956: 75 items
+  - ID 2277724051: 61 items
+  - ID 637394: 59 items
+  - ID 637392: 15 items
+  - ID 52033011: 2 items
+
+--- 2026-03-28 09:03:32 ---
+Trigger : Continuous Batch
+Output  : 260328_4.csv
+Total   : 8018 rows
+Category Breakdown (jp_category_id):
+  - ID 2016929051: 887 items
+  - ID 2127209051: 871 items
+  - ID 2229202051: 844 items
+  - ID 2017304051: 680 items
+  - ID 86731051: 616 items
+  - ID 14304371: 557 items
+  - ID 3828871: 529 items
+  - ID 52033011: 492 items
+  - ID 3210981: 465 items
+  - ID 2277721051: 416 items
+  - ID 3445393051: 381 items
+  - ID 2127212051: 369 items
+  - ID 13299531: 235 items
+  - ID 561958: 172 items
+  - ID 160384011: 160 items
+  - ID 637394: 106 items
+  - ID 561956: 98 items
+  - ID 344845011: 58 items
+  - ID 2123629051: 55 items
+  - ID 637392: 15 items
+  - ID 2277724051: 12 items
+
