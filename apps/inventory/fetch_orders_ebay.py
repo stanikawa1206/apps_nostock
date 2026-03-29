@@ -168,9 +168,21 @@ def send_new_order_mail(
     # -------------------------
     # 送信（HTML）
     # -------------------------
-    sender_email = os.getenv("GMAIL_SENDER_EMAIL")
-    receiver_email = sender_email
-    password = os.getenv("GMAIL_APP_PASSWORD")
+    main_email = os.getenv("GMAIL_SENDER_EMAIL")
+    main_password = os.getenv("GMAIL_APP_PASSWORD")
+    
+    # デフォルト設定（自分から自分へ）
+    sender_email = main_email
+    password = main_password
+    receiver_email = main_email
+    cc_email = None # 通常時はCCなし
+
+    # ★ accountが「貴文②」のときだけ特別ルール
+    if account == "貴文②":
+        sender_email = os.getenv("TAKAFUMI2_EMAIL")
+        password = os.getenv("TAKAFUMI2_PASSWORD")
+        receiver_email = sender_email  # 貴文②本人へ
+        cc_email = main_email          # 自分をCCに入れる
 
     msg = MIMEMultipart("alternative")
     msg["From"] = sender_email

@@ -480,7 +480,7 @@ def handle_listing_delete(
                        delete_reason = ?
                  WHERE listing_id = ?
                    AND account = ?
-            """, (datetime.now(), listing_id, account))
+            """, (datetime.now(),reason, listing_id, account))
         conn.commit()
 
 

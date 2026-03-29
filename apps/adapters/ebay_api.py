@@ -821,6 +821,7 @@ def update_ebay_price_rest(
                 error_message = ?,
                 delete_reason = ?,
                 error_at = SYSDATETIME(),
+                deleted_at = SYSDATETIME(),
                 is_deleted = 1
             WHERE vendor_item_id = ?
             AND is_deleted=0
@@ -873,6 +874,7 @@ def update_ebay_price_rest(
                 error_message = ?, 
                 delete_reason = ?,  -- 追加
                 error_at = SYSDATETIME(), 
+                deleted_at = SYSDATETIME(),
                 is_deleted = 1
             WHERE vendor_item_id = ?
             AND is_deleted = 0

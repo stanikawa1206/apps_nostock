@@ -2,7 +2,6 @@ import time
 import csv
 from apps.common.utils import get_sql_server_connection
 from apps.adapters.ebay_api import update_ebay_price_rest
-from apps.adapters.mercari_item_status import handle_listing_delete
 
 MODE = "API"   # "API" or "CSV"
 
