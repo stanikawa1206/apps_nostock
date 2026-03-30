@@ -690,7 +690,7 @@ def is_image_too_small_error(err_msg: str) -> bool:
         and "500 pixels" in err_msg
     )
 
-def kbuild_pic_urls(
+def build_pic_urls(
     *,
     rec: dict,
     sku: str,
