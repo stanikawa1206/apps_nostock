@@ -813,7 +813,7 @@ def update_ebay_price_rest(
         cursor.execute(
             """
             UPDATE trx.listings
-            SET start_price = ?,
+            SET start_price = ?
             WHERE vendor_item_id = ?
             AND is_deleted = 0
             """,
