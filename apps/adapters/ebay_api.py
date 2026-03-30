@@ -642,90 +642,6 @@ def _inventory_publish_offer(token: str, offer_id: str) -> tuple[bool, dict]:
             print("RETRY publish_offer (timeout)")
             time.sleep(2)
 
-# 旧version
-def update_ebay_price_rest_bk(
-    account: str,
-    sku: str,
-    new_price_usd,
-    *,
-    debug: bool = False
-) -> dict:
-    if not account or not sku:
-        return {"success": False, "error": "missing_account_or_sku"}
-
-    price_str = _to_price_str(new_price_usd)
-
-    # 1) token取得
-    token = get_access_token_new(account)
-    if not token:
-        return {"success": False, "sku": sku, "error": "get_token_failed"}
-
-    # 2) offer_id取得
-    offer_id, list_res = _inventory_get_offer_id_by_sku(token, sku)
-    if not offer_id:
-        out = {
-            "success": False,
-            "sku": sku,
-            "error": "offer_not_found_for_sku",
-        }
-        if debug:
-            out["raw"] = list_res
-        return out
-
-    # 3) offer取得
-    offer_obj = _inventory_get_offer(token, offer_id)
-    if not offer_obj:
-        return {
-            "success": False,
-            "sku": sku,
-            "error": "offer_get_failed",
-        }
-
-    # 4) 価格変更
-    offer_obj.setdefault("pricingSummary", {})
-    offer_obj["pricingSummary"]["price"] = {
-        "value": price_str,
-        "currency": "USD",
-    }
-
-    # 5) PUT
-    ok, put_res = _inventory_put_offer(token, offer_id, offer_obj)
-    if not ok:
-        out = {
-            "success": False,
-            "sku": sku,
-            "error": "inventory_put_failed",
-        }
-        if debug:
-            out["raw"] = put_res
-        return out
-
-    # 6) publish
-    ok2, pub_res = _inventory_publish_offer(token, offer_id)
-    if not ok2:
-        out = {
-            "success": False,
-            "sku": sku,
-            "error": "inventory_publish_failed",
-        }
-        if debug:
-            out["raw"] = pub_res
-        return out
-
-    out = {
-        "success": True,
-        "sku": sku,
-        "listing_id": pub_res.get("listingId"),
-        "price": price_str,
-        "note": "via_inventory_rest",
-    }
-    if debug:
-        out["raw"] = pub_res
-
-    return out
-
-
-# 新version
 def update_ebay_price_rest(
     account: str,
     sku: str,
@@ -791,12 +707,50 @@ def update_ebay_price_rest(
             e = errors[0]
             error_id = e.get("errorId")
             msg = e.get("message", "")
-            long_msg = e.get("longMessage", "")
-
             error_message = f"inventory_put_error_{error_id}:{msg}"
         else:
+            error_id = None
             error_message = "inventory_put_failed"
 
+        print("PUT FAILED:", account, sku, error_message)
+
+        # =========================
+        # 25001 → 何もしない
+        # =========================
+        if error_id == 25001:
+            return {"success": False, "sku": sku, "error": error_message}
+
+        # =========================
+        # 25097 → 削除＋出品不可
+        # =========================
+        if error_id == 25097:
+            delete_item_from_ebay(account, sku)
+
+            conn = get_sql_server_connection()
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                UPDATE trx.vendor_item
+                SET 出品不可flg = 1
+                WHERE vendor_item_id = ?
+            """, (sku,))
+
+            cursor.execute("""
+                UPDATE trx.listings
+                SET
+                    error_message = ?,
+                    delete_reason = ?,
+                    error_at = SYSDATETIME(),
+                    deleted_at = SYSDATETIME(),
+                    is_deleted = 1
+                WHERE vendor_item_id = ?
+                AND is_deleted = 0
+            """, error_message, "IP違反", sku)
+
+            conn.commit()
+            conn.close()
+
+            return {"success": False, "sku": sku, "error": error_message}
 
         # -------------------------
         # 出品削除
@@ -849,20 +803,76 @@ def update_ebay_price_rest(
         if ok2:break
         if attempt<2:time.sleep(2)
 
+    # -------------------------
+    # DB更新（ここ追加）
+    # -------------------------
+    if ok2:
+        conn = get_sql_server_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            UPDATE trx.listings
+            SET start_price = ?,
+                updated_at = SYSDATETIME()
+            WHERE vendor_item_id = ?
+            AND is_deleted = 0
+            """,
+            new_price_usd,
+            sku
+        )
+        conn.commit()   # ★これ必須
+        conn.close()    # ★これも必須    
+
     if not ok2:
-        errors=pub_res.get("errors",[])
+        errors = pub_res.get("errors", [])
+
         if errors:
             e = errors[0]
             error_id = e.get("errorId")
-            msg = e.get("message","")
-            long_msg = e.get("longMessage","")
-
+            msg = e.get("message", "")
             error_message = f"publish_error_{error_id}:{msg}"
         else:
+            error_id = None
             error_message = "publish_failed"
 
-        print("PUBLISH FAILED → DELETE:","account=",account,"sku=",sku,"reason=",error_message)
+        print("PUBLISH FAILED:", account, sku, error_message)
 
+        # 25001 → 何もしない
+        if error_id == 25001:
+            return {"success": False, "sku": sku, "error": error_message}
+
+        # 25097 → 削除＋出品不可
+        if error_id == 25097:
+            delete_item_from_ebay(account, sku)
+
+            conn = get_sql_server_connection()
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                UPDATE trx.vendor_item
+                SET 出品不可flg = 1
+                WHERE vendor_item_id = ?
+            """, (sku,))
+
+            cursor.execute("""
+                UPDATE trx.listings
+                SET
+                    error_message = ?,
+                    delete_reason = ?,
+                    error_at = SYSDATETIME(),
+                    deleted_at = SYSDATETIME(),
+                    is_deleted = 1
+                WHERE vendor_item_id = ?
+                AND is_deleted = 0
+            """, error_message, "IP違反", sku)
+
+            conn.commit()
+            conn.close()
+
+            return {"success": False, "sku": sku, "error": error_message}
+
+        # その他 → 従来通り削除
         delete_item_from_ebay(account,sku)
 
         conn=get_sql_server_connection()
@@ -954,61 +964,6 @@ def update_ebay_price(account: str, ebay_item_id: str, new_price_usd, *, sku: Op
         'price': price_str,
         'note': 'via_inventory'
     }
-
-### ↓これは削除候補　Tradingを使わなくてもいいのに使ってるから　一旦backupとして保存
-def update_ebay_price_bk(account: str, ebay_item_id: str, new_price_usd, *, sku: Optional[str] = None, debug: bool=False) -> dict:
-    
-    if not account or not ebay_item_id:
-        return {'success': False, 'error': 'missing_account_or_item_id'}
-
-    price_str = _to_price_str(new_price_usd)
-
-    # 1) Trading で試行
-    res = revise_price(item_id=str(ebay_item_id), new_price_usd=price_str, account_name=account)
-    if isinstance(res, dict) and res.get('success'):
-        out = {'success': True, 'item_id': str(ebay_item_id), 'price': price_str, 'note': 'via_trading'}
-        if debug: out['raw'] = res
-        return out
-
-    # 21919474 / Inventory管理ならフォールバック（メッセージ判定）
-    err_blob = str(res)
-    needs_inventory = ("21919474" in err_blob) or ("MANAGE_BY_INVENTORY" in err_blob) or ("Inventory-based listing" in err_blob)
-    if not needs_inventory:
-        out = {'success': False, 'item_id': str(ebay_item_id), 'price': price_str, 'error': res.get('error') or 'unknown_failure_from_ebay'}
-        if debug: out['raw'] = res
-        return out
-
-    if not sku:
-        return {'success': False, 'item_id': str(ebay_item_id), 'price': price_str, 'error': 'inventory_managed_but_sku_missing'}
-
-    # 2) Inventory で更新→公開
-    token = get_access_token_new(account)
-    if not token:
-        return {'success': False, 'item_id': str(ebay_item_id), 'price': price_str, 'error': 'get_token_failed'}
-
-    offer_id, list_res = _inventory_get_offer_id_by_sku(token, sku)
-    if not offer_id:
-        out = {'success': False, 'item_id': str(ebay_item_id), 'price': price_str, 'error': 'offer_not_found_for_sku'}
-        if debug: out['raw'] = {'listOffers': list_res}
-        return out
-
-    offer_obj = _inventory_get_offer(token, offer_id) or {}
-    offer_obj.setdefault('pricingSummary', {})['price'] = {"value": price_str, "currency": "USD"}
-    ok, put_res = _inventory_put_offer(token, offer_id, offer_obj)
-    if not ok:
-        out = {'success': False, 'item_id': str(ebay_item_id), 'price': price_str, 'error': 'inventory_put_failed'}
-        if debug: out['raw'] = {'offerId': offer_id, 'putOffer': put_res}
-        return out
-
-    ok2, pub_res = _inventory_publish_offer(token, offer_id)
-    if not ok2:
-        out = {'success': False, 'item_id': str(ebay_item_id), 'price': price_str, 'error': 'inventory_publish_failed'}
-        if debug: out['raw'] = {'offerId': offer_id, 'publishOffer': pub_res}
-        return out
-
-    out = {'success': True, 'item_id': str(pub_res.get('listingId') or ebay_item_id), 'price': price_str, 'note': 'via_inventory'}
-    if debug: out['raw'] = {'offerId': offer_id, 'publishOffer': pub_res}
-    return out
 
 # ==== Mercari Shops: 検索結果 → 商品URL収集（page_token対応） ====
 _SHOPS_ID_RE = re.compile(r"/shops/product/(?P<id>[^/?#]+)")

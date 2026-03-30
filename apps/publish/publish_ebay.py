@@ -432,7 +432,8 @@ def upsert_vendor_item(conn, rec: Dict[str, Any]):
         cur.execute(UPSERT_VENDOR_ITEM_SQL, params)
         _ = cur.fetchall()
 
-def record_ebay_listing(listing_id: str, account_name: str, vendor_item_id: str, vendor_name: str):
+
+def record_ebay_listing(listing_id: str, account_name: str, vendor_item_id: str, vendor_name: str, start_price: float):
     if not listing_id:
         return
 
@@ -441,11 +442,10 @@ def record_ebay_listing(listing_id: str, account_name: str, vendor_item_id: str,
         with conn.cursor() as cur:
             cur.execute("""
 INSERT INTO [trx].[listings]
-    ([listing_id], [start_time], [account], [vendor_item_id], [vendor_name], [is_deleted])
+    ([listing_id], [start_time], [account], [vendor_item_id], [vendor_name], [start_price], [is_deleted])
 VALUES
-    (?, SYSDATETIME(), ?, ?, ?, 0);
-""", (listing_id, account_name, vendor_item_id, vendor_name))
-
+    (?, SYSDATETIME(), ?, ?, ?, ?, 0);
+""", (listing_id, account_name, vendor_item_id, vendor_name, start_price)))
         conn.commit()
     finally:
         conn.close()
@@ -1131,7 +1131,7 @@ def post_to_ebay(
 
         if item_id_ebay:
             print(f"✅ 出品成功: acct={acct} SKU={sku} listing_id={item_id_ebay}")
-            record_ebay_listing(item_id_ebay, acct, sku, vendor_name)
+            record_ebay_listing(item_id_ebay, acct, sku, vendor_name, start_price_usd)
 
             rec["processing_by"] = None
             rec["processing_at"] = None
@@ -1216,7 +1216,7 @@ def post_to_ebay(
                 item_id_ebay = _attempt_post("CDN")
                 if item_id_ebay:
                     print(f"✅ 出品成功(CDN retry): acct={acct} SKU={sku} listing_id={item_id_ebay}")
-                    record_ebay_listing(item_id_ebay, acct, sku, vendor_name)
+                    record_ebay_listing(item_id_ebay, acct, sku, vendor_name, start_price_usd)
 
                     rec["processing_by"] = None
                     rec["processing_at"] = None
