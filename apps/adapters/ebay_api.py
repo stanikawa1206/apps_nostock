@@ -814,7 +814,6 @@ def update_ebay_price_rest(
             """
             UPDATE trx.listings
             SET start_price = ?,
-                updated_at = SYSDATETIME()
             WHERE vendor_item_id = ?
             AND is_deleted = 0
             """,
