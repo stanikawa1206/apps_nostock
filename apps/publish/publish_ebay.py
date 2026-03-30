@@ -484,6 +484,8 @@ def upsert_vendor_item(conn, rec: Dict[str, Any]):
         _ = cur.fetchall()
 
 
+
+
 def record_ebay_listing(listing_id: str, account_name: str, vendor_item_id: str, vendor_name: str, start_price: float):
     if not listing_id:
         return
@@ -690,50 +692,6 @@ def is_image_too_small_error(err_msg: str) -> bool:
         and "500 pixels" in err_msg
     )
 
-def build_pic_urls(
-    *,
-    rec: dict,
-    sku: str,
-    image_mode: str,              # "NORMAL" or "CDN"
-    r2,
-    r2_bucket: str,
-    r2_public_base: str,
-    cdn_cache: dict,              # {sku: [cdn_url,...]}
-    limit: int = 12,
-) -> list:
-    """
-    PicURL用のURLリストを作る。
-    - NORMAL: mercariの画像URLをそのまま返す
-    - CDN   : R2へuploadしてCDN URLを返す（SKU単位でキャッシュ）
-    """
-    src_urls = []
-    for u in (rec.get("images") or []):
-        if isinstance(u, str) and u.strip().startswith("http"):
-            clean = u.strip().split("?")[0].split("#")[0]
-            src_urls.append(clean)
-        if len(src_urls) >= limit:
-            break
-
-    if image_mode == "NORMAL":
-        return src_urls
-
-    # CDN mode
-    if sku in cdn_cache:
-        return cdn_cache[sku]
-
-    if not r2_bucket or not r2_public_base:
-            print(f"[ERROR] CDN設定不足: Bucket={r2_bucket}, Base={r2_public_base}")
-            return src_urls  # 設定が不完全ならメルカリの直URLを返して出品を試みる
-
-
-    cdn_urls = []
-    for idx, u in enumerate(src_urls):
-        key = f"{sku}/{idx+1}.jpg"
-        cdn_url = upload_image_to_r2(r2, r2_bucket, r2_public_base, u, key)
-        cdn_urls.append(cdn_url)
-
-    cdn_cache[sku] = cdn_urls
-    return cdn_urls
 
 def has_color_touchup_or_repair(
     jp_title: str,
@@ -1099,6 +1057,51 @@ def heavy_check_detail(
     }
 
     return heavy, debug_unavailable_dump, writes_since_commit, 0, 0
+
+def build_pic_urls(
+    *,
+    rec: dict,
+    sku: str,
+    image_mode: str,              # "NORMAL" or "CDN"
+    r2,
+    r2_bucket: str,
+    r2_public_base: str,
+    cdn_cache: dict,              # {sku: [cdn_url,...]}
+    limit: int = 12,
+) -> list:
+    """
+    PicURL用のURLリストを作る。
+    - NORMAL: mercariの画像URLをそのまま返す
+    - CDN   : R2へuploadしてCDN URLを返す（SKU単位でキャッシュ）
+    """
+    src_urls = []
+    for u in (rec.get("images") or []):
+        if isinstance(u, str) and u.strip().startswith("http"):
+            clean = u.strip().split("?")[0].split("#")[0]
+            src_urls.append(clean)
+        if len(src_urls) >= limit:
+            break
+
+    if image_mode == "NORMAL":
+        return src_urls
+
+    # CDN mode
+    if sku in cdn_cache:
+        return cdn_cache[sku]
+
+    if not r2_bucket or not r2_public_base:
+            print(f"[ERROR] CDN設定不足: Bucket={r2_bucket}, Base={r2_public_base}")
+            return src_urls  # 設定が不完全ならメルカリの直URLを返して出品を試みる
+
+
+    cdn_urls = []
+    for idx, u in enumerate(src_urls):
+        key = f"{sku}/{idx+1}.jpg"
+        cdn_url = upload_image_to_r2(r2, r2_bucket, r2_public_base, u, key)
+        cdn_urls.append(cdn_url)
+
+    cdn_cache[sku] = cdn_urls
+    return cdn_urls
 
 def post_to_ebay(
     *,
