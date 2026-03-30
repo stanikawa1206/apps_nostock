@@ -22,6 +22,9 @@ from datetime import timedelta  # 追加（mainのstateで使う）
 from dataclasses import dataclass
 from playwright.sync_api import sync_playwright
 from selenium import webdriver
+from PIL import Image
+from io import BytesIO
+import requests
 
 # =========================
 # Third-party
@@ -146,6 +149,30 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str, driver) ->
         detail = res.get("productDetail", {})
         shop = detail.get("shop", {})
 
+        raw_images = detail.get("photos", []) or []
+
+        filtered_images = []
+        for img_url in raw_images:
+            try:
+                res_img = requests.get(img_url, timeout=10)
+                res_img.raise_for_status()
+
+                img = Image.open(BytesIO(res_img.content))
+                width, height = img.size
+
+                if width < 500 or height < 500:
+                    continue
+
+                filtered_images.append(img_url)
+
+            except Exception as e:
+                print(f"[IMAGE ERROR] {img_url} {e}")
+                continue
+
+        if not filtered_images:
+            raise Exception("no valid images (all <500px or error)")
+
+
         update_time_str = res.get("updateTime")
         vendor_updated_at = None
         if update_time_str:
@@ -162,7 +189,7 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str, driver) ->
             "seller_id": shop.get("name", ""),
             "seller_name": shop.get("displayName", ""),
             "rating_count": int(shop.get("shopStats", {}).get("reviewCount", 0)),
-            "images": detail.get("photos", []),
+            "images": filtered_images,
             "preset": preset,
             "description": detail.get("description", ""),
             "description_en": "",
@@ -195,6 +222,30 @@ def parse_detail_personal(page, url: str, preset: str, vendor_name: str) -> Dict
     if updated:
         vendor_updated_at = datetime.fromtimestamp(updated)
 
+    raw_images = item.get("photos", []) or []
+
+    filtered_images = []
+    for img_url in raw_images:
+        try:
+            res_img = requests.get(img_url, timeout=10)
+            res_img.raise_for_status()
+
+            img = Image.open(BytesIO(res_img.content))
+            width, height = img.size
+
+            if width < 500 or height < 500:
+                continue
+
+            filtered_images.append(img_url)
+
+        except Exception as e:
+            print(f"[IMAGE ERROR] {img_url} {e}")
+            continue
+
+    if not filtered_images:
+        raise Exception("no valid images (all <500px or error)")
+
+
     # 4. rec の組み立て
     return {
         "vendor_name": vendor_name,
@@ -207,7 +258,7 @@ def parse_detail_personal(page, url: str, preset: str, vendor_name: str) -> Dict
         "seller_id": str(item.get("seller", {}).get("id", "")),
         "seller_name": item.get("seller", {}).get("name", ""),
         "rating_count": int(item.get("seller", {}).get("num_ratings", 0)),
-        "images": item.get("photos", []),
+        "images": filtered_images,
         "preset": preset,
         "description": item.get("description", ""),
         "description_en": "",
@@ -639,7 +690,7 @@ def is_image_too_small_error(err_msg: str) -> bool:
         and "500 pixels" in err_msg
     )
 
-def build_pic_urls(
+def kbuild_pic_urls(
     *,
     rec: dict,
     sku: str,
@@ -1304,7 +1355,7 @@ def upload_image_to_r2(r2, bucket, public_base, image_url, key):
         # 2. 画像のダウンロード
         res = requests.get(image_url, timeout=30)
         res.raise_for_status()
-        
+
         # 3. R2へのアップロード
         # ACLはR2では基本的に不要（バケットポリシーで公開設定にするのが一般的）
         r2.put_object(
