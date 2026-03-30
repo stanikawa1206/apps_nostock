@@ -496,7 +496,7 @@ INSERT INTO [trx].[listings]
     ([listing_id], [start_time], [account], [vendor_item_id], [vendor_name], [start_price], [is_deleted])
 VALUES
     (?, SYSDATETIME(), ?, ?, ?, ?, 0);
-""", (listing_id, account_name, vendor_item_id, vendor_name, start_price)))
+""", (listing_id, account_name, vendor_item_id, vendor_name, start_price))
         conn.commit()
     finally:
         conn.close()
