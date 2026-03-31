@@ -1518,6 +1518,14 @@ def take_one_vendor_item(conn, preset_group, processing_by, account_name):
 
             -- 基本的なNG条件の除外
             AND (
+                ISNULL(s.rating_count, 0)
+                + ISNULL(DATEDIFF(DAY, s.last_checked_at, SYSDATETIME()), 0) * 0.5
+            ) >= CASE 
+                    WHEN v.vendor_name = N'メルカリ' THEN 50
+                    WHEN v.vendor_name = N'メルカリshops' THEN 20
+                END
+        
+            AND (
                 v.vendor_updated_at IS NULL
                 OR v.vendor_updated_at >= DATEADD(DAY, -40, SYSDATETIME())
             )
