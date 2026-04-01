@@ -182,14 +182,19 @@ def send_new_order_mail(
         sender_email = os.getenv("TAKAFUMI2_EMAIL")
         password = os.getenv("TAKAFUMI2_PASSWORD")
         receiver_email = sender_email  # 貴文②本人へ
-        cc_email = main_email          # 自分をCCに入れる
+        cc_email = main_email          # 自分をCCに入れる        
 
     msg = MIMEMultipart("alternative")
     msg["From"] = sender_email
     msg["To"] = receiver_email
     msg["Subject"] = subject
-
+    if cc_email:
+        msg["Cc"] = cc_email
     msg.attach(MIMEText(body, "html", "utf-8"))
+
+    to_addrs = [receiver_email]
+    if cc_email:
+        to_addrs.append(cc_email)
 
     with smtplib.SMTP("smtp.gmail.com", 587) as server:
         server.starttls()
@@ -322,3 +327,4 @@ def run():
 
 if __name__ == "__main__":
     run()
+

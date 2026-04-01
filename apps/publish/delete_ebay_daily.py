@@ -48,7 +48,7 @@ API_CONCURRENCY  = 1        # API同時実行上限（全体）
 DEFER_WINDOW_SEC = 1800     # 518/429発生 item_id は30分触らない
 
 # 30日以上（固定）
-DAYS_THRESHOLD = 30
+DAYS_THRESHOLD = 40
 
 # ===== グローバル制御 =====
 
@@ -155,7 +155,6 @@ SELECT
 FROM [trx].[listings]
 WHERE
     ISNULL([is_deleted], 0) = 0
-    AND [account] NOT IN ('谷川②', '谷川③', '川島')
     AND DATEDIFF(day, CONVERT(date, [start_time]), CONVERT(date, GETDATE())) >= {DAYS_THRESHOLD}
 ORDER BY [account], [start_time] ASC;
 """
