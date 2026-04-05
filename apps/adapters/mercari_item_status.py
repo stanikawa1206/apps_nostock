@@ -92,7 +92,7 @@ def fetch_json_core(page, url, match_func):
         # --- ▼追加：scrollは例外で落とさない ---
         print("scroll", datetime.now().strftime("%H:%M:%S"))
         try:
-            print("evaluate")
+            print("evaluate", datetime.now().strftime("%H:%M:%S"))
             page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         except Exception:
             print("[WARN] scroll失敗（無視して続行）")
