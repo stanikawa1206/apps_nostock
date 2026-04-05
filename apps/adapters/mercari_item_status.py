@@ -113,7 +113,7 @@ def fetch_json_core(page, url, match_func):
                 raise TimeoutError("API来ない")
             page.wait_for_timeout(200)
 
-        print("json取得", datetime.now().strftime("%H:%M:%S")))
+        print("json取得", datetime.now().strftime("%H:%M:%S"))
         # return storage["json"], page.content()   page.content()はHTML（ページの中身全部）　HTMLは不要 26/03/25
         return storage["json"]
     except Exception  as e:
