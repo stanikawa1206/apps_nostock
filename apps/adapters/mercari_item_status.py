@@ -85,12 +85,12 @@ def fetch_json_core(page, url, match_func):
         # page.goto(url, wait_until="networkidle", timeout=30000)
         # page.goto(url, wait_until="domcontentloaded", timeout=30000)
         page.goto(url, wait_until="domcontentloaded", timeout=10000)
-        print("goto end")
+        print("goto end", datetime.now().strftime("%H:%M:%S"))
 
         # --- ▼追加①：API発火を促すためにスクロール ---
         # （メルカリはスクロールでAPIが発火することがある）
         # --- ▼追加：scrollは例外で落とさない ---
-        print("scroll")
+        print("scroll", datetime.now().strftime("%H:%M:%S"))
         try:
             print("evaluate")
             page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
@@ -113,7 +113,7 @@ def fetch_json_core(page, url, match_func):
                 raise TimeoutError("API来ない")
             page.wait_for_timeout(200)
 
-        print("json取得")
+        print("json取得", datetime.now().strftime("%H:%M:%S")))
         # return storage["json"], page.content()   page.content()はHTML（ページの中身全部）　HTMLは不要 26/03/25
         return storage["json"]
     except Exception  as e:
@@ -132,63 +132,7 @@ def fetch_mercari_api_data(page, url):
     )
     return json_data, None
 
-def fetch_mercari_api_data_260326(page, url):
-    storage = {"json": None}
 
-    # api きたら拾う
-    def handle_response(response):
-        if "items/get?id=" in response.url:
-            if "application/json" in response.headers.get("content-type", ""):
-                try:
-                    storage["json"] = response.json()
-                except Exception:
-                    pass
-
-    page.on("response", handle_response) # 監視 start
-
-    try:
-        # 1. ページ開く
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] domcontentloaded")
-        # page.goto(url, wait_until="networkidle", timeout=30000)
-        # page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        page.goto(url, wait_until="domcontentloaded", timeout=10000)
-        print("goto end")
-
-        # --- ▼追加①：API発火を促すためにスクロール ---
-        # （メルカリはスクロールでAPIが発火することがある）
-        # --- ▼追加：scrollは例外で落とさない ---
-        print("scroll")
-        try:
-            print("evaluate")
-            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        except Exception:
-            print("[WARN] scroll失敗（無視して続行）")
-
-        # --- ▼追加②：API発火待ちのため少し待機 ---
-        # （即evaluateするとAPIがまだ来てないことがある）
-        page.wait_for_timeout(1000)
-
-        #  responseイベントでAPIが取得されるのを待機する（このループ自体は取得処理ではない）
-        start = time.time()
-        for _ in range(40):  # 0.2秒ごとに × 40回のAPI待ち = 最大8秒 
-            if storage["json"] is not None:
-                break
-            # API待機が無限ループ化するのを防ぐため、
-            # 最大待機時間（ここでは10秒）を超えたら強制的に抜ける
-            if time.time() - start > 10:  # 最大10秒
-                #break  timeoutはerror処理すべき
-                raise TimeoutError("API来ない")
-            page.wait_for_timeout(200)
-
-        print("json取得")
-        # return storage["json"], page.content()   page.content()はHTML（ページの中身全部）　HTMLは不要 26/03/25
-        return storage["json"], None
-    except Exception  as e:
-        # return None, ""  エラーとして処理すべき
-        print("[ERROR fetch]", e)
-        raise SystemExit("fetch失敗 → worker終了")
-    finally:
-        page.remove_listener("response", handle_response)
 
 def _parse_status_from_res(res) -> Tuple[str, Optional[int]]:
     # --- 1. 削除の確定判定 ---

@@ -132,7 +132,7 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str, driver) ->
 
         start = time.time()
         while api_payload["data"] is None:
-            print("[DEBUG] waiting API...")
+            print("[DEBUG] waiting API...", datetime.now().strftime("%H:%M:%S"))
             if time.time() - start > 15:
                 raise Exception("API timeout")
 
