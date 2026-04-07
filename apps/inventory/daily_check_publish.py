@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 from datetime import datetime
 
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
 # ======================
 # パス設定
 # ======================
@@ -48,6 +50,7 @@ def run_local():
         text=True,
         encoding="utf-8",
         errors="replace",
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"}  # ←これ追加
     )
 
     print(result.stdout)
@@ -69,7 +72,8 @@ def run_vps():
             '"cd /opt/apps_nostock && '
             'git pull && '
             'cd /opt/apps_nostock/apps/publish && '
-            'python3 publish_ebay.py"'
+            'chmod +x publish_ebay_loop.sh && '
+            './publish_ebay_loop.sh"'
         )
 
         subprocess.Popen(cmd, shell=True)
@@ -81,7 +85,14 @@ def run_vps():
 # メイン
 # ======================
 def main():
-    conn = get_sql_server_connection()
+
+    if os.name == "nt":
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+            sys.stderr.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+        conn = get_sql_server_connection()
 
     start = datetime.now()
 
