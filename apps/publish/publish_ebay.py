@@ -125,7 +125,7 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str, driver) ->
 
     page.on("response", handle_response)
     
-    print("[DEBUG] before goto (shops)")
+    print("[DEBUG] before goto (shops)", datetime.now().strftime("%H:%M:%S"))
 
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=20000)
@@ -140,7 +140,7 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str, driver) ->
             time.sleep(1)
 
         res = api_payload["data"]
-        print("[DEBUG] API取得成功")
+        print("[DEBUG] API取得成功", datetime.now().strftime("%H:%M:%S"))
         
         # ❌ ここで削除判定しない（Seleniumに任せる）
         if res is None:
@@ -1686,7 +1686,7 @@ def main():
 
                     row = take_one_vendor_item(conn, acct.preset_group, processing_by, acct.account)
                     if row:
-                        print(f"[DEBUG] picked SKU={row['vendor_item_id']} price={row['price']} shipping_days={row['shipping_days']} 出品状況={row.get('出品状況')}")
+                        print(f"[DEBUG] picked SKU={row['vendor_item_id']} price={row['price']} shipping_days={row['shipping_days']} 出品状況={row.get('出品状況')}", datetime.now().strftime("%H:%M:%S"))
                     if not row:
                         print(f"[INFO] {acct.account} 在庫枯渇")
                         close_reason = "EMPTY"
@@ -1700,7 +1700,7 @@ def main():
                         else f"https://jp.mercari.com/item/{sku}"
                     )
 
-                    print(f"[DEBUG] url={item_url}")
+                    print(f"[DEBUG] url={item_url}", datetime.now().strftime("%H:%M:%S"))
 
                     browser = None
                     context = None
