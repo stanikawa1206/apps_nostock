@@ -505,80 +505,65 @@ def main():
                 0,
                 round_no=set_no,
                 conn=conn,
-                extra_body=extra,   # ←ここ
+                extra_body=extra,
             )
 
             print(f"=== ✅ セット{set_no}: フル在庫チェック完了 ===")
             time.sleep(WAIT_SECONDS)
 
-            continue
 
-            # ------------------------------------------------
-            # ③ delete_ebay_daily.py を 1 回実行
-            # ------------------------------------------------
-            print("\n=== 🗑 delete_ebay_daily.py 実行 ===")
-            del_start = datetime.now()
-            del_code, del_stdout = run_script(DELETE_SCRIPT)
-            del_end = datetime.now()
+        # ================================
+        # ★ ここで1回だけ実行
+        # ================================
 
-            subject = (
-                f"❌ delete_ebay_daily.py エラー（セット{set_no}）"
-                if del_code != 0
-                else f"✅ delete_ebay_daily.py 正常終了（セット{set_no}）"
-            )
+        print("\n=== 🗑 delete_ebay_daily.py 実行（ループ外） ===")
+        del_start = datetime.now()
+        del_code, del_stdout = run_script(DELETE_SCRIPT)
+        del_end = datetime.now()
 
-            print("BASE_DIR =", BASE_DIR)
-            print("DELETE_SCRIPT =", DELETE_SCRIPT)
-            print("cwd =", str(BASE_DIR))
+        subject = (
+            f"❌ delete_ebay_daily.py エラー"
+            if del_code != 0
+            else f"✅ delete_ebay_daily.py 正常終了"
+        )
 
-            body = (
-                f"スクリプト: {DELETE_SCRIPT.name}\n"
-                f"セット番号: {set_no}\n"
-                f"開始時刻: {del_start}\n"
-                f"終了時刻: {del_end}\n"
-                f"処理時間: {del_end - del_start}\n"
-                f"returncode: {del_code}\n\n"
-                + format_trx_listings_count_by_account(conn)
-            )
+        body = (
+            f"スクリプト: {DELETE_SCRIPT.name}\n"
+            f"開始時刻: {del_start}\n"
+            f"終了時刻: {del_end}\n"
+            f"処理時間: {del_end - del_start}\n"
+            f"returncode: {del_code}\n\n"
+            + format_trx_listings_count_by_account(conn)
+        )
 
-            send_mail(subject, body)
-            time.sleep(WAIT_SECONDS)
+        send_mail(subject, body)
+        time.sleep(WAIT_SECONDS)
 
-            print("[STOP] delete までで処理終了（publish は意図的にスキップ）")
-            
 
-            # ------------------------------------------------
-            # ④ publish_ebay.py を 1 回実行
-            # ------------------------------------------------
-            print("\n=== 🚀 publish_ebay.py 実行 ===")
+        print("\n=== 🚀 publish_ebay.py 実行（ループ外） ===")
 
-            refresh_presets_and_clear_locks(conn)
-            return
+        refresh_presets_and_clear_locks(conn)
 
-            pub_start = datetime.now()
-            pub_code, _ = run_script(PUBLISH_SCRIPT)
-            pub_end = datetime.now()
+        pub_start = datetime.now()
+        pub_code, _ = run_script(PUBLISH_SCRIPT)
+        pub_end = datetime.now()
 
-            subject = (
-                f"❌ publish_ebay.py エラー（セット{set_no}）"
-                if pub_code != 0
-                else f"✅ publish_ebay.py 正常終了（セット{set_no}）"
-            )
+        subject = (
+            f"❌ publish_ebay.py エラー"
+            if pub_code != 0
+            else f"✅ publish_ebay.py 正常終了"
+        )
 
-            body = (
-                f"スクリプト: {PUBLISH_SCRIPT.name}\n"
-                f"セット番号: {set_no}\n"
-                f"開始時刻: {pub_start}\n"
-                f"終了時刻: {pub_end}\n"
-                f"処理時間: {pub_end - pub_start}\n"
-                f"returncode: {pub_code}\n\n"
-                + format_trx_listings_count_by_account(conn)
-            )
+        body = (
+            f"スクリプト: {PUBLISH_SCRIPT.name}\n"
+            f"開始時刻: {pub_start}\n"
+            f"終了時刻: {pub_end}\n"
+            f"処理時間: {pub_end - pub_start}\n"
+            f"returncode: {pub_code}\n\n"
+            + format_trx_listings_count_by_account(conn)
+        )
 
-            send_mail(subject, body)
-
-            print(f"\n=== 🎊 セット {set_no} / {SET_N} 完了 ===")
-            time.sleep(WAIT_SECONDS)
+        send_mail(subject, body)
 
         print(f"\n=== 🎉 全セット完了（4工程×{SET_N}回転） ===")
 
@@ -587,7 +572,6 @@ def main():
             conn.close()
         except Exception:
             pass
-
 
 
 # ======================

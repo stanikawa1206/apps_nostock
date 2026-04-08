@@ -81,6 +81,26 @@ def run_vps():
     print("🚀 VPS全台で publish 起動完了")
 
 
+def reset_processing_flags():
+    conn = get_sql_server_connection()
+    cursor = conn.cursor()
+
+    sql = """
+    UPDATE trx_vendor_item
+    SET
+        processing_by = NULL,
+        processing_at = NULL
+    WHERE
+        processing_at IS NOT NULL
+    """
+
+    cursor.execute(sql)
+    conn.commit()
+
+    cursor.close()
+    conn.close()
+
+
 # ======================
 # メイン
 # ======================
@@ -94,6 +114,7 @@ def main():
             pass
         conn = get_sql_server_connection()
 
+    reset_processing_flags
     start = datetime.now()
 
     try:
