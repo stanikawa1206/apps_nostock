@@ -86,7 +86,7 @@ def reset_processing_flags():
     cursor = conn.cursor()
 
     sql = """
-    UPDATE trx_vendor_item
+    UPDATE trx.vendor_item
     SET
         processing_by = NULL,
         processing_at = NULL
@@ -114,7 +114,7 @@ def main():
             pass
         conn = get_sql_server_connection()
 
-    reset_processing_flags
+    reset_processing_flags()
     start = datetime.now()
 
     try:

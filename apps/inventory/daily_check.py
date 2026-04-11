@@ -358,7 +358,7 @@ def main():
     refresh_presets_lookup(conn)
     
     try:
-        SET_N = 4
+        SET_N = 3
         print(f"=== 🧭 inventory_ebay_manager.py 開始（4工程×{SET_N}回転） ===")
 
         for set_no in range(1, SET_N + 1):
@@ -540,28 +540,30 @@ def main():
         time.sleep(WAIT_SECONDS)
 
 
-        print("\n=== 🚀 publish_ebay.py 実行（ループ外） ===")
+        RUN_PUBLISH = False
+        if RUN_PUBLISH:
+            print("\n=== 🚀 publish_ebay.py 実行（ループ外） ===")
 
-        refresh_presets_and_clear_locks(conn)
+            refresh_presets_and_clear_locks(conn)
 
-        pub_start = datetime.now()
-        pub_code, _ = run_script(PUBLISH_SCRIPT)
-        pub_end = datetime.now()
+            pub_start = datetime.now()
+            pub_code, _ = run_script(PUBLISH_SCRIPT)
+            pub_end = datetime.now()
 
-        subject = (
-            f"❌ publish_ebay.py エラー"
-            if pub_code != 0
-            else f"✅ publish_ebay.py 正常終了"
-        )
+            subject = (
+                f"❌ publish_ebay.py エラー"
+                if pub_code != 0
+                else f"✅ publish_ebay.py 正常終了"
+            )
 
-        body = (
-            f"スクリプト: {PUBLISH_SCRIPT.name}\n"
-            f"開始時刻: {pub_start}\n"
-            f"終了時刻: {pub_end}\n"
-            f"処理時間: {pub_end - pub_start}\n"
-            f"returncode: {pub_code}\n\n"
-            + format_trx_listings_count_by_account(conn)
-        )
+            body = (
+                f"スクリプト: {PUBLISH_SCRIPT.name}\n"
+                f"開始時刻: {pub_start}\n"
+                f"終了時刻: {pub_end}\n"
+                f"処理時間: {pub_end - pub_start}\n"
+                f"returncode: {pub_code}\n\n"
+                + format_trx_listings_count_by_account(conn)
+            )
 
         send_mail(subject, body)
 
