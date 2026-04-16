@@ -1702,9 +1702,6 @@ def main():
                         close_reason = "EMPTY"
                         break
 
-                    print("[SYSTEM] 予定通りここで強制終了します。")
-                    sys.exit()
-
                     sku = row["vendor_item_id"].strip()
                     vendor_name = row["vendor_name"]
                     item_url = (
