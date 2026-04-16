@@ -1,6 +1,7 @@
 import sys
 import time
 import csv
+import os  # フォルダ作成やパス結合のために追加
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 import requests
@@ -93,7 +94,7 @@ if __name__ == "__main__":
 
     print(f"\n▶ [{selected_account}] を選択しました。データ取得を開始します...")
 
-# 4. 期間の設定 (2024年4月1日から現在まで)
+    # 4. 期間の設定 (2024年4月1日から現在まで)
     now = datetime.now(timezone.utc)
     
     # 開始日を 2024年4月1日 に固定設定する
@@ -110,8 +111,17 @@ if __name__ == "__main__":
     if payouts_data is not None and len(payouts_data) > 0:
         print("\n=== データ取得完了。CSVファイルへ出力します ===")
         
+        # 【追加・変更箇所】出力先ディレクトリの設定
+        output_dir = r"\\MOUSE\apps_nostock\apps\snapshot\eBay\Payout"
+        
+        # フォルダが存在しない場合は作成
+        os.makedirs(output_dir, exist_ok=True)
+        
         # 保存するCSVファイル名
         csv_filename = f"eBay_Payouts_{selected_account}.csv"
+        
+        # フルパスを生成
+        csv_filepath = os.path.join(output_dir, csv_filename)
         
         # 出金履歴に必要な項目だけを綺麗に並べたヘッダー
         headers = [
@@ -122,7 +132,8 @@ if __name__ == "__main__":
             "Bank Reference (銀行振込参照番号)"
         ]
         
-        with open(csv_filename, mode='w', newline='', encoding='utf-8-sig') as f:
+        # filepathを使用して書き込み
+        with open(csv_filepath, mode='w', newline='', encoding='utf-8-sig') as f:
             writer = csv.writer(f)
             writer.writerow(headers)
             
@@ -137,6 +148,6 @@ if __name__ == "__main__":
                 # CSVに書き込み
                 writer.writerow([date, p_id, amount, status, bank_ref])
                 
-        print(f"✅ 全 {len(payouts_data)} 件の出金データを '{csv_filename}' に出力しました！")
+        print(f"✅ 全 {len(payouts_data)} 件の出金データを以下の場所に出力しました！\n📁 {csv_filepath}")
     else:
         print("⚠️ データの取得に失敗したか、指定期間にデータがありません。")

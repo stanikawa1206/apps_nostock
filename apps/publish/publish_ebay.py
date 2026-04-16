@@ -189,6 +189,7 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str, driver) ->
             "seller_id": shop.get("name", ""),
             "seller_name": shop.get("displayName", ""),
             "rating_count": int(shop.get("shopStats", {}).get("reviewCount", 0)),
+            "num_likes": int(res.get("num_likes", 0)),
             "images": filtered_images,
             "preset": preset,
             "description": detail.get("description", ""),
@@ -258,6 +259,7 @@ def parse_detail_personal(page, url: str, preset: str, vendor_name: str) -> Dict
         "seller_id": str(item.get("seller", {}).get("id", "")),
         "seller_name": item.get("seller", {}).get("name", ""),
         "rating_count": int(item.get("seller", {}).get("num_ratings", 0)),
+        "num_likes": int(item.get("num_likes", 0)),
         "images": filtered_images,
         "preset": preset,
         "description": item.get("description", ""),
@@ -276,7 +278,7 @@ def _none_if_blank(s: Any) -> Optional[str]:
 UPSERT_VENDOR_ITEM_SQL = """
 MERGE INTO [trx].[vendor_item] WITH (HOLDLOCK) AS tgt
 USING (
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?,?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ) AS src (
     vendor_name, vendor_item_id,
     title_jp, title_en,
@@ -284,7 +286,7 @@ USING (
     price,
     last_updated_str,
     shipping_region, shipping_days,
-    seller_id,
+    seller_id, num_likes,
     preset, vendor_page,
     image_url1, image_url2, image_url3, image_url4, image_url5,
     image_url6, image_url7, image_url8, image_url9, image_url10,
@@ -304,7 +306,7 @@ WHEN MATCHED THEN
         shipping_region  = COALESCE(src.shipping_region, tgt.shipping_region),
         shipping_days    = COALESCE(src.shipping_days, tgt.shipping_days),
         seller_id        = COALESCE(src.seller_id, tgt.seller_id),
-
+        num_likes        = src.num_likes,
         image_url1       = COALESCE(src.image_url1, tgt.image_url1),
         image_url2       = COALESCE(src.image_url2, tgt.image_url2),
         image_url3       = COALESCE(src.image_url3, tgt.image_url3),
@@ -352,7 +354,7 @@ WHEN NOT MATCHED THEN
         title_jp, title_en, title_en_bk,
         description, description_en,
         price,
-        last_updated_str, shipping_region, shipping_days, seller_id,
+        last_updated_str, shipping_region, shipping_days, seller_id, num_likes,
         preset, vendor_page,
         image_url1, image_url2, image_url3, image_url4, image_url5,
         image_url6, image_url7, image_url8, image_url9, image_url10,
@@ -376,6 +378,7 @@ WHEN NOT MATCHED THEN
         src.shipping_region,
         src.shipping_days,
         src.seller_id,
+        src.num_likes,
         src.preset,
         src.vendor_page,
 
@@ -452,6 +455,13 @@ def upsert_vendor_item(conn, rec: Dict[str, Any]):
         except Exception:
             price_val = None
 
+    num_likes = rec.get("num_likes")
+    if num_likes is not None:
+        try:
+            num_likes = int(num_likes)
+        except Exception:
+            num_likes = None
+
     listing_head   = _none_if_blank(rec.get("listing_head"))
     listing_detail = _none_if_blank(rec.get("listing_detail"))
 
@@ -469,6 +479,7 @@ def upsert_vendor_item(conn, rec: Dict[str, Any]):
         shipping_region,
         shipping_days,
         seller_id,
+        num_likes,
 
         preset_val,
         vendor_page,
@@ -1515,7 +1526,6 @@ def take_one_vendor_item(conn, preset_group, processing_by, account_name):
             AND ISNULL(v.出品不可flg, 0) = 0
             AND ISNULL(s.is_ng, 0) = 0
             AND (v.price IS NULL OR (v.price >= r.low_jpy_target AND v.price <= r.high_jpy_target))
-            -- 基本的なNG条件の除外
             AND (
                 v.seller_id IS NULL
                 OR (
@@ -1525,7 +1535,7 @@ def take_one_vendor_item(conn, preset_group, processing_by, account_name):
                         WHEN v.vendor_name = N'メルカリ' THEN 50
                         WHEN v.vendor_name = N'メルカリshops' THEN 20
                     END
-            )
+            )                   
             AND (
                 v.vendor_updated_at IS NULL
                 OR v.vendor_updated_at >= DATEADD(DAY, -40, SYSDATETIME())
@@ -1691,6 +1701,9 @@ def main():
                         print(f"[INFO] {acct.account} 在庫枯渇")
                         close_reason = "EMPTY"
                         break
+
+                    print("[SYSTEM] 予定通りここで強制終了します。")
+                    sys.exit()
 
                     sku = row["vendor_item_id"].strip()
                     vendor_name = row["vendor_name"]

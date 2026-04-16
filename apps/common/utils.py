@@ -378,6 +378,9 @@ def apply_hermes_stole_rules(title: str, jp_title: str, desc: str) -> str:
 def _norm_spaces(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").strip())
 
+def remove_hashtags(text: str) -> str:
+    return re.sub(r"#\S+", "", text).strip()
+
 def translate_to_english(
     jp_title: str,
     description_jp: str | None = None,
@@ -388,6 +391,10 @@ def translate_to_english(
         return ""
 
     description_jp = description_jp or ""
+
+    # ハッシュタグ除去
+    description_jp = remove_hashtags(description_jp)
+
     desc_block = description_jp if description_jp.strip() else "(no description)"
 
     # モデル選択
