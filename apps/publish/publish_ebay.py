@@ -456,11 +456,11 @@ def upsert_vendor_item(conn, rec: Dict[str, Any]):
             price_val = None
 
     num_likes = rec.get("num_likes")
-    if num_likes is not None:
-        try:
-            num_likes = int(num_likes)
-        except Exception:
-            num_likes = 0
+    try:
+        num_likes = int(num_likes)
+    except Exception:
+        num_likes = 0
+
 
     listing_head   = _none_if_blank(rec.get("listing_head"))
     listing_detail = _none_if_blank(rec.get("listing_detail"))
