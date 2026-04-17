@@ -417,11 +417,14 @@ You are translating a Japanese product title for eBay.
 Translate the Japanese title into natural English.
 
 STRICT RULES:
-- Do NOT add any information.
-- Do NOT infer missing details.
+- You must NOT add any information.
+- You must NOT infer missing details.
+- You must NOT guess missing attributes.
 - Do NOT add color unless explicitly written in Japanese.
-- Do NOT add model names, materials, or accessories that are not written.
-- If information is not present, omit it.
+- Do NOT add model names, materials, accessories, or size unless explicitly written in Japanese.
+- If information is not present in the Japanese title, you must omit it.
+- If you violate these rules, the output is invalid.
+- Output only words directly supported by the Japanese title.
 
 You may slightly rearrange wording to sound natural in English,
 but you must only use information explicitly written in Japanese.
@@ -437,8 +440,12 @@ Japanese description:
 """.strip()
 
     try:
-        client = get_openai_client()
-        resp = client.responses.create(model=use_model, input=prompt)
+        client = get_openai_client
+        resp = client.responses.create(
+            model=use_model,
+            input=prompt,
+            temperature=0,
+        )
         title_en = _norm_spaces(resp.output_text or "")
         if not title_en:
             return ""
