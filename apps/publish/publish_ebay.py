@@ -2,6 +2,7 @@
 # publish_ebay.py — listings / vendor_item 対応（Shops/通常 両対応・processing_by方式, Py3.8/3.9互換）
 
 from __future__ import annotations
+from xxx import fetch_json_core
 
 # =========================
 # Standard library
@@ -131,15 +132,15 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str, driver) ->
         page.goto(url, wait_until="domcontentloaded", timeout=20000)
 
         print("[DEBUG] waiting API...", datetime.now().strftime("%H:%M:%S"))
-        response = page.wait_for_response(
-            lambda r: "api.mercari.jp/v1/marketplaces/shops/products" in r.url,
-            timeout=15000
-        )
-        print("[DEBUG] API取得完了", datetime.now().strftime("%H:%M:%S"))
-        res = response.json()
 
-        res = api_payload["data"]
-        print("[DEBUG] API取得成功", datetime.now().strftime("%H:%M:%S"))
+        res = fetch_json_core(
+            page,
+            url,
+            lambda r: "api.mercari.jp/v1/marketplaces/shops/products" in r.url
+        )
+
+        print("[DEBUG] API取得完了", datetime.now().strftime("%H:%M:%S"))
+
         
         # ❌ ここで削除判定しない（Seleniumに任せる）
         if res is None:
@@ -188,7 +189,7 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str, driver) ->
             "seller_id": shop.get("name", ""),
             "seller_name": shop.get("displayName", ""),
             "rating_count": int(shop.get("shopStats", {}).get("reviewCount", 0)),
-            "num_likes": int(res.get("productStats", {}).get("likesCount", 0)),
+            "num_likes": int(res.get("productStats", {}).get("likesCount", 0))
             "images": filtered_images,
             "preset": preset,
             "description": detail.get("description", ""),
