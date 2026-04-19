@@ -119,7 +119,7 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str, driver) ->
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=20000)
         print("[DEBUG] waiting API...", datetime.now().strftime("%H:%M:%S"))
-        res, _ = fetch_shops_api_data(page, url)
+        res = fetch_shops_api_data(page, url)[0]
         print("[DEBUG] API取得完了", datetime.now().strftime("%H:%M:%S"))
         
         # ❌ ここで削除判定しない（Seleniumに任せる）
