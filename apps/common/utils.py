@@ -440,7 +440,7 @@ Japanese description:
 """.strip()
 
     try:
-        client = get_openai_client
+        client = get_openai_client()
         resp = client.responses.create(
             model=use_model,
             input=prompt,

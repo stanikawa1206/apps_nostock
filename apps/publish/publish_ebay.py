@@ -116,68 +116,65 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str, driver) ->
     # =========================    
     print("[DEBUG] before goto (shops)", datetime.now().strftime("%H:%M:%S"))
 
-    try:
-        page.goto(url, wait_until="domcontentloaded", timeout=20000)
-        print("[DEBUG] waiting API...", datetime.now().strftime("%H:%M:%S"))
-        res = fetch_shops_api_data(page, url)[0]
-        print("[DEBUG] API取得完了", datetime.now().strftime("%H:%M:%S"))
-        
-        # ❌ ここで削除判定しない（Seleniumに任せる）
-        if res is None:
-            raise Exception("API取得失敗")  # ← retry対象
+    page.goto(url, wait_until="domcontentloaded", timeout=20000)
+    print("[DEBUG] waiting API...", datetime.now().strftime("%H:%M:%S"))
+    res = fetch_shops_api_data(page, url)[0]
+    print("[DEBUG] API取得完了", datetime.now().strftime("%H:%M:%S"))
+    
+    # ❌ ここで削除判定しない（Seleniumに任せる）
+    if res is None:
+        raise Exception("API取得失敗")  # ← retry対象
 
-        detail = res.get("productDetail", {})
-        shop = detail.get("shop", {})
+    detail = res.get("productDetail", {})
+    shop = detail.get("shop", {})
 
-        raw_images = detail.get("photos", []) or []
+    raw_images = detail.get("photos", []) or []
 
-        filtered_images = []
-        for img_url in raw_images:
-            try:
-                res_img = requests.get(img_url, timeout=10)
-                res_img.raise_for_status()
+    filtered_images = []
+    for img_url in raw_images:
+        try:
+            res_img = requests.get(img_url, timeout=10)
+            res_img.raise_for_status()
 
-                img = Image.open(BytesIO(res_img.content))
-                width, height = img.size
+            img = Image.open(BytesIO(res_img.content))
+            width, height = img.size
 
-                if width < 500 or height < 500:
-                    continue
-
-                filtered_images.append(img_url)
-
-            except Exception as e:
-                print(f"[IMAGE ERROR] {img_url} {e}")
+            if width < 500 or height < 500:
                 continue
 
-        if not filtered_images:
-            raise Exception("no valid images (all <500px or error)")
+            filtered_images.append(img_url)
+
+        except Exception as e:
+            print(f"[IMAGE ERROR] {img_url} {e}")
+            continue
+
+    if not filtered_images:
+        raise Exception("no valid images (all <500px or error)")
 
 
-        update_time_str = res.get("updateTime")
-        vendor_updated_at = None
-        if update_time_str:
-            vendor_updated_at = datetime.fromisoformat(update_time_str.replace("Z", "+00:00"))
+    update_time_str = res.get("updateTime")
+    vendor_updated_at = None
+    if update_time_str:
+        vendor_updated_at = datetime.fromisoformat(update_time_str.replace("Z", "+00:00"))
 
-        return {
-            "vendor_name": vendor_name,
-            "title_jp": res.get("displayName"),
-            "title_en": "",
-            "price": int(res.get("price", 0)),  # ← JSON優先
-            "vendor_updated_at": vendor_updated_at,
-            "shipping_region": detail.get("shippingFromArea", {}).get("displayName", ""),
-            "shipping_days": detail.get("shippingDuration", {}).get("displayName", ""),
-            "seller_id": shop.get("name", ""),
-            "seller_name": shop.get("displayName", ""),
-            "rating_count": int(shop.get("shopStats", {}).get("reviewCount", 0)),
-            "num_likes": int(res.get("productStats", {}).get("likesCount", 0)),
-            "images": filtered_images,
-            "preset": preset,
-            "description": detail.get("description", ""),
-            "description_en": "",
-        }
+    return {
+        "vendor_name": vendor_name,
+        "title_jp": res.get("displayName"),
+        "title_en": "",
+        "price": int(res.get("price", 0)),  # ← JSON優先
+        "vendor_updated_at": vendor_updated_at,
+        "shipping_region": detail.get("shippingFromArea", {}).get("displayName", ""),
+        "shipping_days": detail.get("shippingDuration", {}).get("displayName", ""),
+        "seller_id": shop.get("name", ""),
+        "seller_name": shop.get("displayName", ""),
+        "rating_count": int(shop.get("shopStats", {}).get("reviewCount", 0)),
+        "num_likes": int(res.get("productStats", {}).get("likesCount", 0)),
+        "images": filtered_images,
+        "preset": preset,
+        "description": detail.get("description", ""),
+        "description_en": "",
+    }
 
-    finally:
-        page.remove_listener("response", handle_response)
 
 def parse_detail_personal(page, url: str, preset: str, vendor_name: str) -> Dict[str, Any]:
     """
