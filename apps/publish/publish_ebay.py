@@ -168,7 +168,7 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str, driver) ->
         "seller_id": shop.get("name", ""),
         "seller_name": shop.get("displayName", ""),
         "rating_count": int(shop.get("shopStats", {}).get("reviewCount", 0)),
-        "num_likes": int(res.get("productStats", {}).get("likesCount", 0)),
+        "num_likes": int(detail.get("productStats", {}).get("likesCount", 0)),
         "images": filtered_images,
         "preset": preset,
         "description": detail.get("description", ""),
