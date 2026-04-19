@@ -132,6 +132,14 @@ def fetch_mercari_api_data(page, url):
     )
     return json_data, None
 
+def fetch_shops_api_data(page, url):
+    json_data = fetch_json_core(
+        page,
+        url,
+        lambda r: "api.mercari.jp/v1/marketplaces/shops/products" in r.url
+                  and "application/json" in r.headers.get("content-type", "")
+    )
+    return json_data, None
 
 
 def _parse_status_from_res(res) -> Tuple[str, Optional[int]]:
