@@ -93,6 +93,7 @@ def is_fatal_renderer_error(e: Exception) -> bool:
 class FatalRendererError(Exception):
     pass
 
+
 # ========= 詳細解析（Shops / 通常） =========
 def parse_detail_shops(page, url: str, preset: str, vendor_name: str, driver) -> Dict[str, Any]:
     """
@@ -168,7 +169,7 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str, driver) ->
         "seller_id": shop.get("name", ""),
         "seller_name": shop.get("displayName", ""),
         "rating_count": int(shop.get("shopStats", {}).get("reviewCount", 0)),
-        "num_likes": int(detail.get("productStats", {}).get("likesCount", 0)),
+        "num_likes": int((detail.get("productStats") or {}).get("likesCount", 0)),
         "images": filtered_images,
         "preset": preset,
         "description": detail.get("description", ""),
