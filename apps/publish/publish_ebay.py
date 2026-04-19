@@ -130,14 +130,13 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str, driver) ->
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=20000)
 
-        start = time.time()
-        while api_payload["data"] is None:
-            print("[DEBUG] waiting API...", datetime.now().strftime("%H:%M:%S"))
-            if time.time() - start > 15:
-                raise Exception("API timeout")
-
-            page.mouse.wheel(0, 800)
-            time.sleep(1)
+        print("[DEBUG] waiting API...", datetime.now().strftime("%H:%M:%S"))
+        response = page.wait_for_response(
+            lambda r: "api.mercari.jp/v1/marketplaces/shops/products" in r.url,
+            timeout=15000
+        )
+        print("[DEBUG] API取得完了", datetime.now().strftime("%H:%M:%S"))
+        res = response.json()
 
         res = api_payload["data"]
         print("[DEBUG] API取得成功", datetime.now().strftime("%H:%M:%S"))
@@ -189,7 +188,7 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str, driver) ->
             "seller_id": shop.get("name", ""),
             "seller_name": shop.get("displayName", ""),
             "rating_count": int(shop.get("shopStats", {}).get("reviewCount", 0)),
-            "num_likes": int(res.get("num_likes", 0)),
+            "num_likes": int(res.get("productStats", {}).get("likesCount", 0))
             "images": filtered_images,
             "preset": preset,
             "description": detail.get("description", ""),
