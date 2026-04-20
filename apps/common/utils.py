@@ -425,6 +425,7 @@ STRICT RULES:
 - If information is not present in the Japanese title, you must omit it.
 - If you violate these rules, the output is invalid.
 - Output only words directly supported by the Japanese title.
+- If translation is possible, you must output something. Do not return empty.
 
 You may slightly rearrange wording to sound natural in English,
 but you must only use information explicitly written in Japanese.
@@ -443,10 +444,20 @@ Japanese description:
         client = get_openai_client()
         resp = client.responses.create(
             model=use_model,
-            input=prompt,
+            input=[{"role": "user", "content": prompt}],
             temperature=0,
         )
-        title_en = _norm_spaces(resp.output_text or "")
+
+        text = ""
+        if getattr(resp, "output_text", None):
+            text = resp.output_text
+        else:
+            try:
+                text = resp.output[0].content[0].text
+            except Exception:
+                text = ""
+        title_en = _norm_spaces(text)
+
         if not title_en:
             return ""
 
