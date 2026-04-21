@@ -1132,6 +1132,11 @@ def build_pic_urls(
     cdn_cache[sku] = cdn_urls
     return cdn_urls
 
+def classify_ebay_error(err_msg: str):
+    if "Cannot revise listing" in err_msg or "cannot contain javascript" in err_msg.lower():
+        return "ポリシーNG"
+    return None
+
 def post_to_ebay(
     *,
     conn,
@@ -1345,8 +1350,15 @@ def post_to_ebay(
                         fail_other_delta, image_mode, image_error_count, cdn_mode_until)
 
         # ★ 通常のAPI失敗確定
-        rec["listing_head"] = "出品失敗"
-        rec["listing_detail"] = err_msg
+        policy = classify_ebay_error(err_msg)
+
+        if policy:
+            rec["listing_head"] = policy
+            rec["listing_detail"] = ""
+        else:
+            rec["listing_head"] = "出品失敗"
+            rec["listing_detail"] = err_msg
+
         upsert_vendor_item(conn, rec)
         writes_since_commit += 1
         writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
@@ -1540,7 +1552,6 @@ def take_one_vendor_item(conn, preset_group, processing_by, account_name):
         WHERE
             v.processing_at IS NULL
             AND (v.status = N'販売中' OR v.status IS NULL)
-            AND (v.status = N'販売中' OR v.status IS NULL)
             AND ISNULL(v.出品不可flg, 0) = 0
             AND ISNULL(s.is_ng, 0) = 0
             AND (v.price IS NULL OR (v.price >= r.low_jpy_target AND v.price <= r.high_jpy_target))
@@ -1558,7 +1569,7 @@ def take_one_vendor_item(conn, preset_group, processing_by, account_name):
                 v.vendor_updated_at IS NULL
                 OR v.vendor_updated_at >= DATEADD(DAY, -40, SYSDATETIME())
             )
-            AND ISNULL(v.[出品状況], N'') NOT IN (N'NG(GA補色)', N'NG(危険素材)')
+            AND ISNULL(v.[出品状況], N'') NOT IN (N'NG(GA補色)', N'NG(危険素材)', N'ポリシーNG')
             AND ISNULL(v.shipping_days, N'') NOT IN (
                 N'4~7日で発送', N'4〜7日で発送', N'8〜14日で発送', N'90日以内で発送'
             )

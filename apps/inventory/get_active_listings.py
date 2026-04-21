@@ -129,9 +129,21 @@ def run():
     conn = get_sql_server_connection()
     cursor = conn.cursor()
 
+    print("🧹 テーブル初期化（DELETE）")
+    # cursor.execute("DELETE FROM ext.ebay_active_download_new")
+    cursor.execute(
+    "DELETE FROM ext.ebay_active_download_new WHERE account = ?",
+    ("谷川②",)
+)
+    conn.commit()
+
     fetched_at = datetime.datetime.now()
 
-    cursor.execute("SELECT account FROM mst.ebay_accounts")
+    # cursor.execute("SELECT account FROM mst.ebay_accounts")
+    cursor.execute(
+    "SELECT account FROM mst.ebay_accounts WHERE account = ?",
+    ("谷川②",)
+)
     accounts = [row[0] for row in cursor.fetchall()]
 
     for account in accounts:
