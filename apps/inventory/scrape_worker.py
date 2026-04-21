@@ -500,7 +500,8 @@ def fetch_page_json(page, url, conn, job_id):
                     raise RuntimeError(f"Mercari API status={resp.status}")
                                 
                 print(f"B: before json() (Fetch Start) {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-                json_data = resp.json(timeout=10000)
+                # json_data = resp.json(timeout=10000) 
+                json_data = resp.json()
                 print(f"C: after json() {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
                 # 3. body() ではなく json() を直接使い、かつ変数を分離
