@@ -498,15 +498,14 @@ def fetch_page_json(page, url, conn, job_id):
 
                 if resp.status != 200:
                     raise RuntimeError(f"Mercari API status={resp.status}")
-                
-                print(f"B1: before body() (Fetch Start) {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-                raw_body = resp.body() # ← ここで止まるなら「通信」の問題
-                print(f"B2: before json() (Parse Start) {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-                json_data = resp.json() # ← ここで止まるなら「データ巨大化」の問題
+                                
+                print(f"B: before json() (Fetch Start) {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                json_data = resp.json(timeout=10000)
+                print(f"C: after json() {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
                 # 3. body() ではなく json() を直接使い、かつ変数を分離
                 # json_data = resp.json() 
-                print(f"C: after body {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                print(f"D: after body {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
                 return json_data
  
         except Exception as e:

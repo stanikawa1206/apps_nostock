@@ -158,11 +158,17 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str, driver) ->
     if update_time_str:
         vendor_updated_at = datetime.fromisoformat(update_time_str.replace("Z", "+00:00"))
 
+    create_time_str = res.get("createTime")
+    vendor_created_at = None
+    if create_time_str:
+        vendor_created_at = datetime.fromisoformat(create_time_str.replace("Z", "+00:00"))
+
     return {
         "vendor_name": vendor_name,
         "title_jp": res.get("displayName"),
         "title_en": "",
         "price": int(res.get("price", 0)),  # ← JSON優先
+        "vendor_created_at": vendor_created_at,
         "vendor_updated_at": vendor_updated_at,
         "shipping_region": detail.get("shippingFromArea", {}).get("displayName", ""),
         "shipping_days": detail.get("shippingDuration", {}).get("displayName", ""),
@@ -201,6 +207,11 @@ def parse_detail_personal(page, url: str, preset: str, vendor_name: str) -> Dict
     if updated:
         vendor_updated_at = datetime.fromtimestamp(updated)
 
+    created = item.get("created")
+    vendor_created_at = None
+    if created:
+        vendor_created_at = datetime.fromtimestamp(created)
+
     raw_images = item.get("photos", []) or []
 
     filtered_images = []
@@ -231,6 +242,7 @@ def parse_detail_personal(page, url: str, preset: str, vendor_name: str) -> Dict
         "title_jp": item.get("name"),
         "title_en": "",
         "price": int(item.get("price", 0)),
+        "vendor_created_at": vendor_created_at,
         "vendor_updated_at": vendor_updated_at,   #
         "shipping_region": item.get("shipping_from_area", {}).get("name", ""),
         "shipping_days": item.get("shipping_duration", {}).get("name", ""),
@@ -256,12 +268,14 @@ def _none_if_blank(s: Any) -> Optional[str]:
 UPSERT_VENDOR_ITEM_SQL = """
 MERGE INTO [trx].[vendor_item] WITH (HOLDLOCK) AS tgt
 USING (
-    VALUES (?,?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?,?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ) AS src (
     vendor_name, vendor_item_id,
     title_jp, title_en,
     description, description_en,
     price,
+    vendor_created_at,
+    vendor_updated_at,
     last_updated_str,
     shipping_region, shipping_days,
     seller_id, num_likes,
@@ -310,7 +324,8 @@ WHEN MATCHED THEN
                              ELSE tgt.prev_price
                            END,
         price            = COALESCE(src.price, tgt.price),
-
+        vendor_created_at = COALESCE(tgt.vendor_created_at, src.vendor_created_at),
+        vendor_updated_at = COALESCE(src.vendor_updated_at, tgt.vendor_updated_at),
         status           = N'販売中',
         preset           = COALESCE(src.preset, tgt.preset),
         vendor_page      = COALESCE(src.vendor_page, tgt.vendor_page),
@@ -331,7 +346,7 @@ WHEN NOT MATCHED THEN
         vendor_name, vendor_item_id,
         title_jp, title_en, title_en_bk,
         description, description_en,
-        price,
+        price,vendor_created_at,vendor_updated_at,
         last_updated_str, shipping_region, shipping_days, seller_id, num_likes,
         preset, vendor_page,
         image_url1, image_url2, image_url3, image_url4, image_url5,
@@ -352,6 +367,8 @@ WHEN NOT MATCHED THEN
         src.description,
         src.description_en,
         src.price,
+        src.vendor_created_at,
+        src.vendor_updated_at,
         src.last_updated_str,
         src.shipping_region,
         src.shipping_days,
@@ -426,6 +443,9 @@ def upsert_vendor_item(conn, rec: Dict[str, Any]):
     shipping_days    = _none_if_blank(rec.get("shipping_days"))
     seller_id        = _none_if_blank(rec.get("seller_id"))
 
+    vendor_created_at = rec.get("vendor_created_at")
+    vendor_updated_at = rec.get("vendor_updated_at")
+
     price_val = rec.get("price")
     if price_val is not None:
         try:
@@ -453,6 +473,9 @@ def upsert_vendor_item(conn, rec: Dict[str, Any]):
         desc_en,
 
         price_val,
+        vendor_created_at,
+        vendor_updated_at,
+
         last_updated_str,
         shipping_region,
         shipping_days,
@@ -894,12 +917,29 @@ def heavy_check_detail(
 
     if vendor_updated_at is not None:
         target_dt = vendor_updated_at.replace(tzinfo=None) 
+        days_old = (datetime.now() - target_dt).days
         if target_dt < datetime.now() - timedelta(days=40):
             rec["listing_head"] = "古い更新"
-            rec["listing_detail"] = str(vendor_updated_at)
+            rec["listing_detail"] = f"{days_old}日前"
             upsert_vendor_item(conn, rec)
             writes_since_commit += 1
             writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
+            return None, debug_unavailable_dump, writes_since_commit, 1, 0
+
+    # === 3.5) 低需要NG（30日経過 & いいね<=1） ===
+    vendor_created_at = rec.get("vendor_created_at")
+    num_likes = rec.get("num_likes", 0)
+
+    if vendor_created_at is not None:
+        target_dt = vendor_created_at.replace(tzinfo=None)
+        if target_dt < datetime.now() - timedelta(days=30) and num_likes <= 1:
+            rec["listing_head"] = "低需要NG"
+            rec["listing_detail"] = f"created_at={vendor_created_at}, likes={num_likes}"
+
+            upsert_vendor_item(conn, rec)
+            writes_since_commit += 1
+            writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
+
             return None, debug_unavailable_dump, writes_since_commit, 1, 0
 
     # === 4.5) セラー判定 ===
