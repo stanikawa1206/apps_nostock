@@ -37,8 +37,20 @@ DEFER_WINDOW_SEC = 1800
 
 # ===== 対象リスト（提示された順序を保持）=====
 TARGET_PAIRS_ALL = [
-("貴文②","m53472821220"),
-
+    ("貴文","m38791092328"),
+    ("貴文","m21295237061"),
+    ("貴文","m50391128904"),
+    ("貴文","m45071692754"),
+    ("貴文","2JHKYBeDf76phE7UaHsoLx"),
+    ("貴文","2JMQzRRw8iZbaDMqNJkVoU"),
+    ("貴文","m77083763083"),
+    ("貴文","2JP3Y3JGgqLa4i8cNDdyTn"),
+    ("貴文","2JP9SXCvPJ5aAmHdLJQwoB"),
+    ("貴文","m19498974354"),
+    ("貴文","m35974739699"),
+    ("貴文","2JPVdz72bzsfBRVYSphVLr"),
+    ("貴文","2JPXg4MWNynbavUL2XfNTZ"),
+    ("貴文","m35388514636"),
 ]
 # ★テスト対象（先頭からN件）
 TARGET_PAIRS = TARGET_PAIRS_ALL[: max(0, int(N))]

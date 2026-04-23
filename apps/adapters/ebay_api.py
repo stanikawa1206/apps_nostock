@@ -386,7 +386,19 @@ def post_one_item(payload: Dict[str, Any], account_name: str, acct_policies: Dic
     offer_id = create_offer(payload, token, acct_policies)
     update_offer(offer_id, payload, token, acct_policies)
     res = publish_offer(offer_id, token)
-    return res.get("itemId") or res.get("listingId") or ""
+    item_id = res.get("itemId") or res.get("listingId") or ""
+
+    if item_id:
+        conn = get_sql_server_connection()
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                UPDATE mst.ebay_accounts
+                SET listing_left = listing_left - 1
+                WHERE account = ?
+            """, account_name)
+            conn.commit()
+            
+    return item_id
 
 # ====== Trading API（価格改定 / 削除）======
 def revise_price(*, item_id: str, new_price_usd: str | float | int,

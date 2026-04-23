@@ -26,6 +26,13 @@ from apps.common.utils import (
 )
 from apps.adapters.mercari_search import make_search_url
 
+WORKER_PID = os.getpid()
+HEARTBEAT_FILE = f"/opt/apps_nostock/worker_status_{WORKER_PID}.txt"
+
+def heartbeat():
+    with open(HEARTBEAT_FILE, "w") as f:
+        f.write(str(datetime.now()))
+
 # =========================
 # 設定
 # =========================
@@ -39,6 +46,15 @@ def get_worker_name() -> str:
         return "unknown-worker"
 
 WORKER_NAME = get_worker_name()
+WORKER_PID = os.getpid()
+STATUS_FILE = f"/opt/apps_nostock/worker_status_{WORKER_PID}.txt"
+
+def write_status(job_id, page):
+    with open(STATUS_FILE, "w", encoding="utf-8") as f:
+        f.write(f"pid={WORKER_PID}\n")
+        f.write(f"job_id={job_id}\n")
+        f.write(f"page={page}\n")
+        f.write(f"updated_at={datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
 JST = timezone(timedelta(hours=9))
 def now_jst():
@@ -75,10 +91,6 @@ SQL_PICK_JOBS = f"""
     SELECT TOP ({N}) *
     FROM trx.scrape_job WITH (UPDLOCK, READPAST, ROWLOCK)
     WHERE status = 'pending'
-    OR (
-        status = 'running'
-        AND last_progress_at < DATEADD(MINUTE, -10, GETDATE())
-    )
     ORDER BY created_at, job_id
 )
 UPDATE cte
@@ -90,8 +102,7 @@ SET
 OUTPUT
     inserted.job_id,
     inserted.job_kind,
-    inserted.job_payload,
-    inserted.current_page;
+    inserted.job_payload;
 """
 
 SQL_MARK_DONE = """
@@ -550,7 +561,7 @@ def extract_items_from_json(json_data):
     return rows
 
 
-def run_fetch_sold_ebay(page, payload: dict, job_id: int, current_page) -> Tuple[int, int]:
+def run_fetch_sold_ebay(page, payload: dict, job_id: int) -> Tuple[int, int]:
 
     preset_name = payload["preset"]
     vendor_name = payload["vendor_name"]
@@ -581,13 +592,13 @@ def run_fetch_sold_ebay(page, payload: dict, job_id: int, current_page) -> Tuple
 
     print(f"🔍 {base_url}", flush=True)
 
-    page_idx = current_page or 0
+    page_idx = 0
     seen_ids: set[str] = set()
     conn = get_sql_server_connection()
 
     try:
         while True:
-
+            write_status(job_id, page_idx + 1)
             if page_idx >= MAX_PAGES:
                 print(f"[STOP] reached MAX_PAGES={MAX_PAGES}", flush=True)
                 break
@@ -637,19 +648,8 @@ def run_fetch_sold_ebay(page, payload: dict, job_id: int, current_page) -> Tuple
                 print(f"[WARN] page error page={page_idx+1}: {e}", flush=True)
 
             # ★ 3. ここでの conn.close() は削除（finallyブロックは外側に移動）
-            now = now_jst()
-
-            cur = conn.cursor()
-            cur.execute("""
-            UPDATE trx.scrape_job
-            SET current_page = ?, last_progress_at = ?
-            WHERE job_id = ?
-            """, page_idx + 1, now, job_id)
-            conn.commit()
-            cur.close()
 
             page_idx += 1
-
             time.sleep(1)
 
     finally:
@@ -673,7 +673,7 @@ def run_fetch_sold_ebay(page, payload: dict, job_id: int, current_page) -> Tuple
 # ============================================================
 # fetch_active_ebay scrape 本体（1 preset 分）
 # ============================================================
-def run_fetch_active_ebay(page, payload: dict, job_id: int, current_page) -> Tuple[int, int]:
+def run_fetch_active_ebay(page, payload: dict, job_id: int) -> Tuple[int, int]:
     print(f"[ENV] host={socket.gethostname()} pid={os.getpid()} SIMULATE={SIMULATE}", flush=True)
 
     preset = payload["preset"]
@@ -697,11 +697,12 @@ def run_fetch_active_ebay(page, payload: dict, job_id: int, current_page) -> Tup
     )
     print(f"🔍 {base_url}", flush=True)
 
-    page_idx = current_page or 0
+    page_idx = 0
     conn = get_sql_server_connection()
 
     try:
         while True:
+            write_status(job_id, page_idx + 1)
             page_start = time.time()
             url = page_url(base_url, page_idx)
             print(f"[PAGE] {page_idx+1} {url}", flush=True)
@@ -773,21 +774,8 @@ def run_fetch_active_ebay(page, payload: dict, job_id: int, current_page) -> Tup
             TARGET = 8.0
             if elapsed < TARGET:
                 time.sleep((TARGET - elapsed) + random.uniform(0.0, 5.0))
-
-            now = now_jst()
-
-            cur = conn.cursor()
-            cur.execute("""
-            UPDATE trx.scrape_job
-            SET current_page = ?, last_progress_at = ?
-            WHERE job_id = ?
-            """, page_idx + 1, now, job_id)
-            conn.commit()
-            cur.close()
-
+            
             page_idx += 1
-
-
             time.sleep(1)
 
     finally:
@@ -866,7 +854,7 @@ def main():
                 time.sleep(POLL_SEC)
                 continue
 
-            for job_id, job_kind, job_payload, current_page in jobs:
+            for job_id, job_kind, job_payload in jobs:
                 print(f"[JOB START] id={job_id} kind={job_kind}", flush=True)
                 cur2 = None
 
@@ -874,9 +862,9 @@ def main():
                     payload = json.loads(job_payload)
 
                     if job_kind == "fetch_active_ebay":
-                        fetched_pages, fetched_items = run_fetch_active_ebay(page, payload, job_id, current_page)
+                        fetched_pages, fetched_items = run_fetch_active_ebay(page, payload, job_id)
                     elif job_kind == "fetch_sold_ebay":
-                        fetched_pages, fetched_items = run_fetch_sold_ebay(page, payload, job_id, current_page)
+                        fetched_pages, fetched_items = run_fetch_sold_ebay(page, payload, job_id)
                     else:
                         raise ValueError(f"unknown job_kind: {job_kind}")
 
@@ -884,6 +872,8 @@ def main():
                     now = now_jst()
                     cur2.execute(SQL_MARK_DONE, now, fetched_pages, fetched_items, job_id)
                     conn.commit()
+                    if os.path.exists(STATUS_FILE):
+                        os.remove(STATUS_FILE)
                     print(f"[JOB DONE] id={job_id}", flush=True)
 
                 except RuntimeError as e:
@@ -906,6 +896,9 @@ def main():
                         page.on("request", lambda r: "entities:search" in r.url and print("REQ:", r.url, flush=True))
                         page.on("response", lambda r: "entities:search" in r.url and print("RES:", r.url, flush=True))
 
+                        if os.path.exists(STATUS_FILE):
+                            os.remove(STATUS_FILE)
+                            
                         release_job(conn, job_id)
                         continue
 

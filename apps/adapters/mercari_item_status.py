@@ -477,13 +477,21 @@ def handle_listing_price_update(
         if wait:
             time.sleep(wait)
 
+        try:
+            resp = update_ebay_price_rest(
+                account,
+                vendor_item_id,
+                usd,
+                debug=True,
+            )
 
-        resp = update_ebay_price_rest(
-            account,
-            vendor_item_id,
-            usd,
-            debug=True,
-        )
+        except Exception as e:
+            print(
+                f"[RETRY] exception sku={vendor_item_id} wait={wait} err={type(e)} {e}",
+                flush=True
+            )
+            resp = None
+            continue  # ← 次のretryへ
 
         if resp and resp.get("success"):
             did_update = True
@@ -493,7 +501,6 @@ def handle_listing_price_update(
             break
 
     if not did_update:
-        print(
-            f"[WARN] eBay価格更新失敗 sku={vendor_item_id} listing_id={listing_id} account={account} resp={resp}",
-            flush=True
+        raise RuntimeError(
+            f"eBay価格更新失敗 sku={vendor_item_id} listing_id={listing_id} account={account}"
         )
