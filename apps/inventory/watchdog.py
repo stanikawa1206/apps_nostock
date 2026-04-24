@@ -23,7 +23,7 @@ BASE_DIR = os.environ.get("WORKER_STATUS_DIR", "D:/apps_nostock")
 TIMEOUT_SEC = 600  # 10分
 
 # 常に維持したいworker数
-TARGET_WORKERS = 1
+TARGET_WORKERS = 2
 
 # ログフォルダ（watchdog自体のprint用）
 LOG_DIR = os.path.join(BASE_DIR, "logs")
