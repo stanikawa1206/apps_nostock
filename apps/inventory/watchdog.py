@@ -1,6 +1,7 @@
 # D:\apps_nostock\apps\inventory\watchdog.py
 
 import os
+import sys
 import time
 import glob
 import subprocess
