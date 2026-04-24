@@ -9,6 +9,7 @@ import random
 import traceback
 import socket
 import pyodbc
+import glob
 
 from playwright.sync_api import sync_playwright
 from typing import Any, Dict, List, Tuple, Optional
@@ -40,8 +41,27 @@ def get_worker_name() -> str:
 
 WORKER_NAME = get_worker_name()
 WORKER_PID = os.getpid()
+
 BASE_DIR = os.environ.get("WORKER_STATUS_DIR", os.getcwd())
+
+# ログディレクトリ定義＆作成
+LOG_DIR = os.path.join(BASE_DIR, "logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+
+# ログ出力（PID単位）
+log_path = os.path.join(LOG_DIR, f"worker_{WORKER_PID}.log")
+sys.stdout = open(log_path, "a", encoding="utf-8", buffering=1)
+sys.stderr = sys.stdout
+
+# ステータスファイル
 STATUS_FILE = os.path.join(BASE_DIR, f"worker_status_{WORKER_PID}.txt")
+
+# ログ削除（3日）
+LOG_RETENTION_SEC = 3 * 24 * 60 * 60
+for file in glob.glob(os.path.join(LOG_DIR, "worker_*.log")):
+    if time.time() - os.path.getmtime(file) > LOG_RETENTION_SEC:
+        os.remove(file)
+
 
 def write_status(job_id, page):
     with open(STATUS_FILE, "w", encoding="utf-8") as f:
@@ -705,7 +725,7 @@ def run_fetch_active_ebay(page, start_page, payload: dict, job_id: int) -> Tuple
 
             json_data = fetch_page_json(page, url, conn, job_id)
             items = extract_items_from_json(json_data)
-            
+
             print(f"[PAGE {page_idx+1}] items={len(items)}", flush=True)
 
             if not items:
