@@ -42,6 +42,7 @@ def ensure_worker():
     # worker_status_*.txt の数 = 生きているworker数とみなす
     files = glob.glob(os.path.join(BASE_DIR, "worker_status_*.txt"))
     running = len(files)
+    print(f"[CHECK] running={running} target={TARGET_WORKERS}", flush=True)
 
     # 足りない場合のみ起動
     if running < TARGET_WORKERS:
@@ -83,6 +84,7 @@ def process_file(path):
     4. プロセスをkill
     5. statusファイル削除
     """
+    print(f"[CHECK FILE] {path}", flush=True)
 
     try:
         # 最終更新時刻
@@ -168,6 +170,7 @@ def main():
     while True:
         # 現在の全worker_statusファイル取得
         files = glob.glob(os.path.join(BASE_DIR, "worker_status_*.txt"))
+        print(f"[LOOP] worker_files={len(files)}", flush=True)
 
         # 1つずつチェック（死んでるか確認）
         for path in files:
