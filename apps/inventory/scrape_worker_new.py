@@ -26,13 +26,6 @@ from apps.common.utils import (
 )
 from apps.adapters.mercari_search import make_search_url
 
-WORKER_PID = os.getpid()
-HEARTBEAT_FILE = f"/opt/apps_nostock/worker_status_{WORKER_PID}.txt"
-
-def heartbeat():
-    with open(HEARTBEAT_FILE, "w") as f:
-        f.write(str(datetime.now()))
-
 # =========================
 # 設定
 # =========================
@@ -47,7 +40,8 @@ def get_worker_name() -> str:
 
 WORKER_NAME = get_worker_name()
 WORKER_PID = os.getpid()
-STATUS_FILE = f"/opt/apps_nostock/worker_status_{WORKER_PID}.txt"
+BASE_DIR = os.environ.get("WORKER_STATUS_DIR", os.getcwd())
+STATUS_FILE = os.path.join(BASE_DIR, f"worker_status_{WORKER_PID}.txt")
 
 def write_status(job_id, page):
     with open(STATUS_FILE, "w", encoding="utf-8") as f:
@@ -87,13 +81,7 @@ FETCH_TIMEOUT_MS = 30000
 # SQL
 # =========================
 SQL_PICK_JOBS = f"""
-;WITH cte AS (
-    SELECT TOP ({N}) *
-    FROM trx.scrape_job WITH (UPDLOCK, READPAST, ROWLOCK)
-    WHERE status = 'pending'
-    ORDER BY created_at, job_id
-)
-UPDATE cte
+UPDATE trx.scrape_job
 SET
     status = 'running',
     worker_name = ?,
@@ -102,7 +90,14 @@ SET
 OUTPUT
     inserted.job_id,
     inserted.job_kind,
-    inserted.job_payload;
+    inserted.job_payload,
+    inserted.current_page
+WHERE job_id = (
+    SELECT TOP (1) job_id
+    FROM trx.scrape_job WITH (UPDLOCK, READPAST, ROWLOCK)
+    WHERE status IN ('pending','pending2')
+    ORDER BY created_at, job_id
+);
 """
 
 SQL_MARK_DONE = """
@@ -111,7 +106,8 @@ SET
     status = 'done',
     finished_at = ?,
     fetched_pages = ?,
-    fetched_items = ?
+    fetched_items = ?,
+    current_page = NULL
 WHERE job_id = ?;
 """
 
@@ -561,7 +557,7 @@ def extract_items_from_json(json_data):
     return rows
 
 
-def run_fetch_sold_ebay(page, payload: dict, job_id: int) -> Tuple[int, int]:
+def run_fetch_sold_ebay(page, start_page, payload: dict, job_id: int) -> Tuple[int, int]:
 
     preset_name = payload["preset"]
     vendor_name = payload["vendor_name"]
@@ -590,9 +586,9 @@ def run_fetch_sold_ebay(page, payload: dict, job_id: int) -> Tuple[int, int]:
         high_usd_target=high_usd_target,
     )
 
-    print(f"🔍 {base_url}", flush=True)
+    print(f"[URL] {base_url}", flush=True)
 
-    page_idx = 0
+    page_idx = start_page if start_page is not None else 0
     seen_ids: set[str] = set()
     conn = get_sql_server_connection()
 
@@ -673,7 +669,7 @@ def run_fetch_sold_ebay(page, payload: dict, job_id: int) -> Tuple[int, int]:
 # ============================================================
 # fetch_active_ebay scrape 本体（1 preset 分）
 # ============================================================
-def run_fetch_active_ebay(page, payload: dict, job_id: int) -> Tuple[int, int]:
+def run_fetch_active_ebay(page, start_page, payload: dict, job_id: int) -> Tuple[int, int]:
     print(f"[ENV] host={socket.gethostname()} pid={os.getpid()} SIMULATE={SIMULATE}", flush=True)
 
     preset = payload["preset"]
@@ -695,9 +691,9 @@ def run_fetch_active_ebay(page, payload: dict, job_id: int) -> Tuple[int, int]:
         low_usd_target=low_usd_target,
         high_usd_target=high_usd_target,
     )
-    print(f"🔍 {base_url}", flush=True)
+    print(f"[URL] {base_url}", flush=True)
 
-    page_idx = 0
+    page_idx = start_page if start_page is not None else 0
     conn = get_sql_server_connection()
 
     try:
@@ -709,8 +705,8 @@ def run_fetch_active_ebay(page, payload: dict, job_id: int) -> Tuple[int, int]:
 
             json_data = fetch_page_json(page, url, conn, job_id)
             items = extract_items_from_json(json_data)
-
-            print(f"[PAGE {page_idx+1}] items={len(items)} sample={items[:2]}", flush=True)
+            
+            print(f"[PAGE {page_idx+1}] items={len(items)}", flush=True)
 
             if not items:
                 break
@@ -854,17 +850,18 @@ def main():
                 time.sleep(POLL_SEC)
                 continue
 
-            for job_id, job_kind, job_payload in jobs:
+            for job_id, job_kind, job_payload, current_page in jobs:
                 print(f"[JOB START] id={job_id} kind={job_kind}", flush=True)
                 cur2 = None
 
                 try:
                     payload = json.loads(job_payload)
+                    start_page = current_page
 
                     if job_kind == "fetch_active_ebay":
-                        fetched_pages, fetched_items = run_fetch_active_ebay(page, payload, job_id)
+                        fetched_pages, fetched_items = run_fetch_active_ebay(page, start_page, payload, job_id)
                     elif job_kind == "fetch_sold_ebay":
-                        fetched_pages, fetched_items = run_fetch_sold_ebay(page, payload, job_id)
+                        fetched_pages, fetched_items = run_fetch_sold_ebay(page, start_page, payload, job_id)
                     else:
                         raise ValueError(f"unknown job_kind: {job_kind}")
 
@@ -906,12 +903,14 @@ def main():
 
                 except Exception:
                     err = traceback.format_exc()
-                    print(err, flush=True)
+                    print(err.encode("utf-8", errors="ignore").decode("utf-8"), flush=True)
                     try:
                         cur2 = conn.cursor()
                         now = now_jst()
                         cur2.execute(SQL_MARK_ERROR, now, err[-4000:], job_id)
                         conn.commit()
+                        if os.path.exists(STATUS_FILE):
+                            os.remove(STATUS_FILE)
                     except Exception:
                         conn.rollback()
                         traceback.print_exc()

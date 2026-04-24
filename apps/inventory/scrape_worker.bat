@@ -1,37 +1,24 @@
 @echo off
 setlocal
 
-:: =========================
-:: 設定（あなたの環境に合わせて調整済み）
-:: =========================
 set PROJECT_DIR=D:\apps_nostock
-:: ログはプロジェクト内の logs フォルダに保存します
-set LOG_FILE=%PROJECT_DIR%\logs\scrape_worker.log
+set SCRIPT_DIR=%~dp0
+set LOG_DIR=%PROJECT_DIR%\logs
+set LOG_FILE=%LOG_DIR%\scrape_worker.log
 set PYTHON_EXE=python
+set WORKER_STATUS_DIR=%PROJECT_DIR%
 
-:: ログフォルダがなければ作成
-if not exist "%PROJECT_DIR%\logs" mkdir "%PROJECT_DIR%\logs"
+if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
 
-:: Dドライブへ移動してからプロジェクトフォルダへ移動
-d:
-cd "%PROJECT_DIR%"
+cd /d "%PROJECT_DIR%"
 
-echo [%DATE% %TIME%] Worker Loop Started.
-echo 実行状況は %LOG_FILE% で確認できます。
-
-:loop
 echo [%DATE% %TIME%] Starting Python Worker... >> "%LOG_FILE%"
+echo ==== START ==== >> "%LOG_FILE%"
 
-:: Python実行
-%PYTHON_EXE% -m apps.inventory.scrape_worker >> "%LOG_FILE%" 2>&1
+rem %PYTHON_EXE% -u -m apps.inventory.scrape_worker_new >> "%LOG_FILE%" 2>&1
+%PYTHON_EXE% -u -m apps.inventory.scrape_worker_new
 
-echo [%DATE% %TIME%] Worker exited. Refreshing memory... >> "%LOG_FILE%"
+echo ==== END ==== >> "%LOG_FILE%"
+echo [%DATE% %TIME%] Python Worker exited. >> "%LOG_FILE%"
 
-:: ゾンビプロセス対策（Google Chromeを強制終了）
-taskkill /F /IM chrome.exe /T >nul 2>&1
-taskkill /F /IM chromedriver.exe /T >nul 2>&1
-
-:: 5秒待機してから再起動
-timeout /t 5 /nobreak >nul
-
-goto loop
+endlocal

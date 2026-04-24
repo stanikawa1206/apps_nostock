@@ -97,7 +97,7 @@ def insert_items(cursor, account, items, fetched_at):
 
     for item in items:
         cursor.execute("""
-            INSERT INTO ext.ebay_active_download_new
+            INSERT INTO ext.ebay_active_download
             (
                 account,
                 vendor_item_id,
@@ -130,10 +130,10 @@ def run():
     cursor = conn.cursor()
 
     print("🧹 テーブル初期化（DELETE）")
-    # cursor.execute("DELETE FROM ext.ebay_active_download_new")
+    # cursor.execute("DELETE FROM ext.ebay_active_download")
     cursor.execute(
-    "DELETE FROM ext.ebay_active_download_new WHERE account = ?",
-    ("谷川②",)
+        "DELETE FROM ext.ebay_active_download WHERE account IN (?, ?)",
+        ("川島","谷川②")
     )
     conn.commit()
 
@@ -141,8 +141,8 @@ def run():
 
     # cursor.execute("SELECT account FROM mst.ebay_accounts")
     cursor.execute(
-    "SELECT account FROM mst.ebay_accounts WHERE account = ?",
-    ("谷川②",)
+        "SELECT account FROM mst.ebay_accounts WHERE account IN (?, ?)",
+        ("川島","谷川②")
     )
     accounts = [row[0] for row in cursor.fetchall()]
 

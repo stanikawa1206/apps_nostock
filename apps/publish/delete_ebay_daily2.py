@@ -8,9 +8,8 @@ from apps.adapters.ebay_api import delete_items_from_ebay_batch
 
 # ===== 設定 =====
 DELETE_CONFIG = {
-    "BUZZ": 225,
-    "川島": 214,
-    "谷川②": 500,
+    "川島": 275,
+    "谷川②": 408,
 }
 
 MAX_WORKERS = 2
@@ -20,7 +19,7 @@ BATCH_SIZE  = 10
 # ===== 削除対象取得 =====
 SQL_SELECT = """
 SELECT TOP (?) listing_id
-FROM ext.ebay_active_download_new
+FROM ext.ebay_active_download
 WHERE
     account = ?
     AND LEN(vendor_item_id) >= 6

@@ -39,6 +39,9 @@ def get_worker_name() -> str:
         return "unknown-worker"
 
 WORKER_NAME = get_worker_name()
+WORKER_PID = os.getpid()
+STATUS_DIR = os.environ.get("WORKER_STATUS_DIR", os.getcwd())
+STATUS_FILE = os.path.join(STATUS_DIR, f"worker_status_{WORKER_PID}.txt")
 
 JST = timezone(timedelta(hours=9))
 def now_jst():
@@ -574,7 +577,7 @@ def run_fetch_sold_ebay(page, payload: dict, job_id: int) -> Tuple[int, int]:
         high_usd_target=high_usd_target,
     )
 
-    print(f"🔍 {base_url}", flush=True)
+    print(f"[URL] {base_url}", flush=True)
 
     page_idx = 0
     seen_ids: set[str] = set()
@@ -679,7 +682,8 @@ def run_fetch_active_ebay(page, payload: dict, job_id: int) -> Tuple[int, int]:
         low_usd_target=low_usd_target,
         high_usd_target=high_usd_target,
     )
-    print(f"🔍 {base_url}", flush=True)
+
+    print(f"[URL] {base_url}", flush=True)
 
     page_idx = 0
     conn = get_sql_server_connection()
@@ -884,7 +888,7 @@ def main():
 
                 except Exception:
                     err = traceback.format_exc()
-                    print(err, flush=True)
+                    print(err.encode('utf-8', errors='ignore').decode('utf-8'), flush=True)
                     try:
                         cur2 = conn.cursor()
                         now = now_jst()
