@@ -50,11 +50,16 @@ def ensure_worker():
 
         # 必要数だけworkerを起動
         for _ in range(need):
+            log_path = os.path.join(LOG_DIR, f"worker_{int(time.time())}.log")
+
+            f = open(log_path, "a", encoding="utf-8")
+
             subprocess.Popen(
-                ["python", "-u", "-m", "apps.inventory.scrape_worker_new"],
-                stdout=subprocess.DEVNULL,   # 画面出力しない（worker側でログ管理）
-                stderr=subprocess.DEVNULL
+                [sys.executable, "-u", "-m", "apps.inventory.scrape_worker_new"],
+                stdout=f,
+                stderr=f
             )
+
             time.sleep(1)  # 連続起動しすぎ防止
 
         files = glob.glob(os.path.join(BASE_DIR, "worker_status_*.txt"))
