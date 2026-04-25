@@ -68,9 +68,11 @@ def ensure_worker():
     """
 
     # worker_status_*.txt の数 = 生きているworker数とみなす
-    files = glob.glob(os.path.join(BASE_DIR, "worker_status_*.txt"))
-    running = count_process()
-    print(f"[CHECK] running={running} target={TARGET_WORKERS}", flush=True)
+    files = glob.glob("/opt/apps_nostock/worker_status_*.txt")
+    running = len(files)
+    need = TARGET_WORKERS - running
+
+    print(f"[AFTER SPAWN] running={running} need={need}")
 
     # 足りない場合のみ起動
     if running < TARGET_WORKERS:
