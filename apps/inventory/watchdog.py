@@ -9,6 +9,7 @@ from datetime import datetime
 from apps.common.utils import get_sql_server_connection
 import platform
 from pathlib import Path
+import psutil
 
 # =========================
 # 設定
@@ -40,11 +41,25 @@ os.makedirs(LOG_DIR, exist_ok=True)
 # worker起動管理
 # =========================
 def count_process():
-    out = subprocess.check_output(
-        "pgrep -f scrape_worker_new | wc -l",
-        shell=True
-    )
-    return int(out.strip())
+    cnt = 0
+    for p in psutil.process_iter(['cmdline']):
+        try:
+            cmdline = p.info['cmdline']
+            if not cmdline:
+                continue
+
+            # 完全一致判定
+            if (
+                len(cmdline) >= 3 and
+                cmdline[-2] == "-m" and
+                cmdline[-1] == "apps.inventory.scrape_worker_new"
+            ):
+                cnt += 1
+
+        except:
+            pass
+
+    return cnt
 
 def ensure_worker():
     """
