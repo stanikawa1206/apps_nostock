@@ -132,8 +132,8 @@ def run():
     print("🧹 テーブル初期化（DELETE）")
     # cursor.execute("DELETE FROM ext.ebay_active_download")
     cursor.execute(
-        "DELETE FROM ext.ebay_active_download WHERE account IN (?, ?)",
-        ("川島","谷川②")
+        "DELETE FROM ext.ebay_active_download WHERE account IN (?)",
+        ("谷川②")
     )
     conn.commit()
 
@@ -141,8 +141,8 @@ def run():
 
     # cursor.execute("SELECT account FROM mst.ebay_accounts")
     cursor.execute(
-        "SELECT account FROM mst.ebay_accounts WHERE account IN (?, ?)",
-        ("川島","谷川②")
+        "SELECT account FROM mst.ebay_accounts WHERE account IN (?)",
+        ("谷川②")
     )
     accounts = [row[0] for row in cursor.fetchall()]
 

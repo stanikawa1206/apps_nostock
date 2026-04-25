@@ -8,6 +8,7 @@ import subprocess
 from datetime import datetime
 from apps.common.utils import get_sql_server_connection
 import platform
+from pathlib import Path
 
 # =========================
 # 設定
@@ -16,7 +17,12 @@ import platform
 # worker_status_*.txt を置く場所（＝監視対象）
 # Windowsなら D:/apps_nostock
 # Linuxなら /opt/apps_nostock を環境変数で上書き可能
-BASE_DIR = os.environ.get("WORKER_STATUS_DIR", "D:/apps_nostock")
+if os.name == "nt":
+    default_dir = Path("D:/apps_nostock/logs")
+else:
+    default_dir = Path("/opt/apps_nostock/logs")
+
+BASE_DIR = os.environ.get("WORKER_STATUS_DIR", default_dir)
 
 # 「この秒数更新がなければ死んだ」とみなす
 # → workerが止まってもすぐ再起動しないための猶予
@@ -26,13 +32,20 @@ TIMEOUT_SEC = 600  # 10分
 TARGET_WORKERS = 2
 
 # ログフォルダ（watchdog自体のprint用）
-LOG_DIR = os.path.join(BASE_DIR, "logs")
+LOG_DIR = BASE_DIR
 os.makedirs(LOG_DIR, exist_ok=True)
 
 
 # =========================
 # worker起動管理
 # =========================
+def count_process():
+    out = subprocess.check_output(
+        "pgrep -f scrape_worker_new | wc -l",
+        shell=True
+    )
+    return int(out.strip())
+
 def ensure_worker():
     """
     現在のworker数（＝statusファイル数）を見て、
@@ -41,7 +54,7 @@ def ensure_worker():
 
     # worker_status_*.txt の数 = 生きているworker数とみなす
     files = glob.glob(os.path.join(BASE_DIR, "worker_status_*.txt"))
-    running = len(files)
+    running = count_process()
     print(f"[CHECK] running={running} target={TARGET_WORKERS}", flush=True)
 
     # 足りない場合のみ起動
