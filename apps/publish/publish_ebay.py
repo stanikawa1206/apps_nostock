@@ -1844,14 +1844,6 @@ def main():
                 summary_success[acct.account] = summary_success.get(acct.account, 0) + acct_success.get(acct.account, 0)
                 print(f"🏁 アカウント終了: {acct.account} (Reason: {close_reason or 'DONE'})")
 
-        end_time = datetime.now()
-        elapsed = end_time - start_time
-        lines = [f"{a}: 成功 {s}" for a, s in summary_success.items()]
-        body = (
-            f"PC: {current_pc}\n開始: {start_time}\n終了: {end_time}\n処理時間: {elapsed}\n\n"
-            + "\n".join(lines)
-        )
-        send_mail("✅ eBay出品処理 完了通知", body)
 
         print(f"[EXIT] 処理完了（合計出品数: {total_listings}）")
         sys.exit(10)

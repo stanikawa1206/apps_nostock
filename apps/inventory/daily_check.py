@@ -43,7 +43,7 @@ CHECK_REMAINING  = APPS_INV / "check_remaining_ebay.py"
 
 # 在庫チェック後、削除 → 出品 の順で実行
 DELETE_SCRIPT = APPS_DEL
-PUBLISH_SCRIPT = APPS_PUB / "publish_ebay.py"
+PUBLISH_SCRIPT = APPS_PUB / "daily_check_publish.py"
 
 WAIT_SECONDS = 3
 
@@ -540,30 +540,28 @@ def main():
         time.sleep(WAIT_SECONDS)
 
 
-        RUN_PUBLISH = False
-        if RUN_PUBLISH:
-            print("\n=== 🚀 publish_ebay.py 実行（ループ外） ===")
+        print("\n=== 🚀 daily_check_publish.py 実行（ループ外） ===")
 
-            refresh_presets_and_clear_locks(conn)
+        refresh_presets_and_clear_locks(conn)
 
-            pub_start = datetime.now()
-            pub_code, _ = run_script(PUBLISH_SCRIPT)
-            pub_end = datetime.now()
+        pub_start = datetime.now()
+        pub_code, _ = run_script(PUBLISH_SCRIPT)   # ←中身だけ差し替え済み前提
+        pub_end = datetime.now()
 
-            subject = (
-                f"❌ publish_ebay.py エラー"
-                if pub_code != 0
-                else f"✅ publish_ebay.py 正常終了"
-            )
+        subject = (
+            f"❌ daily_check_publish.py エラー"
+            if pub_code != 0
+            else f"✅ daily_check_publish.py 正常終了"
+        )
 
-            body = (
-                f"スクリプト: {PUBLISH_SCRIPT.name}\n"
-                f"開始時刻: {pub_start}\n"
-                f"終了時刻: {pub_end}\n"
-                f"処理時間: {pub_end - pub_start}\n"
-                f"returncode: {pub_code}\n\n"
-                + format_trx_listings_count_by_account(conn)
-            )
+        body = (
+            f"スクリプト: {PUBLISH_SCRIPT.name}\n"
+            f"開始時刻: {pub_start}\n"
+            f"終了時刻: {pub_end}\n"
+            f"処理時間: {pub_end - pub_start}\n"
+            f"returncode: {pub_code}\n\n"
+            + format_trx_listings_count_by_account(conn)
+        )
 
         send_mail(subject, body)
 
