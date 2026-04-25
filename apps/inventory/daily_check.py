@@ -358,7 +358,7 @@ def main():
     refresh_presets_lookup(conn)
     
     try:
-        SET_N = 1
+        SET_N = 2
         print(f"=== 🧭 inventory_ebay_manager.py 開始（4工程×{SET_N}回転） ===")
 
         for set_no in range(1, SET_N + 1):
@@ -564,6 +564,30 @@ def main():
         )
 
         send_mail(subject, body)
+
+        print("\n=== 📥 get_active_listings.py 実行（ループ外） ===")
+
+        get_start = datetime.now()
+        get_code, _ = run_script(APPS_INV / "get_active_listings.py")
+        get_end = datetime.now()
+
+        subject = (
+            f"❌ get_active_listings.py エラー"
+            if get_code != 0
+            else f"✅ get_active_listings.py 正常終了"
+        )
+
+        body = (
+            f"スクリプト: get_active_listings.py\n"
+            f"開始時刻: {get_start}\n"
+            f"終了時刻: {get_end}\n"
+            f"処理時間: {get_end - get_start}\n"
+            f"returncode: {get_code}\n\n"
+            + format_trx_listings_count_by_account(conn)
+        )
+
+        send_mail(subject, body)
+
 
         print(f"\n=== 🎉 全セット完了（4工程×{SET_N}回転） ===")
 
