@@ -21,7 +21,7 @@ import psutil
 if os.name == "nt":
     default_dir = Path("D:/apps_nostock/logs")
 else:
-    default_dir = Path("/opt/apps_nostock/logs")
+    default_dir = Path("/opt/apps_nostock")
 
 BASE_DIR = os.environ.get("WORKER_STATUS_DIR", default_dir)
 
@@ -67,23 +67,16 @@ def ensure_worker():
     足りなければ起動する
     """
 
-    # worker_status_*.txt の数 = 生きているworker数とみなす
-    files = glob.glob("/opt/apps_nostock/worker_status_*.txt")
-    running = len(files)
+    running = count_process()
     need = TARGET_WORKERS - running
 
-    print(f"[AFTER SPAWN] running={running} need={need}")
+    print(f"[CHECK] running={running} need={need}")
 
-    # 足りない場合のみ起動
     if running < TARGET_WORKERS:
-        need = TARGET_WORKERS - running
-
         print(f"[SPAWN] running={running} need={need}")
 
-        # 必要数だけworkerを起動
         for _ in range(need):
             log_path = os.path.join(LOG_DIR, f"worker_{int(time.time())}.log")
-
             f = open(log_path, "a", encoding="utf-8")
 
             subprocess.Popen(
@@ -92,12 +85,7 @@ def ensure_worker():
                 stderr=f
             )
 
-            time.sleep(1)  # 連続起動しすぎ防止
-
-        files = glob.glob(os.path.join(BASE_DIR, "worker_status_*.txt"))
-        running = len(files)
-        need = TARGET_WORKERS - running
-        print(f"[AFTER SPAWN] running={running} need={need}")
+            time.sleep(1)
 
 
 # =========================
