@@ -61,32 +61,17 @@ def count_process():
 
     return cnt
 
-def ensure_worker():
-    """
-    現在のworker数（＝statusファイル数）を見て、
-    足りなければ起動する
-    """
+def start_worker():
+    log_path = os.path.join(LOG_DIR, f"worker_{int(time.time())}.log")
+    f = open(log_path, "a", encoding="utf-8")
 
-    running = count_process()
-    need = TARGET_WORKERS - running
+    subprocess.Popen(
+        [sys.executable, "-u", "-m", "apps.inventory.scrape_worker_new"],
+        stdout=f,
+        stderr=f
+    )
 
-    print(f"[CHECK] running={running} need={need}")
-
-    if running < TARGET_WORKERS:
-        print(f"[SPAWN] running={running} need={need}")
-
-        for _ in range(need):
-            log_path = os.path.join(LOG_DIR, f"worker_{int(time.time())}.log")
-            f = open(log_path, "a", encoding="utf-8")
-
-            subprocess.Popen(
-                [sys.executable, "-u", "-m", "apps.inventory.scrape_worker_new"],
-                stdout=f,
-                stderr=f
-            )
-
-            time.sleep(1)
-
+    print("[SPAWN] worker started", flush=True)
 
 # =========================
 # 停止workerの検知と回収
@@ -185,21 +170,23 @@ def process_file(path):
 def main():
     print("[WATCHDOG START]")
 
+    for _ in range(TARGET_WORKERS):
+        start_worker()
+        time.sleep(1)
+
     while True:
-        # 現在の全worker_statusファイル取得
         files = glob.glob(os.path.join(BASE_DIR, "worker_status_*.txt"))
         print(f"[LOOP] worker_files={len(files)}", flush=True)
 
-        # 1つずつチェック（死んでるか確認）
         for path in files:
             process_file(path)
 
-        # 足りないworkerを起動
-        ensure_worker()
+        running = count_process()
+        if running < TARGET_WORKERS:
+            for _ in range(TARGET_WORKERS - running):
+                start_worker()
 
-        # 次のチェックまで待機
         time.sleep(10)
-
 
 # =========================
 # 実行エントリ
