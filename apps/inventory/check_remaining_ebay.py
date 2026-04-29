@@ -469,13 +469,14 @@ def run_remaining_worker(worker_name: str):
             # MAX_PER_RUN に達したら exit 1 で終了
             print(f"[INFO] Reached {MAX_PER_RUN} items. Restarting for memory refresh...")
             browser.close()
+            os.system("find /tmp -mindepth 1 -delete")
             sys.exit(1) # Shellスクリプトがこれを検知して pkill & 再起動する
 
     finally:
         safe_quit(driver)
         if pull_conn: pull_conn.close()
         if work_conn: work_conn.close()
-
+        os.system("find /tmp -mindepth 1 -delete")
 
 def process_status_and_sync(
     conn,

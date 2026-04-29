@@ -1,0 +1,14 @@
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x0000019E7BA498A0>
+Traceback (most recent call last):
+  File "C:\Users\stani\AppData\Local\Programs\Python\Python312\Lib\asyncio\base_subprocess.py", line 126, in __del__
+  File "C:\Users\stani\AppData\Local\Programs\Python\Python312\Lib\asyncio\base_subprocess.py", line 104, in close
+  File "C:\Users\stani\AppData\Local\Programs\Python\Python312\Lib\asyncio\proactor_events.py", line 109, in close
+  File "C:\Users\stani\AppData\Local\Programs\Python\Python312\Lib\asyncio\base_events.py", line 772, in call_soon
+  File "C:\Users\stani\AppData\Local\Programs\Python\Python312\Lib\asyncio\base_events.py", line 519, in _check_closed
+RuntimeError: Event loop is closed
+Exception ignored in: <function _ProactorBasePipeTransport.__del__ at 0x0000019E7BA4B1A0>
+Traceback (most recent call last):
+  File "C:\Users\stani\AppData\Local\Programs\Python\Python312\Lib\asyncio\proactor_events.py", line 116, in __del__
+  File "C:\Users\stani\AppData\Local\Programs\Python\Python312\Lib\asyncio\proactor_events.py", line 80, in __repr__
+  File "C:\Users\stani\AppData\Local\Programs\Python\Python312\Lib\asyncio\windows_utils.py", line 102, in fileno
+ValueError: I/O operation on closed pipe

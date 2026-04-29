@@ -352,13 +352,14 @@ def refresh_presets_lookup(conn):
 # メイン処理
 # ======================
 def main():
+    os.system("find /tmp -mindepth 1 -delete")
     conn = get_sql_server_connection()
 
     # presets一覧を準備
     refresh_presets_lookup(conn)
     
     try:
-        SET_N = 2
+        SET_N = 4
         print(f"=== 🧭 inventory_ebay_manager.py 開始（4工程×{SET_N}回転） ===")
 
         for set_no in range(1, SET_N + 1):

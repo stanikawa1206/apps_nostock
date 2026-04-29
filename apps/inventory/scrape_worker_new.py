@@ -330,7 +330,8 @@ WHEN MATCHED THEN
     T.[price] = COALESCE(?, T.[price]),
     T.[vendor_created_at] = ?,
     T.[vendor_updated_at] = ?,
-    T.[vendor_page] = COALESCE(?, T.[vendor_page])
+    T.[vendor_page] = COALESCE(?, T.[vendor_page]),
+    T.[item_condition_id] = COALESCE(?, T.[item_condition_id])
 WHEN NOT MATCHED THEN
   INSERT (
       [vendor_name],
@@ -339,6 +340,7 @@ WHEN NOT MATCHED THEN
       [preset],
       [title_jp],
       [vendor_page],
+      [item_condition_id], 
       [created_at],
       [last_checked_at],
       [price],
@@ -347,7 +349,7 @@ WHEN NOT MATCHED THEN
       [vendor_updated_at]
   )
   VALUES (
-      ?, ?, ?, ?, ?,
+      ?, ?, ?, ?, ?,?,
       ?, ?, ?, ?, NULL,
       ?, ?
   );
@@ -377,13 +379,15 @@ WHEN NOT MATCHED THEN
                     r["vendor_created_at"],
                     r["vendor_updated_at"],
                     r.get("vendor_page"),  
+                    r.get("item_condition_id"),   #
                     # INSERT
                     r["vendor_name"],
                     r["vendor_item_id"],
                     r["status"],
                     r["preset"],
                     r["title_jp"],
-                    r.get("vendor_page"),  
+                    r.get("vendor_page"),
+                    r.get("item_condition_id"),    
                     now,
                     now,
                     r["price"],
@@ -572,7 +576,11 @@ def extract_items_from_json(json_data):
         if price is not None:
             price = int(price)
 
-        rows.append((item_id, title, price, seller, created, updated))
+        item_condition_id = item.get("itemConditionId")
+        if item_condition_id is not None:
+            item_condition_id = int(item_condition_id)
+
+        rows.append((item_id, title, price, seller, created, updated, item_condition_id))
 
     return rows
 
@@ -634,7 +642,7 @@ def run_fetch_sold_ebay(page, start_page, payload: dict, job_id: int) -> Tuple[i
 
                 rows = []
 
-                for iid, title, price, seller, created, updated in items:
+                for iid, title, price, seller, created, updated, item_condition_id in items:
                     iid = (iid or "").strip()
                     if not iid or iid in seen_ids:
                         continue
@@ -733,7 +741,7 @@ def run_fetch_active_ebay(page, start_page, payload: dict, job_id: int) -> Tuple
 
             total_items += len(items)
 
-            item_ids = [iid for iid, _, _, _, _, _ in items]
+            item_ids = [iid for iid, _, _, _, _, _, _ in items]
             print(f"[F] old_price select start n={len(item_ids)}", flush=True)
             old_price_map = get_vendor_item_prices_batch(conn, vendor_name, item_ids)
             print(f"[F] old_price select done got={len(old_price_map)}", flush=True)
@@ -742,7 +750,7 @@ def run_fetch_active_ebay(page, start_page, payload: dict, job_id: int) -> Tuple
             cnt_changed = 0
             cnt_unchanged = 0
 
-            for iid, title, price, seller, created, updated in items:
+            for iid, title, price, seller, created, updated, item_condition_id in items:
                 if price is None:
                     cnt_skip += 1
                     continue
@@ -773,7 +781,8 @@ def run_fetch_active_ebay(page, start_page, payload: dict, job_id: int) -> Tuple
                 "price": price,
                 "vendor_created_at": created,
                 "vendor_updated_at": updated,
-            } for iid, title, price, seller, created, updated in items]
+                "item_condition_id": item_condition_id,
+            } for iid, title, price, seller, created, updated, item_condition_id in items]
 
             now = now_jst()
             print(f"[G] upsert start rows={len(rows)} now={now}", flush=True)
