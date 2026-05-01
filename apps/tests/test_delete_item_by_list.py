@@ -37,9 +37,9 @@ DEFER_WINDOW_SEC = 1800
 
 # ===== 対象リスト（提示された順序を保持）=====
 TARGET_PAIRS_ALL = [
-    ("BUZZ","358473192652"),
-    
+    ("BUZZ", "m31587764189"),
 ]
+
 # ★テスト対象（先頭からN件）
 TARGET_PAIRS = TARGET_PAIRS_ALL[: max(0, int(N))]
 

@@ -300,7 +300,7 @@ _RISKY_KEYWORDS = [
     "パイソン", "ヘビ", "蛇", "リザード", "トカゲ",
     "オーストリッチ", "ダチョウ", "ミンク", "フォックス", "セーブル",
     "crocodile", "alligator", "caiman",
-    "python", "lizard", "ostrich", "mink", "fox fur", "sable",
+    "python", "lizard", "ostrich", "mink", "fox fur", "sable","アリゲーター","クロコ",
 ]
 
 def _norm_for_match(s: str) -> str:

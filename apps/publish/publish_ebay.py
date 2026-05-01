@@ -816,7 +816,8 @@ def heavy_check_detail(
         if not isinstance(rec, dict):
             raise Exception(f"解析失敗（データが空です）: SKU={sku}")
         rec["vendor_item_id"] = sku
-
+        rec["item_condition_id"] = item_condition_id 
+        
     except MercariItemUnavailableError as e:
         status = e.state
 
@@ -976,6 +977,37 @@ def heavy_check_detail(
         writes_since_commit += 1
         writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
         return None, debug_unavailable_dump, writes_since_commit, 1, 0
+
+    # === 4.6) 新品フィルタ ===
+
+    # ① condition未取得 → NG
+    item_condition_id = rec.get("item_condition_id")
+
+    if item_condition_id is None:
+        rec["listing_head"] = "NG(状態未取得)"
+        rec["listing_detail"] = "item_condition_id is NULL"
+        upsert_vendor_item(conn, rec)
+        writes_since_commit += 1
+        writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
+        return None, debug_unavailable_dump, writes_since_commit, 1, 0
+
+
+    # ② 新品 → 信頼セラーのみ
+    if item_condition_id == 1:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT allow_new_items FROM mst.seller WHERE vendor_name = ? AND seller_id = ?",
+                (vendor_name, seller_id),
+            )
+            row = cur.fetchone()
+
+        if not row or row[0] != 1:
+            rec["listing_head"] = "NG(新品セラー制限)"
+            rec["listing_detail"] = "allow_new_items != 1"
+            upsert_vendor_item(conn, rec)
+            writes_since_commit += 1
+            writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
+            return None, debug_unavailable_dump, writes_since_commit, 1, 0
 
     # === 4.9) 危険素材判定 ===
     jp_title = (rec.get("title_jp") or "").strip()
@@ -1541,6 +1573,7 @@ def take_one_vendor_item(conn, preset_group, processing_by, account_name):
             pl.category_group,
             r.low_jpy_target, 
             r.high_jpy_target,
+            inserted.item_condition_id,
             CAST(1 AS bit) AS is_ok_logic
         FROM trx.vendor_item v WITH (UPDLOCK, READPAST, ROWLOCK)
         INNER JOIN mst.presets_lookup pl ON pl.preset = v.preset
@@ -1785,7 +1818,7 @@ def main():
                         heavy, _, writes_since_commit, _, _ = heavy_check_detail(
                             conn, page, item_url, sku, row["preset"], vendor_name, row["mode"],
                             row["default_brand_en"], row["category_id_ebay"], row["department"], row["type_ebay"],
-                            {}, writes_since_commit, row["low_jpy_target"], row["high_jpy_target"],driver
+                            {}, writes_since_commit, row["low_jpy_target"], row["high_jpy_target"],driver,row["item_condition_id"] 
                         )
 
                         if heavy:
