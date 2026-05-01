@@ -796,7 +796,8 @@ def heavy_check_detail(
     writes_since_commit,
     low_jpy_target,   # ★追加
     high_jpy_target,   # ★追加
-    driver 
+    driver, 
+    item_condition_id   # ← これを追加
 ):
     """
     ✅ ここでは「詳細解析」「NG判定」「翻訳生成」まで。
