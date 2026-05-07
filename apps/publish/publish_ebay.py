@@ -1607,6 +1607,10 @@ def take_one_vendor_item(conn, preset_group, processing_by, account_name):
             AND ISNULL(v.shipping_days, N'') NOT IN (
                 N'4~7日で発送', N'4〜7日で発送', N'8〜14日で発送', N'90日以内で発送'
             )
+            AND NOT (
+                ISNULL(v.[出品状況], N'') IN (N'低需要NG', N'配送条件NG')
+                AND v.last_checked_at >= DATEADD(MONTH, -1, SYSDATETIME())
+            )
             AND NOT EXISTS (
                 SELECT 1 FROM trx.listings l
                 WHERE l.vendor_name = v.vendor_name
