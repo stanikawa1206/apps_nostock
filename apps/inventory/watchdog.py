@@ -52,7 +52,7 @@ def count_process():
             if (
                 len(cmdline) >= 3 and
                 cmdline[-2] == "-m" and
-                cmdline[-1] == "apps.inventory.scrape_worker_new"
+                cmdline[-1] == "apps.inventory.scrape_worker"
             ):
                 cnt += 1
 
@@ -66,7 +66,7 @@ def start_worker():
     f = open(log_path, "a", encoding="utf-8")
 
     subprocess.Popen(
-        [sys.executable, "-u", "-m", "apps.inventory.scrape_worker_new"],
+        [sys.executable, "-u", "-m", "apps.inventory.scrape_worker"],
         stdout=f,
         stderr=f
     )

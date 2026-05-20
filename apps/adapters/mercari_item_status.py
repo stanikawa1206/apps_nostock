@@ -173,6 +173,53 @@ def _parse_status_from_res(res) -> Tuple[str, Optional[int]]:
 
     return "判定不可", None
 
+def check_rakuma_purchase_request(page):
+
+    page.locator("text=購入に進む").click()
+    page.wait_for_timeout(3000)
+    if page.locator("a#dialog-btn").count() > 0:
+        return True
+
+    return False
+
+
+def detect_status_from_rakuma(page, url):
+
+    page.goto(
+        url,
+        wait_until="domcontentloaded",
+        timeout=60000
+    )
+    html = page.content()
+
+    # ページ削除
+    if "お探しのページは見つかりませんでした" in html:
+        return "削除", None
+
+
+    # 売り切れ
+    if "SOLD OUT" in html:
+        return "売り切れ", None
+
+    # 販売中
+    if "購入に進む" in html:
+        is_request = check_rakuma_purchase_request(page)
+
+        if is_request:
+            return "購入申請あり", None
+
+        price_text = page.locator(".item__price").inner_text()
+
+        price_jpy = int(
+            price_text
+            .replace("¥", "")
+            .replace(",", "")
+            .strip()
+        )
+
+        return "販売中", price_jpy
+
+    return "判定不可", None
 
 def detect_status_from_mercari(page, url: str) -> Tuple[str, Optional[int]]:
     max_retries = 2
@@ -504,3 +551,24 @@ def handle_listing_price_update(
         raise RuntimeError(
             f"eBay価格更新失敗 sku={vendor_item_id} listing_id={listing_id} account={account}"
         )
+    
+if __name__ == "__main__":
+
+    test_url = "https://fril.jp/item/00854aa1c581d2224423c0ce5cf149ad"
+
+    with sync_playwright() as p:
+
+        browser = p.chromium.launch(headless=False)
+
+        page = browser.new_page()
+
+        result = detect_status_from_rakuma(
+            page=page,
+            url=test_url
+        )
+
+        print(result)
+
+        input("enterで終了")
+
+        browser.close()

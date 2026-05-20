@@ -414,7 +414,7 @@ def translate_to_english(
     prompt = f"""
 You are translating a Japanese product title for eBay.
 
-Translate the Japanese title into natural English.
+Translate the Japanese title into simple factual English.
 
 STRICT RULES:
 - You must NOT add any information.
@@ -427,8 +427,27 @@ STRICT RULES:
 - Output only words directly supported by the Japanese title.
 - If translation is possible, you must output something. Do not return empty.
 
-You may slightly rearrange wording to sound natural in English,
-but you must only use information explicitly written in Japanese.
+- Do NOT use promotional words.
+- Forbidden words:
+  Rare
+  Beautiful
+  Gorgeous
+  Amazing
+  Stunning
+  Luxury
+  Mint
+  Authentic
+  Guaranteed
+  Elegant
+  Classic
+  Chic
+  Lovely
+  Cute
+  Stylish
+  Fashionable
+
+Keep the title simple and factual.
+Use only information explicitly written in Japanese.
 
 Output only the final English title (max 80 characters).
 No quotes. No explanations.
@@ -462,6 +481,16 @@ Japanese description:
             return ""
 
         title_en = apply_hermes_stole_rules(title_en, jp_title, desc_block)
+
+        title_en = re.sub(
+            r"\b(Rare|Beautiful|Gorgeous|Amazing|Stunning|Luxury|Mint|Authentic|Guaranteed)\b",
+            "",
+            title_en,
+            flags=re.IGNORECASE
+        )
+
+        title_en = re.sub(r"\s{2,}", " ", title_en).strip()
+
 
         if len(title_en) > 80:
             cut = title_en[:80]
@@ -609,6 +638,7 @@ def get_sql_server_connection():
         "Encrypt=no;"
         "TrustServerCertificate=yes;"
     )
+
     return pyodbc.connect(conn_str)
 
 

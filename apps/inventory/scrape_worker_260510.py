@@ -9,8 +9,6 @@ import random
 import traceback
 import socket
 import pyodbc
-import glob
-import re
 
 from playwright.sync_api import sync_playwright
 from typing import Any, Dict, List, Tuple, Optional
@@ -42,34 +40,8 @@ def get_worker_name() -> str:
 
 WORKER_NAME = get_worker_name()
 WORKER_PID = os.getpid()
-
-BASE_DIR = os.environ.get("WORKER_STATUS_DIR", os.getcwd())
-
-# ログディレクトリ定義＆作成
-LOG_DIR = os.path.join(BASE_DIR, "logs")
-os.makedirs(LOG_DIR, exist_ok=True)
-
-# ログ出力（PID単位）
-log_path = os.path.join(LOG_DIR, f"worker_{WORKER_PID}.log")
-sys.stdout = open(log_path, "a", encoding="utf-8", buffering=1)
-sys.stderr = sys.stdout
-
-# ステータスファイル
-STATUS_FILE = os.path.join(BASE_DIR, f"worker_status_{WORKER_PID}.txt")
-
-# ログ削除（3日）
-LOG_RETENTION_SEC = 3 * 24 * 60 * 60
-for file in glob.glob(os.path.join(LOG_DIR, "worker_*.log")):
-    if time.time() - os.path.getmtime(file) > LOG_RETENTION_SEC:
-        os.remove(file)
-
-
-def write_status(job_id, page):
-    with open(STATUS_FILE, "w", encoding="utf-8") as f:
-        f.write(f"pid={WORKER_PID}\n")
-        f.write(f"job_id={job_id}\n")
-        f.write(f"page={page}\n")
-        f.write(f"updated_at={datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+STATUS_DIR = os.environ.get("WORKER_STATUS_DIR", os.getcwd())
+STATUS_FILE = os.path.join(STATUS_DIR, f"worker_status_{WORKER_PID}.txt")
 
 JST = timezone(timedelta(hours=9))
 def now_jst():
@@ -87,7 +59,7 @@ EXIT_AFTER_DELETE = False
 # ★ 対策(10): swap警告を出すか（Linuxのみ）
 CHECK_SWAP = (os.environ.get("CHECK_SWAP", "1") == "1")
 
-MAX_PAGES = 1
+MAX_PAGES = 2
 PAUSE = 0.6
 SIMULATE_DELETE = False
 
@@ -102,7 +74,13 @@ FETCH_TIMEOUT_MS = 30000
 # SQL
 # =========================
 SQL_PICK_JOBS = f"""
-UPDATE trx.scrape_job
+;WITH cte AS (
+    SELECT TOP ({N}) *
+    FROM trx.scrape_job WITH (UPDLOCK, READPAST, ROWLOCK)
+    WHERE status = 'pending'
+    ORDER BY created_at, job_id
+)
+UPDATE cte
 SET
     status = 'running',
     worker_name = ?,
@@ -111,14 +89,7 @@ SET
 OUTPUT
     inserted.job_id,
     inserted.job_kind,
-    inserted.job_payload,
-    inserted.current_page
-WHERE job_id = (
-    SELECT TOP (1) job_id
-    FROM trx.scrape_job WITH (UPDLOCK, READPAST, ROWLOCK)
-    WHERE status IN ('pending','pending2')
-    ORDER BY created_at, job_id
-);
+    inserted.job_payload;
 """
 
 SQL_MARK_DONE = """
@@ -127,8 +98,7 @@ SET
     status = 'done',
     finished_at = ?,
     fetched_pages = ?,
-    fetched_items = ?,
-    current_page = NULL
+    fetched_items = ?
 WHERE job_id = ?;
 """
 
@@ -331,9 +301,7 @@ WHEN MATCHED THEN
     T.[price] = COALESCE(?, T.[price]),
     T.[vendor_created_at] = ?,
     T.[vendor_updated_at] = ?,
-    T.[vendor_page] = COALESCE(?, T.[vendor_page]),
-    T.[item_condition_id] = COALESCE(?, T.[item_condition_id]),
-    T.[vendor_seller_id] = COALESCE(?, T.[vendor_seller_id])
+    T.[vendor_page] = COALESCE(?, T.[vendor_page])
 WHEN NOT MATCHED THEN
   INSERT (
       [vendor_name],
@@ -342,19 +310,17 @@ WHEN NOT MATCHED THEN
       [preset],
       [title_jp],
       [vendor_page],
-      [item_condition_id], 
       [created_at],
       [last_checked_at],
       [price],
       [prev_price],
       [vendor_created_at],
-      [vendor_updated_at],
-      [vendor_seller_id]
+      [vendor_updated_at]
   )
   VALUES (
-      ?, ?, ?, ?, ?,?,
+      ?, ?, ?, ?, ?,
       ?, ?, ?, ?, NULL,
-      ?, ?, ?
+      ?, ?
   );
 """
 
@@ -382,22 +348,18 @@ WHEN NOT MATCHED THEN
                     r["vendor_created_at"],
                     r["vendor_updated_at"],
                     r.get("vendor_page"),  
-                    r.get("item_condition_id"),   #
-                    r.get("vendor_seller_id"),
                     # INSERT
                     r["vendor_name"],
                     r["vendor_item_id"],
                     r["status"],
                     r["preset"],
                     r["title_jp"],
-                    r.get("vendor_page"),
-                    r.get("item_condition_id"),    
+                    r.get("vendor_page"),  
                     now,
                     now,
                     r["price"],
                     r["vendor_created_at"],
                     r["vendor_updated_at"],
-                    r.get("vendor_seller_id"),
                 )
 
                 cursor.execute(sql, params)
@@ -439,21 +401,11 @@ def add_or_replace_query(url: str, **params) -> str:
             q[k] = str(v)
     return urlunparse((u.scheme, u.netloc, u.path, u.params, urlencode(q, doseq=True), u.fragment))
 
-def page_url(vendor_name: str, base_url: str, idx_zero_based: int) -> str:
 
-    if vendor_name == "ラクマ":
+def page_url(base_url: str, idx_zero_based: int) -> str:
+    # 1ページ目＝そのまま、それ以降は page_token=v1:{n}
+    return base_url if idx_zero_based == 0 else add_or_replace_query(base_url, page_token=f"v1:{idx_zero_based}")
 
-        # ラクマは ?page=2 形式
-        page_no = idx_zero_based + 1
-
-        return add_or_replace_query(base_url, page=page_no)
-
-    # メルカリ
-    return (
-        base_url
-        if idx_zero_based == 0
-        else add_or_replace_query(base_url, page_token=f"v1:{idx_zero_based}")
-    )
 def release_job(conn, job_id):
     cur = conn.cursor()
     try:
@@ -591,16 +543,12 @@ def extract_items_from_json(json_data):
         if price is not None:
             price = int(price)
 
-        item_condition_id = item.get("itemConditionId")
-        if item_condition_id is not None:
-            item_condition_id = int(item_condition_id)
-
-        rows.append((item_id, title, price, seller, created, updated, item_condition_id))
+        rows.append((item_id, title, price, seller, created, updated))
 
     return rows
 
 
-def run_fetch_sold_ebay(page, start_page, payload: dict, job_id: int) -> Tuple[int, int]:
+def run_fetch_sold_ebay(page, payload: dict, job_id: int) -> Tuple[int, int]:
 
     preset_name = payload["preset"]
     vendor_name = payload["vendor_name"]
@@ -631,29 +579,24 @@ def run_fetch_sold_ebay(page, start_page, payload: dict, job_id: int) -> Tuple[i
 
     print(f"[URL] {base_url}", flush=True)
 
-    page_idx = start_page if start_page is not None else 0
+    page_idx = 0
     seen_ids: set[str] = set()
     conn = get_sql_server_connection()
 
     try:
         while True:
-            write_status(job_id, page_idx + 1)
+
             if page_idx >= MAX_PAGES:
                 print(f"[STOP] reached MAX_PAGES={MAX_PAGES}", flush=True)
                 break
 
-            url = page_url(vendor_name, base_url, page_idx)
-            print(f"[PAGE {page_idx+1}] GET {url}", flush=True)
+            target_url = page_url(base_url, page_idx)
+            print(f"[PAGE {page_idx+1}] GET {target_url}", flush=True)
 
             # --- ここからページ単位の try ---
             try:
-                if vendor_name == "ラクマ":
-                    page.goto(url, wait_until="domcontentloaded")
-                    items = extract_items_from_rakuma_dom(page)
-                else:
-                    json_data = fetch_page_json(page, url, conn, job_id)
-                    items = extract_items_from_json(json_data)
-
+                json_data = fetch_page_json(page, target_url, conn, job_id)
+                items = extract_items_from_json(json_data)
                 print(f"[PAGE {page_idx+1}] scraped={len(items)}", flush=True)
                 fetched_pages += 1
 
@@ -662,7 +605,7 @@ def run_fetch_sold_ebay(page, start_page, payload: dict, job_id: int) -> Tuple[i
 
                 rows = []
 
-                for iid, title, price, seller, created, updated, item_condition_id in items:
+                for iid, title, price, seller, created, updated in items:
                     iid = (iid or "").strip()
                     if not iid or iid in seen_ids:
                         continue
@@ -678,9 +621,6 @@ def run_fetch_sold_ebay(page, start_page, payload: dict, job_id: int) -> Tuple[i
                         "price": None,
                         "vendor_created_at": created,
                         "vendor_updated_at": updated,
-                        "vendor_page": page_idx + 1,
-                        "item_condition_id": item_condition_id,
-                        "vendor_seller_id": seller if vendor_name == "ラクマ" else None,
                     })
                     handle_listing_delete(conn, iid, vendor_name,"売り切れ")
 
@@ -716,83 +656,11 @@ def run_fetch_sold_ebay(page, start_page, payload: dict, job_id: int) -> Tuple[i
 
     return fetched_pages, fetched_items
 
-def extract_items_from_rakuma_dom(page):
-
-    rows = []
-
-    cards = page.query_selector_all(".item-box")
-
-    print(f"[CARDS] {len(cards)}", flush=True)
-
-    if not cards:
-        return rows
-
-    print(cards[0].inner_html(), flush=True)
-
-    for card in cards:
-
-        print("=" * 50, flush=True)
-        print(card.inner_html(), flush=True)
-
-        try:
-            a = card.query_selector("a")
-
-            if a is None:
-                continue
-
-            href = a.get_attribute("href") or ""
-
-            iid = href.split("/")[-1].split("?")[0]
-
-            title_el = card.query_selector("p.item-box__item-name span")
-            title = title_el.inner_text().strip() if title_el else None
-
-            price_el = card.query_selector(
-                "p.item-box__item-price span[data-content]:nth-child(2)"
-            )
-
-            price = None
-
-            if price_el:
-
-                price_text = (
-                    price_el.inner_text()
-                    .replace(",", "")
-                    .strip()
-                )
-
-                print(f"[PRICE_TEXT] '{price_text}'", flush=True)
-
-                if price_text.isdigit():
-                    price = int(price_text)
-
-            html = card.inner_html()
-
-            m = re.search(r'seller_user_id&quot;:&quot;(\d+)&quot;', html)
-
-            seller = m.group(1) if m else None
-
-            rows.append((
-                iid,
-                title,
-                price,
-                seller,
-                None,
-                None,
-                None,
-            ))
-
-        except Exception as e:
-            print(f"[RAKUMA PARSE ERROR] {e}", flush=True)
-
-    print(f"[RAKUMA] parsed={len(rows)}", flush=True)
-
-    return rows
 
 # ============================================================
 # fetch_active_ebay scrape 本体（1 preset 分）
 # ============================================================
-def run_fetch_active_ebay(page, start_page, payload: dict, job_id: int) -> Tuple[int, int]:
+def run_fetch_active_ebay(page, payload: dict, job_id: int) -> Tuple[int, int]:
     print(f"[ENV] host={socket.gethostname()} pid={os.getpid()} SIMULATE={SIMULATE}", flush=True)
 
     preset = payload["preset"]
@@ -814,48 +682,29 @@ def run_fetch_active_ebay(page, start_page, payload: dict, job_id: int) -> Tuple
         low_usd_target=low_usd_target,
         high_usd_target=high_usd_target,
     )
+
     print(f"[URL] {base_url}", flush=True)
 
-    page_idx = start_page if start_page is not None else 0
+    page_idx = 0
     conn = get_sql_server_connection()
 
     try:
         while True:
-            write_status(job_id, page_idx + 1)
             page_start = time.time()
-            url = page_url(vendor_name, base_url, page_idx)
+            url = page_url(base_url, page_idx)
             print(f"[PAGE] {page_idx+1} {url}", flush=True)
 
-            if vendor_name == "ラクマ":
+            json_data = fetch_page_json(page, url, conn, job_id)
+            items = extract_items_from_json(json_data)
 
-                page.goto(url, wait_until="domcontentloaded", timeout=30000)
-
-                try:
-                    page.wait_for_selector(".item-box", timeout=30000)
-                except Exception:
-                    print(f"[RAKUMA] item-boxなし page={page_idx + 1}", flush=True)
-                    break
-
-                html = page.content()
-
-                with open("debug.html", "w", encoding="utf-8") as f:
-                    f.write(html)
-
-                print(page.url, flush=True)
-
-                items = extract_items_from_rakuma_dom(page)
-            else:
-                json_data = fetch_page_json(page, url, conn, job_id)
-                items = extract_items_from_json(json_data)
-
-            print(f"[PAGE {page_idx+1}] items={len(items)}", flush=True)
+            print(f"[PAGE {page_idx+1}] items={len(items)} sample={items[:2]}", flush=True)
 
             if not items:
                 break
 
             total_items += len(items)
 
-            item_ids = [iid for iid, _, _, _, _, _, _ in items]
+            item_ids = [iid for iid, _, _, _, _, _ in items]
             print(f"[F] old_price select start n={len(item_ids)}", flush=True)
             old_price_map = get_vendor_item_prices_batch(conn, vendor_name, item_ids)
             print(f"[F] old_price select done got={len(old_price_map)}", flush=True)
@@ -864,7 +713,7 @@ def run_fetch_active_ebay(page, start_page, payload: dict, job_id: int) -> Tuple
             cnt_changed = 0
             cnt_unchanged = 0
 
-            for iid, title, price, seller, created, updated, item_condition_id in items:
+            for iid, title, price, seller, created, updated in items:
                 if price is None:
                     cnt_skip += 1
                     continue
@@ -895,9 +744,7 @@ def run_fetch_active_ebay(page, start_page, payload: dict, job_id: int) -> Tuple
                 "price": price,
                 "vendor_created_at": created,
                 "vendor_updated_at": updated,
-                "item_condition_id": item_condition_id,
-                "vendor_seller_id": seller if vendor_name == "ラクマ" else None,
-            } for iid, title, price, seller, created, updated, item_condition_id in items]
+            } for iid, title, price, seller, created, updated in items]
 
             now = now_jst()
             print(f"[G] upsert start rows={len(rows)} now={now}", flush=True)
@@ -994,18 +841,17 @@ def main():
                 time.sleep(POLL_SEC)
                 continue
 
-            for job_id, job_kind, job_payload, current_page in jobs:
+            for job_id, job_kind, job_payload in jobs:
                 print(f"[JOB START] id={job_id} kind={job_kind}", flush=True)
                 cur2 = None
 
                 try:
                     payload = json.loads(job_payload)
-                    start_page = current_page
 
                     if job_kind == "fetch_active_ebay":
-                        fetched_pages, fetched_items = run_fetch_active_ebay(page, start_page, payload, job_id)
+                        fetched_pages, fetched_items = run_fetch_active_ebay(page, payload, job_id)
                     elif job_kind == "fetch_sold_ebay":
-                        fetched_pages, fetched_items = run_fetch_sold_ebay(page, start_page, payload, job_id)
+                        fetched_pages, fetched_items = run_fetch_sold_ebay(page, payload, job_id)
                     else:
                         raise ValueError(f"unknown job_kind: {job_kind}")
 
@@ -1013,8 +859,6 @@ def main():
                     now = now_jst()
                     cur2.execute(SQL_MARK_DONE, now, fetched_pages, fetched_items, job_id)
                     conn.commit()
-                    if os.path.exists(STATUS_FILE):
-                        os.remove(STATUS_FILE)
                     print(f"[JOB DONE] id={job_id}", flush=True)
 
                 except RuntimeError as e:
@@ -1037,9 +881,6 @@ def main():
                         page.on("request", lambda r: "entities:search" in r.url and print("REQ:", r.url, flush=True))
                         page.on("response", lambda r: "entities:search" in r.url and print("RES:", r.url, flush=True))
 
-                        if os.path.exists(STATUS_FILE):
-                            os.remove(STATUS_FILE)
-                            
                         release_job(conn, job_id)
                         continue
 
@@ -1047,14 +888,12 @@ def main():
 
                 except Exception:
                     err = traceback.format_exc()
-                    print(err.encode("utf-8", errors="ignore").decode("utf-8"), flush=True)
+                    print(err.encode('utf-8', errors='ignore').decode('utf-8'), flush=True)
                     try:
                         cur2 = conn.cursor()
                         now = now_jst()
                         cur2.execute(SQL_MARK_ERROR, now, err[-4000:], job_id)
                         conn.commit()
-                        if os.path.exists(STATUS_FILE):
-                            os.remove(STATUS_FILE)
                     except Exception:
                         conn.rollback()
                         traceback.print_exc()

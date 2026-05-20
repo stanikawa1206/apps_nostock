@@ -9,6 +9,7 @@ import random
 import traceback
 import socket
 import pyodbc
+import glob
 
 from playwright.sync_api import sync_playwright
 from typing import Any, Dict, List, Tuple, Optional
@@ -40,8 +41,34 @@ def get_worker_name() -> str:
 
 WORKER_NAME = get_worker_name()
 WORKER_PID = os.getpid()
-STATUS_DIR = os.environ.get("WORKER_STATUS_DIR", os.getcwd())
-STATUS_FILE = os.path.join(STATUS_DIR, f"worker_status_{WORKER_PID}.txt")
+
+BASE_DIR = os.environ.get("WORKER_STATUS_DIR", os.getcwd())
+
+# ログディレクトリ定義＆作成
+LOG_DIR = os.path.join(BASE_DIR, "logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+
+# ログ出力（PID単位）
+log_path = os.path.join(LOG_DIR, f"worker_{WORKER_PID}.log")
+sys.stdout = open(log_path, "a", encoding="utf-8", buffering=1)
+sys.stderr = sys.stdout
+
+# ステータスファイル
+STATUS_FILE = os.path.join(BASE_DIR, f"worker_status_{WORKER_PID}.txt")
+
+# ログ削除（3日）
+LOG_RETENTION_SEC = 3 * 24 * 60 * 60
+for file in glob.glob(os.path.join(LOG_DIR, "worker_*.log")):
+    if time.time() - os.path.getmtime(file) > LOG_RETENTION_SEC:
+        os.remove(file)
+
+
+def write_status(job_id, page):
+    with open(STATUS_FILE, "w", encoding="utf-8") as f:
+        f.write(f"pid={WORKER_PID}\n")
+        f.write(f"job_id={job_id}\n")
+        f.write(f"page={page}\n")
+        f.write(f"updated_at={datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
 JST = timezone(timedelta(hours=9))
 def now_jst():
@@ -74,13 +101,7 @@ FETCH_TIMEOUT_MS = 30000
 # SQL
 # =========================
 SQL_PICK_JOBS = f"""
-;WITH cte AS (
-    SELECT TOP ({N}) *
-    FROM trx.scrape_job WITH (UPDLOCK, READPAST, ROWLOCK)
-    WHERE status = 'pending'
-    ORDER BY created_at, job_id
-)
-UPDATE cte
+UPDATE trx.scrape_job
 SET
     status = 'running',
     worker_name = ?,
@@ -89,7 +110,14 @@ SET
 OUTPUT
     inserted.job_id,
     inserted.job_kind,
-    inserted.job_payload;
+    inserted.job_payload,
+    inserted.current_page
+WHERE job_id = (
+    SELECT TOP (1) job_id
+    FROM trx.scrape_job WITH (UPDLOCK, READPAST, ROWLOCK)
+    WHERE status IN ('pending','pending2')
+    ORDER BY created_at, job_id
+);
 """
 
 SQL_MARK_DONE = """
@@ -98,7 +126,8 @@ SET
     status = 'done',
     finished_at = ?,
     fetched_pages = ?,
-    fetched_items = ?
+    fetched_items = ?,
+    current_page = NULL
 WHERE job_id = ?;
 """
 
@@ -301,7 +330,8 @@ WHEN MATCHED THEN
     T.[price] = COALESCE(?, T.[price]),
     T.[vendor_created_at] = ?,
     T.[vendor_updated_at] = ?,
-    T.[vendor_page] = COALESCE(?, T.[vendor_page])
+    T.[vendor_page] = COALESCE(?, T.[vendor_page]),
+    T.[item_condition_id] = COALESCE(?, T.[item_condition_id])
 WHEN NOT MATCHED THEN
   INSERT (
       [vendor_name],
@@ -310,6 +340,7 @@ WHEN NOT MATCHED THEN
       [preset],
       [title_jp],
       [vendor_page],
+      [item_condition_id], 
       [created_at],
       [last_checked_at],
       [price],
@@ -318,7 +349,7 @@ WHEN NOT MATCHED THEN
       [vendor_updated_at]
   )
   VALUES (
-      ?, ?, ?, ?, ?,
+      ?, ?, ?, ?, ?,?,
       ?, ?, ?, ?, NULL,
       ?, ?
   );
@@ -348,13 +379,15 @@ WHEN NOT MATCHED THEN
                     r["vendor_created_at"],
                     r["vendor_updated_at"],
                     r.get("vendor_page"),  
+                    r.get("item_condition_id"),   #
                     # INSERT
                     r["vendor_name"],
                     r["vendor_item_id"],
                     r["status"],
                     r["preset"],
                     r["title_jp"],
-                    r.get("vendor_page"),  
+                    r.get("vendor_page"),
+                    r.get("item_condition_id"),    
                     now,
                     now,
                     r["price"],
@@ -543,12 +576,16 @@ def extract_items_from_json(json_data):
         if price is not None:
             price = int(price)
 
-        rows.append((item_id, title, price, seller, created, updated))
+        item_condition_id = item.get("itemConditionId")
+        if item_condition_id is not None:
+            item_condition_id = int(item_condition_id)
+
+        rows.append((item_id, title, price, seller, created, updated, item_condition_id))
 
     return rows
 
 
-def run_fetch_sold_ebay(page, payload: dict, job_id: int) -> Tuple[int, int]:
+def run_fetch_sold_ebay(page, start_page, payload: dict, job_id: int) -> Tuple[int, int]:
 
     preset_name = payload["preset"]
     vendor_name = payload["vendor_name"]
@@ -579,13 +616,13 @@ def run_fetch_sold_ebay(page, payload: dict, job_id: int) -> Tuple[int, int]:
 
     print(f"[URL] {base_url}", flush=True)
 
-    page_idx = 0
+    page_idx = start_page if start_page is not None else 0
     seen_ids: set[str] = set()
     conn = get_sql_server_connection()
 
     try:
         while True:
-
+            write_status(job_id, page_idx + 1)
             if page_idx >= MAX_PAGES:
                 print(f"[STOP] reached MAX_PAGES={MAX_PAGES}", flush=True)
                 break
@@ -605,7 +642,7 @@ def run_fetch_sold_ebay(page, payload: dict, job_id: int) -> Tuple[int, int]:
 
                 rows = []
 
-                for iid, title, price, seller, created, updated in items:
+                for iid, title, price, seller, created, updated, item_condition_id in items:
                     iid = (iid or "").strip()
                     if not iid or iid in seen_ids:
                         continue
@@ -660,7 +697,7 @@ def run_fetch_sold_ebay(page, payload: dict, job_id: int) -> Tuple[int, int]:
 # ============================================================
 # fetch_active_ebay scrape 本体（1 preset 分）
 # ============================================================
-def run_fetch_active_ebay(page, payload: dict, job_id: int) -> Tuple[int, int]:
+def run_fetch_active_ebay(page, start_page, payload: dict, job_id: int) -> Tuple[int, int]:
     print(f"[ENV] host={socket.gethostname()} pid={os.getpid()} SIMULATE={SIMULATE}", flush=True)
 
     preset = payload["preset"]
@@ -682,14 +719,14 @@ def run_fetch_active_ebay(page, payload: dict, job_id: int) -> Tuple[int, int]:
         low_usd_target=low_usd_target,
         high_usd_target=high_usd_target,
     )
-
     print(f"[URL] {base_url}", flush=True)
 
-    page_idx = 0
+    page_idx = start_page if start_page is not None else 0
     conn = get_sql_server_connection()
 
     try:
         while True:
+            write_status(job_id, page_idx + 1)
             page_start = time.time()
             url = page_url(base_url, page_idx)
             print(f"[PAGE] {page_idx+1} {url}", flush=True)
@@ -697,14 +734,14 @@ def run_fetch_active_ebay(page, payload: dict, job_id: int) -> Tuple[int, int]:
             json_data = fetch_page_json(page, url, conn, job_id)
             items = extract_items_from_json(json_data)
 
-            print(f"[PAGE {page_idx+1}] items={len(items)} sample={items[:2]}", flush=True)
+            print(f"[PAGE {page_idx+1}] items={len(items)}", flush=True)
 
             if not items:
                 break
 
             total_items += len(items)
 
-            item_ids = [iid for iid, _, _, _, _, _ in items]
+            item_ids = [iid for iid, _, _, _, _, _, _ in items]
             print(f"[F] old_price select start n={len(item_ids)}", flush=True)
             old_price_map = get_vendor_item_prices_batch(conn, vendor_name, item_ids)
             print(f"[F] old_price select done got={len(old_price_map)}", flush=True)
@@ -713,7 +750,7 @@ def run_fetch_active_ebay(page, payload: dict, job_id: int) -> Tuple[int, int]:
             cnt_changed = 0
             cnt_unchanged = 0
 
-            for iid, title, price, seller, created, updated in items:
+            for iid, title, price, seller, created, updated, item_condition_id in items:
                 if price is None:
                     cnt_skip += 1
                     continue
@@ -744,7 +781,8 @@ def run_fetch_active_ebay(page, payload: dict, job_id: int) -> Tuple[int, int]:
                 "price": price,
                 "vendor_created_at": created,
                 "vendor_updated_at": updated,
-            } for iid, title, price, seller, created, updated in items]
+                "item_condition_id": item_condition_id,
+            } for iid, title, price, seller, created, updated, item_condition_id in items]
 
             now = now_jst()
             print(f"[G] upsert start rows={len(rows)} now={now}", flush=True)
@@ -841,17 +879,18 @@ def main():
                 time.sleep(POLL_SEC)
                 continue
 
-            for job_id, job_kind, job_payload in jobs:
+            for job_id, job_kind, job_payload, current_page in jobs:
                 print(f"[JOB START] id={job_id} kind={job_kind}", flush=True)
                 cur2 = None
 
                 try:
                     payload = json.loads(job_payload)
+                    start_page = current_page
 
                     if job_kind == "fetch_active_ebay":
-                        fetched_pages, fetched_items = run_fetch_active_ebay(page, payload, job_id)
+                        fetched_pages, fetched_items = run_fetch_active_ebay(page, start_page, payload, job_id)
                     elif job_kind == "fetch_sold_ebay":
-                        fetched_pages, fetched_items = run_fetch_sold_ebay(page, payload, job_id)
+                        fetched_pages, fetched_items = run_fetch_sold_ebay(page, start_page, payload, job_id)
                     else:
                         raise ValueError(f"unknown job_kind: {job_kind}")
 
@@ -859,6 +898,8 @@ def main():
                     now = now_jst()
                     cur2.execute(SQL_MARK_DONE, now, fetched_pages, fetched_items, job_id)
                     conn.commit()
+                    if os.path.exists(STATUS_FILE):
+                        os.remove(STATUS_FILE)
                     print(f"[JOB DONE] id={job_id}", flush=True)
 
                 except RuntimeError as e:
@@ -881,6 +922,9 @@ def main():
                         page.on("request", lambda r: "entities:search" in r.url and print("REQ:", r.url, flush=True))
                         page.on("response", lambda r: "entities:search" in r.url and print("RES:", r.url, flush=True))
 
+                        if os.path.exists(STATUS_FILE):
+                            os.remove(STATUS_FILE)
+                            
                         release_job(conn, job_id)
                         continue
 
@@ -888,12 +932,14 @@ def main():
 
                 except Exception:
                     err = traceback.format_exc()
-                    print(err.encode('utf-8', errors='ignore').decode('utf-8'), flush=True)
+                    print(err.encode("utf-8", errors="ignore").decode("utf-8"), flush=True)
                     try:
                         cur2 = conn.cursor()
                         now = now_jst()
                         cur2.execute(SQL_MARK_ERROR, now, err[-4000:], job_id)
                         conn.commit()
+                        if os.path.exists(STATUS_FILE):
+                            os.remove(STATUS_FILE)
                     except Exception:
                         conn.rollback()
                         traceback.print_exc()

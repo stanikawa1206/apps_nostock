@@ -130,20 +130,20 @@ def run():
     cursor = conn.cursor()
 
     print("🧹 テーブル初期化（DELETE）")
-    cursor.execute("DELETE FROM ext.ebay_active_download")
-    # cursor.execute(
-    #      "DELETE FROM ext.ebay_active_download WHERE account IN (?)",
-    #      ("BUZZ")
-    # )
+    # cursor.execute("DELETE FROM ext.ebay_active_download")
+    cursor.execute(
+         "DELETE FROM ext.ebay_active_download WHERE account IN (?,?,?)",
+         ("川島","谷川③","谷川④")
+    )
     conn.commit()
 
     fetched_at = datetime.datetime.now()
 
-    cursor.execute("SELECT account FROM mst.ebay_accounts")
-    # cursor.execute(
-    #     "SELECT account FROM mst.ebay_accounts WHERE account IN (?)",
-    #     ("BUZZ")
-    # )
+    # cursor.execute("SELECT account FROM mst.ebay_accounts")
+    cursor.execute(
+        "SELECT account FROM mst.ebay_accounts WHERE account IN (?,?,?)",
+        ("川島","谷川③","谷川④")
+    )
     accounts = [row[0] for row in cursor.fetchall()]
 
     for account in accounts:

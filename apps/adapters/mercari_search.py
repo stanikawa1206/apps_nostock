@@ -22,16 +22,6 @@ ebay_common.py — 概要と関数一覧（公開関数のみ）
   href 文字列から商品IDを抽出。  
   対応形式：`/item/m12345678`（個人）と `/shops/product/123456789`（Shops）。
 
-- make_item_url(item_id:str) -> str  
-  商品IDから個別商品のURLを生成。Shops ID でも item ページを参照可能な場合が多い。
-
-- iterate_search(driver, base_search_url:str, preset:str, *, mode:'ids'|'cards'='ids', pause:float=0.45, stagnant_times:int=3, item_read_limit:int|None=None)
-  -> Iterator  
-  Mercari 検索結果をページごとに順次読み出す。  
-  - mode='ids' → (page_idx, item_id, item_url, preset) を yield  
-  - mode='cards' → (page_idx, [(item_id, title, price), ...], preset) を yield  
-  ページ送り・スクロール・重複除外・結果ゼロ検出を自動で処理。
-
 - make_search_url(vendor_name:str, brand_id:int, category_id:int, status:str, extra:str="") -> str  
   ブランドID・カテゴリID・状態などから Mercari 検索URLを構築。  
   vendor_name が「メルカリshops」なら item_types=beyond を付与。
@@ -120,6 +110,7 @@ def ensure_get(driver, url: str, max_retries: int = 3, soft_stop: bool = True):
 _HREF_ID_PATTERNS = [
     re.compile(r"/item/(?P<iid>[a-z0-9]+)", re.IGNORECASE),            # 個人: /item/m123456...
     re.compile(r"/shops?/products?/(?P<iid>[0-9]+)", re.IGNORECASE),   # Shops: /shops/products/123456789
+    re.compile(r"/p/(?P<iid>[a-z0-9]+)", re.IGNORECASE),
 ]
 
 def extract_item_id(href: str) -> str | None:
@@ -129,76 +120,6 @@ def extract_item_id(href: str) -> str | None:
         if m:
             return m.group("iid")
     return None
-
-def make_item_url(item_id: str) -> str:
-    # item_id の形式で URL を作る（Shopsでも item ページに飛べるIDが多い。ダメなら呼び出し側で差替可）
-    return f"https://jp.mercari.com/item/{item_id}"
-
-# ---- 収集の本体 ----
-def iterate_search(
-    driver,
-    base_search_url: str,
-    preset: str,
-    *,
-    mode: Mode = "ids",
-    pause: float = 0.45,
-    stagnant_times: int = 3,
-    item_read_limit: int | None = None,
-) -> Iterator[Tuple[int, object, str]]:
-    """
-    mode='ids'   -> yield (page_idx, item_id, item_url, preset)
-    mode='cards' -> yield (page_idx, items[(id,title,price)...], preset)
-    """
-    seen: set[str] = set()
-    page_idx = 0
-
-    while True:
-        url = page_url(base_search_url, page_idx)
-        driver = ensure_get(driver, url, max_retries=3)
-        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-
-        if has_no_results_banner(driver):
-            break
-
-        items = scroll_until_stagnant_collect_items(driver, pause=pause, stagnant_times=stagnant_times)
-
-        if mode == "cards":
-            # 既存の collector 仕様：(id,title,price) の配列を想定
-            # ここではそのまま返す（呼び出し側でページ単位でUPSERT）
-            yield (page_idx, items, preset)
-
-        else:  # mode == "ids"
-            # 画面の a[href] からID抽出（collectorの戻りに依らず二重化対策）
-            anchors = driver.find_elements(By.CSS_SELECTOR, "a[href*='/item/'], a[href*='/products/']")
-            raw_ids = []
-            for a in anchors:
-                try:
-                    iid = extract_item_id(a.get_attribute("href"))
-                    if iid:
-                        raw_ids.append(iid)
-                except Exception:
-                    continue
-            # collector 結果に id が含まれている場合はそれも併用
-            for it in (items or []):
-                try:
-                    if isinstance(it, (list, tuple)) and len(it) >= 1:
-                        raw_ids.append(str(it[0]).strip().lower())
-                except Exception:
-                    pass
-
-            new_ids = [iid for iid in raw_ids if iid and iid not in seen]
-            print(f"[DBG] page={page_idx} ids_found={len(new_ids)} anchors={len(anchors)} items_obj={len(items or [])} url={url}")
-            for iid in new_ids:
-                seen.add(iid)
-                yield (page_idx, iid, make_item_url(iid), preset)
-                if item_read_limit and len(seen) >= item_read_limit:
-                    return
-
-        if (not items) or (mode == "ids" and not new_ids):
-            break
-
-        page_idx += 1
-        time.sleep(pause + random.uniform(0.15, 0.4))
 
 # ebay_common.py
 # -*- coding: utf-8 -*-
@@ -211,6 +132,13 @@ MERCARI_BASE_URL = (
     "&item_condition_id=1%2C2%2C3"           # 商品状態：新品・未使用に近い・目立った傷なし
     "&shipping_payer_id=2"                  # 送料負担：出品者（送料込み）
     "&sort=created_time&order=desc"         # 並び順：新着順（降順）
+)
+RAKUMA_BASE_URL = (
+    "https://fril.jp/s?"
+    "statuses=5,4,6"
+    "&carriage=1"
+    "&official_item_type=1"
+    "&order=desc"
 )
 
 ITEM_TYPES = {
@@ -249,54 +177,46 @@ def make_search_url(*,
 
     # === URL パラメータ ===
     price_q = ""
+    if vendor_name == "ラクマ":
+
+        if min_cost is not None:
+            price_q += f"&min={min_cost}"
+
+        if max_cost is not None:
+            price_q += f"&max={max_cost}"
+
+    else:
+
+        if min_cost is not None:
+            price_q += f"&price_min={min_cost}"
+
+        if max_cost is not None:
+            price_q += f"&price_max={max_cost}"
+
+
+
     if min_cost is not None:
         price_q += f"&price_min={min_cost}"
     if max_cost is not None:
         price_q += f"&price_max={max_cost}"
 
+    if vendor_name == "ラクマ":
+
+        transaction = "selling"
+
+        if status == "sold":
+            transaction = "soldout"
+
+        return (
+            f"{RAKUMA_BASE_URL}"
+            f"{brand}"
+            f"{cat}"
+            f"&transaction={transaction}"
+            f"{price_q}"
+            f"{extra}"
+        )
+
     return f"{MERCARI_BASE_URL}{brand}{cat}{st}{item_types}{price_q}{extra}"
-
-
-def fetch_active_presets(conn) -> List[Dict]:
-    """
-    mst.v_presets から 読み込む（共通）
-    """
-    sql = """
-        SELECT
-            preset,
-            vendor_name,
-            brand_id,
-            category_id,
-            mode,
-            low_usd_target,
-            high_usd_target,
-            category_id_ebay,
-            department,
-            default_brand_en,
-            type_ebay
-          FROM [nostock].[mst].[v_presets] WITH (NOLOCK)
-         ORDER BY preset
-    """
-    with conn.cursor() as cur:
-        cur.execute(sql)
-        rows = cur.fetchall()
-
-    out: List[Dict] = []
-    for r in rows:
-        out.append({
-            "preset":           (r[0] or "").strip(),
-            "vendor_name":      (r[1] or "").strip(),
-            "brand_id":         int(r[2]) if r[2] is not None else 0,
-            "category_id":      int(r[3]) if r[3] is not None else 0,
-            "mode":             (r[4] or "").strip(),
-            "low_usd_target":   float(r[5]) if r[5] is not None else None,
-            "high_usd_target":  float(r[6]) if r[6] is not None else None,
-            "category_id_ebay": (r[7] or "").strip(),
-            "department":       (r[8] or "").strip(),
-            "default_brand_en": (r[9] or "").strip(),
-            "type_ebay":        (r[10] or "").strip() if r[10] is not None else "",
-        })
-    return out
 
 def fetch_active_presets(conn) -> List[Dict]:
     """
@@ -316,7 +236,7 @@ def fetch_active_presets(conn) -> List[Dict]:
             default_brand_en,
             type_ebay,
             category_group
-          FROM [nostock].[mst].[v_presets] WITH (NOLOCK)
+          FROM [nostock].[mst].[v_presets_new] WITH (NOLOCK)
          ORDER BY preset
     """
     with conn.cursor() as cur:
