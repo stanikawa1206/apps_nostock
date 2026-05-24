@@ -1251,6 +1251,8 @@ def post_to_ebay(
             payload["C:Style"] = "Necklace"
             payload["C:Type"] = "Necklace"
 
+        return post_one_item(payload, acct, acct_policies_map[acct])
+
     # 1回目（現モード）
     try:
         item_id_ebay = _attempt_post(image_mode)
