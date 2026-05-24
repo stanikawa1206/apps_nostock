@@ -1,4 +1,11 @@
 # -*- coding: utf-8 -*-
+
+#   1. カタログ基本情報の取得 (step1_catalog_core.py)
+#   AmazonのSP-API（Catalog Items API）と通信し、商品の基本的なカタログ情報を取得・抽出するプログラムです。  
+#   ASIN（商品識別番号）を指定してAPIを呼び出し、商品のタイトル、ブランド名、UPCやEANなどのバーコード情報（識別コード）を抽出します。  
+#   商品の仕様（箇条書き）や説明文も併せて抽出します。  
+#   データの抽出時は、確度が高い summaries ブロックを最優先で確認し、見つからない場合は attributes ブロックから代替データを拾うように設計されています。  
+
 from __future__ import annotations
 
 import json

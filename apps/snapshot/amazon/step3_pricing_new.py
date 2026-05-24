@@ -1,4 +1,11 @@
 # -*- coding: utf-8 -*-
+
+#   3. 価格・出品者情報の解析 (step3_pricing_new.py)
+#   SP-API（Pricing API）を用いて、「新品（New）」コンディションの価格情報や出品状況を取得・解析するプログラムです。  
+#   カート（BuyBox）を獲得している価格、セラーID、FBA（Amazon発送）かどうかを判定します。  
+#   カート獲得者がバックオーダー（取り寄せ・入荷待ち）状態かどうかも判定します。  
+#   新品出品者の総数と、その内訳（FBA出品者の数、FBM/自社発送出品者の数）を集計します。  
+
 from __future__ import annotations
 from typing import Any, Dict
 from apps.common.spapi import SpapiSession

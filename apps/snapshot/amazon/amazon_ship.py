@@ -1,3 +1,9 @@
+#   4. 商品サイズ取得および送料計算プログラム (File 4)
+#   このプログラムは、Amazonのカタログに登録されている商品の物理的な寸法や重さのデータを取得し、正確な送料目安を割り出すためのスクリプトです。  
+#   Amazon JPのカタログAPIから、商品のパッケージ寸法（縦・横・高さ）と重量データを取得します。  
+#   取得したデータから「実重量」と「容積重量（体積をベースにした計算上の重さ）」を計算し、航空便などで基準となる「重い方（請求重量）」を判定します。  
+#   Excelファイル（ship_cost.xlsx）の「重量」と「サイズ」シートを参照し、算出された数値を当てはめて、アメリカ・カナダ・日本向けの送料目安を計算します。  
+
 import os
 import pandas as pd
 from dotenv import load_dotenv
@@ -145,7 +151,7 @@ def get_item_dimensions(asin: str):
         print("-" * 45)
 
         # ====== ここから追加：Excelを参照して送料を計算 ======
-        excel_file_path = r"X:\apps\snapshot\ship_cost.xlsx"
+        excel_file_path = r"X:\apps\snapshot\amazon\ship_cost.xlsx"
         
         cost_us, cost_ca, cost_jp = calculate_shipping_costs(
             chargeable_weight_g, 

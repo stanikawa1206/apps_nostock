@@ -1,0 +1,15 @@
+Exception ignored in: <function _ProactorBasePipeTransport.__del__ at 0x000001619EA1B1A0>
+Traceback (most recent call last):
+  File "C:\Users\stani\AppData\Local\Programs\Python\Python312\Lib\asyncio\proactor_events.py", line 116, in __del__
+  File "C:\Users\stani\AppData\Local\Programs\Python\Python312\Lib\asyncio\proactor_events.py", line 80, in __repr__
+  File "C:\Users\stani\AppData\Local\Programs\Python\Python312\Lib\asyncio\windows_utils.py", line 102, in fileno
+ValueError: I/O operation on closed pipe
+Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x000001619EA198A0>
+Traceback (most recent call last):
+  File "C:\Users\stani\AppData\Local\Programs\Python\Python312\Lib\asyncio\base_subprocess.py", line 1Exception ignored in: <function _ProactorBasePipeTransport.__del__ at 0x000001CE0204B1A0>
+Traceback (most recent call last):
+  File "C:\Users\stani\AppData\Local\Programs\Python\Python312\Lib\asyncio\proactor_events.py", line 116, in __del__
+  File "C:\Users\stani\AppData\Local\Programs\Python\Python312\Lib\asyncio\proactor_events.py", line 80, in __repr__
+  File "C:\Users\stani\AppData\Local\Programs\Task was destroyed but it is pending!
+task: <Task pending name='Task-33' coro=<Waiter.reject_on_timeout.<localTask was destroyed but it is pending!
+task: <Task pending name='Task-30' coro=<Waiter.reject_on_timeout.<locals>.reject() running at C:\Users\stani\AppData\Local\Programs\Python\Python312\Lib\site-packages\playwright\_impl\_waiter.py:86> wait_for=<Future pending cb=[Task.task_wakeup()]>>

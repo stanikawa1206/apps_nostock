@@ -13,6 +13,14 @@ step2_static_attrs.py — Keepa/カタログ静的属性の抽出（category_pat
 - isAdultProduct:             bool | None
 """
 
+#   2. 静的属性・寸法の抽出 (step2_static_attrs.py)
+#   商品のカタログデータやKeepaのデータから、変動しにくい「静的属性」を抽出・整形するプログラムです。
+#   以下の情報を出力します。  
+#   カテゴリ: 「ビューティー › スキンケア・ボディケア...」のような、人間が読みやすいパンくずリスト形式の文字列として作成します。  
+#   バリエーションと画像: 親ASINを特定し、各バリアントの中から最適なフルサイズ画像を最大10枚選抜します。  
+#   サイズと重量: パッケージの寸法をミリメートル（mm）単位に、重量をグラム（g）単位に自動変換して統一します。  
+#   その他: アダルト商品かどうかのフラグも抽出します。  
+
 from __future__ import annotations
 from typing import Any, Dict, Optional, List, Tuple
 

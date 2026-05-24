@@ -1,4 +1,11 @@
 # -*- coding: utf-8 -*-
+
+#   4. 販売手数料のシミュレーション (step4_fees.py)
+#   SP-API（Fees Estimate API）を利用して、Amazonで販売した際の手数料を見積もるプログラムです。  
+#   対象のASINと想定販売価格（日本円）をAPIに送信します。  
+#   FBA手数料、カテゴリーごとの販売手数料（Referral Fee）、手数料の合計額を計算します。  
+#   販売価格からトータル手数料を差し引いた「純利益（Net）」を算出して返却します。  
+
 from __future__ import annotations
 import json
 from typing import Any, Dict, Optional, Tuple

@@ -221,6 +221,7 @@ def register_inventory_item(row: Dict[str, Any], token: str) -> Dict[str, Any]:
     department = (row.get("department") or "").strip()
     color = (row.get("C:Color") or row.get("Color") or "").strip()
     type_name = (row.get("C:Type") or row.get("Type") or "").strip()
+    style_name = (row.get("C:Style") or row.get("Style") or "").strip()
     platform = (row.get("platform") or row.get("C:Platform") or "").strip()
     game_name = (row.get("game_name") or row.get("C:Game Name") or "").strip()
 
@@ -232,6 +233,8 @@ def register_inventory_item(row: Dict[str, Any], token: str) -> Dict[str, Any]:
         aspects["Department"] = [department]
     if type_name:
         aspects["Type"] = [type_name]          # 既定値は入れない
+    if style_name:
+        aspects["Style"] = [style_name]          # 既定値は入れない
     if color:
         aspects["Color"] = [color]
     if platform:

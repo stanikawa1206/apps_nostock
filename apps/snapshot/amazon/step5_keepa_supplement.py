@@ -11,6 +11,12 @@ step5_keepa_supplement_strict_v2.py —
 - さらに “キー一覧ダンプ” 機能付きで、どのキーが入っているか確認可能。
 """
 
+#   5. Keepaデータの厳格な抽出 (step5_keepa_supplement_strict_v2.py)
+#   外部ツール「Keepa」のAPIから取得した商品の詳細なJSONデータを、厳格なルールに基づいて抽出するプログラムです。  
+#   「新品の90日間在庫切れ率」を抽出する際、対象となる配列（インデックス1番）のみを厳格に参照し、その他の曖昧な値（フォールバック）は採用しません。  
+#   発売日、月間販売数（monthly sold）、現在の売れ筋ランキング、現在のレビュー数、送料無料の対象かどうかなどの数値を抽出します。  
+#   コマンドラインから実行した場合、生データを保存したり、データに含まれる「キー一覧」をダンプ（出力）して構造を確認できるデバッグ機能を備えています。  
+
 from __future__ import annotations
 from typing import Any, Dict, Optional
 from apps.common.keepa import KeepaClient

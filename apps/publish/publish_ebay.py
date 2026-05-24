@@ -792,6 +792,7 @@ def heavy_check_detail(
     category_id_ebay,   # ★追加
     department,         # ★追加
     type_ebay,          # ★追加
+    category_group,
     debug_unavailable_dump,
     writes_since_commit,
     low_jpy_target,   # ★追加
@@ -994,7 +995,7 @@ def heavy_check_detail(
 
 
     # ② 新品 → 信頼セラーのみ
-    if item_condition_id == 1:
+    if item_condition_id == 1 and category_group != "ペン":
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT allow_new_items FROM mst.seller WHERE vendor_name = ? AND seller_id = ?",
@@ -1116,6 +1117,7 @@ def heavy_check_detail(
         "default_brand_en": default_brand_en,
         "department": department,
         "type_ebay": type_ebay,
+        "category_group": category_group,
     }
 
     return heavy, debug_unavailable_dump, writes_since_commit, 0, 0
@@ -1129,7 +1131,7 @@ def build_pic_urls(
     r2_bucket: str,
     r2_public_base: str,
     cdn_cache: dict,              # {sku: [cdn_url,...]}
-    limit: int = 12,
+    limit: int = 20,
 ) -> list:
     """
     PicURL用のURLリストを作る。
@@ -1209,6 +1211,7 @@ def post_to_ebay(
     default_brand_en = heavy["default_brand_en"]
     department = heavy["department"]
     type_ebay = heavy["type_ebay"]
+    category_group = heavy["category_group"]
 
     fail_other_delta = 0
 
@@ -1240,11 +1243,13 @@ def post_to_ebay(
         }
         
         # [修正ポイント] payload["itemSpecifics"] を作らず、直接 payload に C: 形式で入れる
-        if "万年筆" in preset or "ボールペン" in preset:
+        if category_group == "ペン":
             payload["C:Ink Color"] = ["Black"]
             payload["C:Material"] = "Steel"
-        
-        return post_one_item(payload, acct, acct_policies_map[acct])
+
+        if category_group == "アクセサリー":
+            payload["C:Style"] = "Necklace"
+            payload["C:Type"] = "Necklace"
 
     # 1回目（現モード）
     try:
@@ -1746,9 +1751,13 @@ def main():
                 while not stop_all:
                     with conn.cursor() as cur:
                         cur.execute("""
-                            SELECT COUNT(*) FROM trx.listings 
-                            WHERE account = ? AND CAST(start_time AS DATE) = CAST(GETDATE() AS DATE)
+                            SELECT COUNT(*) 
+                            FROM trx.listings 
+                            WHERE account = ?
+                            AND CAST(start_time AS DATE) = CAST(GETDATE() AS DATE)
+                            AND is_deleted = 0
                         """, (acct.account,))
+                        
                         sent_now = cur.fetchone()[0]
 
                     if sent_now >= acct.post_target:
@@ -1822,7 +1831,7 @@ def main():
 
                         heavy, _, writes_since_commit, _, _ = heavy_check_detail(
                             conn, page, item_url, sku, row["preset"], vendor_name, row["mode"],
-                            row["default_brand_en"], row["category_id_ebay"], row["department"], row["type_ebay"],
+                            row["default_brand_en"], row["category_id_ebay"], row["department"], row["type_ebay"],row["category_group"],
                             {}, writes_since_commit, row["low_jpy_target"], row["high_jpy_target"],driver,row["item_condition_id"] 
                         )
 

@@ -236,7 +236,7 @@ def fetch_active_presets(conn) -> List[Dict]:
             default_brand_en,
             type_ebay,
             category_group
-          FROM [nostock].[mst].[v_presets_new] WITH (NOLOCK)
+          FROM [nostock].[mst].[v_presets] WITH (NOLOCK)
          ORDER BY preset
     """
     with conn.cursor() as cur:

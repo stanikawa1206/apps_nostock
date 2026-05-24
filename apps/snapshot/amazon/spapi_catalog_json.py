@@ -1,4 +1,14 @@
 # -*- coding: utf-8 -*-
+
+#   対象の固定: B08LGN5VQZ というASIN（商品）と A1VC38T7YXB528 というマーケットプレイスIDを対象としてハードコード（固定設定）しています。  
+#   ファイルの読み込み: 指定されたローカルパス（D:\apps_nostock\apps\snapshot\catalog_payload_B08LGN5VQZ_A1VC38T7YXB528.json）にあるJSONファイルを開きます。
+#   ファイルが存在しない場合はエラーで終了します。  
+#   データの抽出 (extract_title_brand_upc関数):タイトルとブランド: JSONデータ内の summaries ブロックや attributes ブロックから、指定したマーケットプレイスのデータを探し出します。
+#   そこから itemName、displayName、brand、manufacturer などのキーを探してタイトルとブランド名を取得します。  
+#   識別コード: identifiers ブロックの中から、UPC、GTIN、EAN、JAN のいずれかに該当するバーコード・商品識別情報を抽出します。  
+#   結果の出力: 抽出したデータをひとつの辞書にまとめ、ASINや読み込んだファイルのパス情報と一緒に、見やすく整形されたJSON形式で画面（コンソール）に出力します。  
+#   APIに毎回通信リクエストを送るのではなく、すでに取得・保存済みのファイル（スナップショット）を使って、目的のデータが正しく取り出せるかをテスト・検証するための単体スクリプトだと思われます。
+
 from __future__ import annotations
 
 import json

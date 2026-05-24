@@ -1,4 +1,11 @@
 # -*- coding: utf-8 -*-
+
+#   5. 商品データの統合・データベース保存プログラム (amazon_snapshot.py 相当) (File 5)
+#   このプログラムは、AmazonやKeepaから商品の詳細データを一括で収集（スナップショット）し、自社のSQL Serverデータベースへ保存するデータ管理スクリプトです。  
+#   複数の機能（カタログ情報、価格情報、手数料計算、Keepaからのランキングやレビュー情報）を呼び出し、1つのデータとして結合します。  
+#   取得したデータをデータベースの trx.vendor_item_amazon というテーブルに保存します。既にデータが存在する場合は更新し、ない場合は新規作成（UPSERT）を行います。  
+#   商品の発売日や、FBA出品者の数、BuyBox（カート）がバックオーダー（取り寄せ）状態かどうかを分析し、「現在Amazonに在庫があるか」を論理的に判定する機能も備えています。  
+
 from __future__ import annotations
 import os, sys, json
 from typing import Any, Dict, List, Optional

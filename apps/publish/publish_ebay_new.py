@@ -256,36 +256,6 @@ def parse_detail_personal(page, url: str, preset: str, vendor_name: str) -> Dict
         "description_en": "",
     }
 
-def debug_rakuma_created_at(page, url):
-
-    page.goto(
-        url,
-        wait_until="domcontentloaded",
-        timeout=60000
-    )
-
-    scripts = page.locator("script").all()
-
-    print(len(scripts))
-
-    for i, script in enumerate(scripts):
-
-        try:
-
-            text = script.inner_text(timeout=1000)
-
-            if "created_at" in text:
-
-                print("=" * 50)
-                print("FOUND", i)
-                print("=" * 50)
-
-                print(text[:3000])
-
-        except Exception as e:
-
-            print("ERR", i, e)
-
 def parse_detail_rakuma(page, url: str, preset: str, vendor_name: str) -> Dict[str, Any]:
 
     api_data = {}
@@ -302,12 +272,12 @@ def parse_detail_rakuma(page, url: str, preset: str, vendor_name: str) -> Dict[s
             if "application/json" not in content_type:
                 return
 
-            print("=" * 50)
-            print(response.url)
+            # print("=" * 50)
+            # print(response.url)
 
             data = response.json()
 
-            print(data)
+            # print(data)
 
         except Exception as e:
 
@@ -335,7 +305,7 @@ def parse_detail_rakuma(page, url: str, preset: str, vendor_name: str) -> Dict[s
     }
     """)
 
-    print(obj)
+    # print(obj)
 
 
     with open(
@@ -345,7 +315,7 @@ def parse_detail_rakuma(page, url: str, preset: str, vendor_name: str) -> Dict[s
     ) as f:
         f.write(html)
 
-    print(html[-5000:])
+    # print(html[-5000:])
 
     all_scripts = page.locator("script").all_inner_texts()
 
@@ -436,29 +406,16 @@ def parse_detail_rakuma(page, url: str, preset: str, vendor_name: str) -> Dict[s
     ).first.inner_text()
     description = description.replace("\xa0", " ")
 
-    href = page.locator(
-        "a.shopinfo-wrap"
-    ).get_attribute("href")
+    shop = page.locator("a.shop_link")
+    href = shop.get_attribute("href")
+    print(f"[DEBUG] seller href = {href}")
+    seller_id = href.split("/")[-1]
+    seller_name = page.locator(
+        "p.header-shopinfo__shop-name span"
+    ).inner_text()
 
-    seller_id = href.split("/")[-1]
-    href = page.locator(
-        "a.shopinfo-wrap"
-    ).get_attribute("href")
-    seller_id = href.split("/")[-1]
-    shop = page.locator("a.shopinfo-wrap")
-    page_title = shop.get_attribute(
-        "data-rat-cp-pagetitle"
-    )
-    seller_name = ""
-    if "の通販 by " in page_title:
-        seller_name = (
-            page_title
-            .split("の通販 by ")[1]
-            .split(" ｜ ")[0]
-            .replace("\n", "")
-            .replace("\r", "")
-            .strip()
-        )
+    print(f"[DEBUG] seller_id = {seller_id}")
+    print(f"[DEBUG] seller_name = {seller_name}")
 
     likes_text = page.locator(
         "a.list-icon-like span"
@@ -490,31 +447,35 @@ def parse_detail_rakuma(page, url: str, preset: str, vendor_name: str) -> Dict[s
         "data-rat-cp-item_condition"
     )
 
-    page.wait_for_timeout(5000)
-    # created_at_text = page.locator(
-    #     "tr#created_at td"
-    # ).inner_text()
+    page.locator("tr#created_at").wait_for(timeout=10000)
 
-    # updated_at_text = page.locator(
-    #     "tr#updated_at td"
-    # ).inner_text()
+    created_at_text = page.locator(
+        "tr#created_at td"
+    ).inner_text()
+    updated_at_text = page.locator(
+        "tr#updated_at td"
+    ).inner_text()
 
-    # created_at_text = created_at_text.split("\n")[0].strip()
+    print(f"[DEBUG] raw created_at_text = {created_at_text}")
+    print(f"[DEBUG] raw updated_at_text = {updated_at_text}")
 
-    # updated_at_text = updated_at_text.split("\n")[0].strip()
+    created_at_text = created_at_text.split("\n")[0].strip()
+    updated_at_text = updated_at_text.split("\n")[0].strip()
 
-    # print(created_at_text)
-    # print(updated_at_text)
+    print(f"[DEBUG] parsed created_at_text = {created_at_text}")
+    print(f"[DEBUG] parsed updated_at_text = {updated_at_text}")
 
-    # vendor_created_at = datetime.strptime(
-    #     created_at_text,
-    #     "%Y/%m/%d %H:%M:%S"
-    # )
+    vendor_created_at = datetime.strptime(
+        created_at_text,
+        "%Y/%m/%d %H:%M:%S"
+    )
+    vendor_updated_at = datetime.strptime(
+        updated_at_text,
+        "%Y/%m/%d %H:%M:%S"
+    )
 
-    # vendor_updated_at = datetime.strptime(
-    #     updated_at_text,
-    #     "%Y/%m/%d %H:%M:%S"
-    # )
+    print(f"[DEBUG] vendor_created_at = {vendor_created_at}")
+    print(f"[DEBUG] vendor_updated_at = {vendor_updated_at}")
 
     return {
         "vendor_name": vendor_name,
@@ -2187,7 +2148,7 @@ def main():
 
 if __name__ == "__main__":
 
-    test_url = "https://fril.jp/item/a5c1c8eed86675cbfa30ca420854b618"
+    test_url = "https://fril.jp/item/b251e7a4c0860a7aa6854fdcd2f2030b"
 
     with sync_playwright() as p:
 
