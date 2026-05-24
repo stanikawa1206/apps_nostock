@@ -960,10 +960,11 @@ def heavy_check_detail(
 
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT is_ng FROM mst.seller WHERE vendor_name = ? AND seller_id = ?",
+            "SELECT is_ng, allow_new_items FROM mst.seller WHERE vendor_name = ? AND seller_id = ?",
             (vendor_name, seller_id),
         )
         row = cur.fetchone()
+    allow_new_items = row[1] if row else 0
 
     if row and row[0] == 1:
         rec["listing_head"] = "NG(セラーNG)"
@@ -994,9 +995,8 @@ def heavy_check_detail(
         writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
         return None, debug_unavailable_dump, writes_since_commit, 1, 0
 
-
-    # ② 新品 → 信頼セラーのみ
-    # ② 高リスク商品 → 信頼セラーのみ
+    # === 4.6) 高リスク商品フィルタ ===
+    # 高リスク商品 → 信頼セラーのみ
     is_high_risk = False
 
     # 新品
@@ -1011,20 +1011,23 @@ def heavy_check_detail(
         is_high_risk = True
 
     if is_high_risk:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT allow_new_items
-                FROM mst.seller
-                WHERE vendor_name = ? AND seller_id = ?
-                """,
-                (vendor_name, seller_id),
-            )
-            row = cur.fetchone()
 
-        if not row or row[0] != 1:
+        allow_high_risk = False
+
+        # DB許可済み
+        if allow_new_items == 1:
+            allow_high_risk = True
+
+        # 高評価セラー
+        if rating_count >= 500:
+            allow_high_risk = True
+
+        if not allow_high_risk:
             rec["listing_head"] = "NG(高リスク商品制限)"
-            rec["listing_detail"] = "allow_new_items != 1"
+            rec["listing_detail"] = (
+                f"allow_new_items != 1 and rating_count={rating_count} < 500"
+            )
+
             upsert_vendor_item(conn, rec)
 
             writes_since_commit += 1
@@ -1035,6 +1038,9 @@ def heavy_check_detail(
             )
 
             return None, debug_unavailable_dump, writes_since_commit, 1, 0
+
+
+
 
     # === 4.9) 危険素材判定 ===
     jp_title = (rec.get("title_jp") or "").strip()
