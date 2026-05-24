@@ -15,3 +15,7 @@ logs/
 
 
 apps/snapshot/Venesplo/
+
+worker_*.log
+__pycache__/
+*.pyc
