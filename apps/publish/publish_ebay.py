@@ -66,6 +66,7 @@ from datetime import datetime
 IMG_LIMIT     = 20
 BATCH_COMMIT  = 10
 MAX_PARALLEL_PC = 8  # 1アカウントあたりの最大同時稼働PC数
+PIC_LIMIT=20
 
 # ========= NG打刻・スキップ関連定義 =========
 NG_HEADS_FOR_TIMESTAMP: Set[str] = {
@@ -995,20 +996,44 @@ def heavy_check_detail(
 
 
     # ② 新品 → 信頼セラーのみ
+    # ② 高リスク商品 → 信頼セラーのみ
+    is_high_risk = False
+
+    # 新品
     if item_condition_id == 1 and category_group != "ペン":
+        is_high_risk = True
+
+    # ヴィトン・シャネル中古
+    if (
+        item_condition_id != 1
+        and default_brand_en in ("Louis Vuitton", "CHANEL")
+    ):
+        is_high_risk = True
+
+    if is_high_risk:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT allow_new_items FROM mst.seller WHERE vendor_name = ? AND seller_id = ?",
+                """
+                SELECT allow_new_items
+                FROM mst.seller
+                WHERE vendor_name = ? AND seller_id = ?
+                """,
                 (vendor_name, seller_id),
             )
             row = cur.fetchone()
 
         if not row or row[0] != 1:
-            rec["listing_head"] = "NG(新品セラー制限)"
+            rec["listing_head"] = "NG(高リスク商品制限)"
             rec["listing_detail"] = "allow_new_items != 1"
             upsert_vendor_item(conn, rec)
+
             writes_since_commit += 1
-            writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
+            writes_since_commit = _maybe_commit(
+                conn,
+                writes_since_commit,
+                BATCH_COMMIT
+            )
+
             return None, debug_unavailable_dump, writes_since_commit, 1, 0
 
     # === 4.9) 危険素材判定 ===
@@ -1131,7 +1156,6 @@ def build_pic_urls(
     r2_bucket: str,
     r2_public_base: str,
     cdn_cache: dict,              # {sku: [cdn_url,...]}
-    limit: int = 20,
 ) -> list:
     """
     PicURL用のURLリストを作る。
@@ -1143,7 +1167,7 @@ def build_pic_urls(
         if isinstance(u, str) and u.strip().startswith("http"):
             clean = u.strip().split("?")[0].split("#")[0]
             src_urls.append(clean)
-        if len(src_urls) >= limit:
+        if len(src_urls) >= PIC_LIMIT:
             break
 
     if image_mode == "NORMAL":
@@ -1224,7 +1248,6 @@ def post_to_ebay(
             r2_bucket=r2_bucket,
             r2_public_base=r2_public_base,
             cdn_cache=cdn_cache,
-            limit=12,
         )
 
         payload = {
