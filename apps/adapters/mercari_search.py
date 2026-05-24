@@ -129,7 +129,7 @@ MERCARI_BASE_URL = (
     "https://jp.mercari.com/search?"   
     # ブランド・カテゴリ共通の検索ベース（brand_id, category_id は後付け）
     "d664efe3-ae5a-4824-b729-e789bf93aba9=B38F1DC9286E0B80812D9B19DB14298C1FF1116CA8332D9EE9061026635C9088"  # 出品形式：定額販売（固定価格）
-    "&item_condition_id=1%2C2%2C3"           # 商品状態：新品・未使用に近い・目立った傷なし
+    "&item_condition_id=1%2C2%2C3%2C4"           # 商品状態：新品・未使用に近い・目立った傷なし
     "&shipping_payer_id=2"                  # 送料負担：出品者（送料込み）
     "&sort=created_time&order=desc"         # 並び順：新着順（降順）
 )
