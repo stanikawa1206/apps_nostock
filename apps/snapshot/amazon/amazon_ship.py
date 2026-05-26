@@ -1,9 +1,4 @@
 #   4. 商品サイズ取得および送料計算プログラム (File 4)
-#   このプログラムは、Amazonのカタログに登録されている商品の物理的な寸法や重さのデータを取得し、正確な送料目安を割り出すためのスクリプトです。  
-#   Amazon JPのカタログAPIから、商品のパッケージ寸法（縦・横・高さ）と重量データを取得します。  
-#   取得したデータから「実重量」と「容積重量（体積をベースにした計算上の重さ）」を計算し、航空便などで基準となる「重い方（請求重量）」を判定します。  
-#   Excelファイル（ship_cost.xlsx）の「重量」と「サイズ」シートを参照し、算出された数値を当てはめて、アメリカ・カナダ・日本向けの送料目安を計算します。  
-
 import os
 import pandas as pd
 from dotenv import load_dotenv
@@ -19,19 +14,10 @@ REFRESH_TOKEN = os.environ.get("REFRESH_TOKEN")
 
 # --- 単位変換用の辞書 ---
 WEIGHT_RATES = {
-    "grams": 1.0,
-    "kilograms": 1000.0,
-    "pounds": 453.592,
-    "ounces": 28.3495,
-    "milligrams": 0.001
+    "grams": 1.0, "kilograms": 1000.0, "pounds": 453.592, "ounces": 28.3495, "milligrams": 0.001
 }
-
 LENGTH_RATES = {
-    "centimeters": 1.0,
-    "millimeters": 0.1,
-    "meters": 100.0,
-    "inches": 2.54,
-    "feet": 30.48
+    "centimeters": 1.0, "millimeters": 0.1, "meters": 100.0, "inches": 2.54, "feet": 30.48
 }
 
 def to_grams(value, unit):
@@ -43,135 +29,142 @@ def to_cm(value, unit):
     return value * LENGTH_RATES.get(unit.lower(), 1.0)
 
 def calculate_shipping_costs(chargeable_weight_g, actual_weight_g, sum_cm, excel_path):
-    """Excelの料金表から各国の送料を算出する"""
+    """
+    Excelから輸出用(US/CA)・日本国内用・輸入用(MyUS)の送料を算出する
+    """
     try:
-        # Excelファイルの「重量」シートと「サイズ」シートを読み込む
+        # 3つのシートを読み込む
         df_weight = pd.read_excel(excel_path, sheet_name="重量")
         df_size = pd.read_excel(excel_path, sheet_name="サイズ")
+        df_import = pd.read_excel(excel_path, sheet_name="輸入")
     except Exception as e:
-        print(f"Excelファイルの読み込みエラー: {e}")
-        return None, None, None
+        print(f"❌ Excelファイルの読み込みエラー: {e}")
+        return None, None, None, None, None
 
-    # -1などの無効な数値を弾き、昇順に並び替え
-    df_weight = df_weight[df_weight['g'] >= 0].sort_values('g')
-    df_size = df_size[df_size['cm'] >= 0].sort_values('cm')
+    # ==========================================
+    # 1. 輸出用 (US / CA) の計算
+    # ==========================================
+    df_weight_data = df_weight[df_weight['g'] >= 0].sort_values('g')
+    valid_weights = df_weight_data[df_weight_data['g'] >= chargeable_weight_g]
+    w_row = df_weight_data.iloc[-1] if valid_weights.empty else valid_weights.iloc[0]
+    cost_us, cost_ca = w_row['us'], w_row['ca']
 
-    # --- US, CA の送料判定 (請求重量ベース) ---
-    valid_weights = df_weight[df_weight['g'] >= chargeable_weight_g]
-    if valid_weights.empty:
-        w_row = df_weight.iloc[-1]  # 重量オーバー時は一番下の行を適用
-    else:
-        w_row = valid_weights.iloc[0] # 条件を満たす最小の行
-        
-    cost_us = w_row['us']
-    cost_ca = w_row['ca']
-
-    # --- JP の送料判定 (実重量とサイズの高い方) ---
-    # 1. 実重量から判定
-    valid_jp_weights = df_weight[df_weight['g'] >= actual_weight_g]
-    cost_jp_weight = df_weight.iloc[-1]['jp'] if valid_jp_weights.empty else valid_jp_weights.iloc[0]['jp']
-
-    # 2. サイズ(3辺合計)から判定
-    valid_jp_sizes = df_size[df_size['cm'] >= sum_cm]
-    cost_jp_size = df_size.iloc[-1]['jp'] if valid_jp_sizes.empty else valid_jp_sizes.iloc[0]['jp']
-
-    # 3. サイズと重量で金額が高い方を適用 (福山通運のルール)
-    cost_jp = max(cost_jp_weight, cost_jp_size)
+    # ==========================================
+    # 2. 日本国内 (JP) の計算
+    # ==========================================
+    df_size_data = df_size[df_size['cm'] >= 0].sort_values('cm')
     
-    return cost_us, cost_ca, cost_jp
+    # 重量の基準
+    valid_jp_weights = df_weight_data[df_weight_data['g'] >= actual_weight_g]
+    cost_jp_weight = df_weight_data.iloc[-1]['jp'] if valid_jp_weights.empty else valid_jp_weights.iloc[0]['jp']
+    
+    # サイズの基準
+    valid_jp_sizes = df_size_data[df_size_data['cm'] >= sum_cm]
+    cost_jp_size = df_size_data.iloc[-1]['jp'] if valid_jp_sizes.empty else valid_jp_sizes.iloc[0]['jp']
+    
+    cost_jp = max(cost_jp_weight, cost_jp_size)
 
-def get_item_dimensions(asin: str):
-    if not REFRESH_TOKEN:
-        print("エラー: REFRESH_TOKEN が.envに設定されていません。")
+    # ==========================================
+    # 3. 輸入用 (MyUS → JP) の計算
+    # ==========================================
+    # 1行目は「day (配達日数)」のデータなので、2行目以降を実データとして扱う
+    df_import_data = df_import.iloc[1:].copy()
+    
+    # 'g' 列を数値型に変換して処理
+    df_import_data['g'] = pd.to_numeric(df_import_data['g'], errors='coerce')
+    valid_imports = df_import_data[df_import_data['g'] >= chargeable_weight_g].sort_values('g')
+    
+    if valid_imports.empty:
+        # テーブルの上限を超えている場合は、一番重い設定を採用
+        i_row = df_import_data.iloc[-1]
+    else:
+        i_row = valid_imports.iloc[0]
+
+    # 利用可能なキャリア (FedEco, FedPrio, DHLExp) の中で一番安い金額を採用する
+    carrier_costs = pd.to_numeric(i_row[['FedEco', 'FedPrio', 'DHLExp']], errors='coerce')
+    cost_myus_to_jp = carrier_costs.min()
+    
+    # 最安だったキャリア名を特定 (参考用)
+    best_carrier = carrier_costs.idxmin()
+
+    return cost_us, cost_ca, cost_jp, cost_myus_to_jp, best_carrier
+
+def main():
+    asin = input("ASINを入力してください: ").strip()
+    if not asin:
         return
-
+        
+    print(f"\n=== {asin} のサイズ・重量データを取得中 ===")
+    
     credentials = {
         "lwa_app_id": LWA_APP_ID,
         "lwa_client_secret": LWA_CLIENT_SECRET,
-        "refresh_token": REFRESH_TOKEN,
+        "refresh_token": REFRESH_TOKEN
     }
-
+    
     try:
-        print(f"=== {asin} のサイズ・重量データを取得中 ===")
-        catalog_api = CatalogItemsV20220401(credentials=credentials, marketplace=Marketplaces.JP)
-        
-        response = catalog_api.get_catalog_item(
+        api = CatalogItemsV20220401(credentials=credentials, marketplace=Marketplaces.JP)
+        res = api.get_catalog_item(
             asin=asin,
             marketplaceIds=[Marketplaces.JP.marketplace_id],
             includedData=["dimensions"]
         )
         
-        payload = response.payload
-        dimensions_list = payload.get('dimensions', [])
+        dims = res.payload.get('dimensions', [])
         
-        if not dimensions_list:
-            print("この商品にはサイズ・重量データが登録されていません。")
+        if not dims or 'package' not in dims[0]:
+            print("❌ サイズ・重量データがカタログに登録されていません。")
             return
             
-        dim_data = dimensions_list[0]
-        package_dim = dim_data.get('package', {})
+        pkg = dims[0]['package']
         
-        if not package_dim:
-            print("パッケージサイズのデータがありません。")
-            return
-            
-        # 生のデータを取得
-        raw_weight = package_dim.get('weight', {}).get('value', 0)
-        raw_weight_unit = package_dim.get('weight', {}).get('unit', '')
+        actual_weight_g = to_grams(pkg.get('weight', {}).get('value', 0), pkg.get('weight', {}).get('unit', ''))
+        length_cm = to_cm(pkg.get('length', {}).get('value', 0), pkg.get('length', {}).get('unit', ''))
+        width_cm = to_cm(pkg.get('width', {}).get('value', 0), pkg.get('width', {}).get('unit', ''))
+        height_cm = to_cm(pkg.get('height', {}).get('value', 0), pkg.get('height', {}).get('unit', ''))
         
-        raw_length = package_dim.get('length', {}).get('value', 0)
-        raw_length_unit = package_dim.get('length', {}).get('unit', '')
-        
-        raw_width = package_dim.get('width', {}).get('value', 0)
-        raw_width_unit = package_dim.get('width', {}).get('unit', '')
-        
-        raw_height = package_dim.get('height', {}).get('value', 0)
-        raw_height_unit = package_dim.get('height', {}).get('unit', '')
-        
-        # --- g と cm に変換 ---
-        weight_g = to_grams(raw_weight, raw_weight_unit)
-        length_cm = to_cm(raw_length, raw_length_unit)
-        width_cm = to_cm(raw_width, raw_width_unit)
-        height_cm = to_cm(raw_height, raw_height_unit)
-        
-        actual_weight_g = weight_g
         volume_cm3 = length_cm * width_cm * height_cm
         sum_cm = length_cm + width_cm + height_cm
         volume_weight_g = (volume_cm3 / 5000.0) * 1000.0
         chargeable_weight_g = max(actual_weight_g, volume_weight_g)
         
         print("\n【パッケージ（梱包）サイズ・重量情報】")
-        print(f"寸法　　: {length_cm:.1f} cm × {width_cm:.1f} cm × {height_cm:.1f} cm")
+        print(f"寸法  : {length_cm:.1f} cm × {width_cm:.1f} cm × {height_cm:.1f} cm")
         print(f"体積(積): {volume_cm3:.1f} cm³")
         print(f"３辺合計: {sum_cm:.1f} cm")
         print("-" * 45)
-        print(f"実重量　: {actual_weight_g:.1f} g")
+        print(f"実重量 : {actual_weight_g:.1f} g")
         print(f"容積重量: {volume_weight_g:.1f} g (体積 ÷ 5000 × 1000)")
         print(f"請求重量: {chargeable_weight_g:.1f} g (実重量と容積重量の重い方)")
         print("-" * 45)
 
-        # ====== ここから追加：Excelを参照して送料を計算 ======
+        # ====== Excelを参照して送料を計算 ======
         excel_file_path = r"X:\apps\snapshot\amazon\ship_cost.xlsx"
         
-        cost_us, cost_ca, cost_jp = calculate_shipping_costs(
+        cost_us, cost_ca, cost_jp, cost_myus, best_carrier = calculate_shipping_costs(
             chargeable_weight_g, 
             actual_weight_g, 
             sum_cm, 
             excel_file_path
         )
-
-        if cost_us is not None:
-            print("\n【国別 送料目安】")
-            print(f"US (アメリカ) : {int(cost_us):,} 円 (請求重量ベース)")
-            print(f"CA (カナダ)   : {int(cost_ca):,} 円 (請求重量ベース)")
-            print(f"JP (日　本)   : {int(cost_jp):,} 円 (実重量とサイズの高い方)")
-            print("-" * 45)
+        
+        if cost_us is None:
+            return
+            
+        print("\n【国別 送料目安 (輸出)】")
+        print(f"US 送料 : {int(cost_us):,} 円 (請求重量ベース)")
+        print(f"CA 送料 : {int(cost_ca):,} 円 (請求重量ベース)")
+        print("-" * 45)
+        
+        print("\n【国別 送料目安 (輸入)】")
+        print(f"MyUS → JP 送料 : {int(cost_myus):,} 円 (最安キャリア: {best_carrier})")
+        print(f"JP 国内送料    : {int(cost_jp):,} 円 (実重量とサイズの高い方)")
+        print("-" * 45)
 
     except SellingApiException as e:
-        print(f"SP-APIエラーが発生しました:\n{e}")
+        print(f"❌ APIエラー: {e}")
     except Exception as e:
-        print(f"予期せぬエラーが発生しました: {e}")
+        print(f"❌ エラーが発生しました: {e}")
 
 if __name__ == "__main__":
-    target_asin = "B081D7DSJJ"  # ← 実際のASINに変更してください
-    get_item_dimensions(target_asin)
+    main()

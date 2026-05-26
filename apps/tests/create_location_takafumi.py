@@ -7,7 +7,7 @@ load_dotenv()
 
 def create_inventory_location():
     # 貴文さんの新しいリフレッシュトークン（DBに入れたもの）
-    refresh_token = "v^1.1#i^1#I^3#r^1#f^0#p^3#t^Ul4xMF84OkVFNDc2NTA3QjY3MDBBRTAzMjg5OEM4MTREOENFQzdFXzJfMSNFXjI2MA=="
+    refresh_token = "v^1.1#i^1#r^1#p^3#f^0#I^3#t^Ul4xMF8xMDpGMUI3NkM4MTA0OEJBMUE3Qzc2MzMwOEMwMkEwNkJEN18yXzEjRV4yNjA="
     client_id = os.getenv("EBAY_CLIENT_ID")
     client_secret = os.getenv("EBAY_CLIENT_SECRET")
 
@@ -28,10 +28,10 @@ def create_inventory_location():
     payload = {
         "location": {
             "address": {
-                "addressLine1": "yokoshima240",
-                "city": "chikusei",
-                "stateOrProvince": "IBARAKI",
-                "postalCode": "308-0802",
+                "addressLine1": "Ro 36banchi",
+                "addressLine2": "Komatsu Nagatamachi",
+                "city": "Ishikawa",
+                "postalCode": "9230034",
                 "country": "JP"
             }
         },

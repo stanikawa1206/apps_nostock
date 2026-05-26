@@ -390,16 +390,6 @@ def post_one_item(payload: Dict[str, Any], account_name: str, acct_policies: Dic
     update_offer(offer_id, payload, token, acct_policies)
     res = publish_offer(offer_id, token)
     item_id = res.get("itemId") or res.get("listingId") or ""
-
-    if item_id:
-        conn = get_sql_server_connection()
-        with conn.cursor() as cursor:
-            cursor.execute("""
-                UPDATE mst.ebay_accounts
-                SET listing_left = listing_left - 1
-                WHERE account = ?
-            """, account_name)
-            conn.commit()
             
     return item_id
 

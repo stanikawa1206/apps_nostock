@@ -1012,6 +1012,18 @@ def heavy_check_detail(
 
     if is_high_risk:
 
+        print(
+            "[HIGH_RISK_CHECK]",
+            f"seller_id={seller_id}",
+            f"rating_count={rating_count}",
+            f"type={type(rating_count)}",
+            f"allow_new_items={allow_new_items}",
+            f"default_brand_en={default_brand_en}",
+            f"item_condition_id={item_condition_id}",
+        )
+
+
+
         allow_high_risk = False
 
         # DB許可済み
@@ -1066,7 +1078,10 @@ def heavy_check_detail(
     # print(f"  └─ [INFO] 出品計算価格: {price_decimal} USD")
 
     # 実際にGA対象か？
-    is_ga_actual = price_decimal >= Decimal("500.00")
+    is_ga_actual = (
+        mode == "GA"
+        and price_decimal >= Decimal("500.00")
+    )
 
     if is_ga_actual:
 
@@ -1289,6 +1304,15 @@ def post_to_ebay(
         if item_id_ebay:
             print(f"✅ 出品成功: acct={acct} SKU={sku} listing_id={item_id_ebay}")
             record_ebay_listing(item_id_ebay, acct, sku, vendor_name, start_price_usd)
+
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    UPDATE mst.ebay_accounts
+                    SET listing_left = listing_left - 1
+                    WHERE account = ?
+                """, acct)
+
+            conn.commit()
 
             rec["processing_by"] = None
             rec["processing_at"] = None
