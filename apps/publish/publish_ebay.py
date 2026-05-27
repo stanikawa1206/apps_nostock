@@ -618,7 +618,8 @@ def _check_shipping_condition_values(region: Optional[str], days: Optional[str])
     if not region and not days:
         return False, False
 
-    bad_days = {"8〜14日で発送", "4〜7日で発送", "4~7日で発送","90日以内で発送"}
+    # bad_days = {"8〜14日で発送", "4〜7日で発送", "4~7日で発送","90日以内で発送"}
+    bad_days = {"8〜14日で発送", "90日以内で発送"}
 
     if region == "海外":
         return True, True
@@ -1000,7 +1001,7 @@ def heavy_check_detail(
     is_high_risk = False
 
     # 新品
-    if item_condition_id == 1 and category_group != "ペン":
+    if item_condition_id == 1 and category_group != "ペン" and category_group != "製図用品":
         is_high_risk = True
 
     # ヴィトン・シャネル中古
@@ -1050,9 +1051,6 @@ def heavy_check_detail(
             )
 
             return None, debug_unavailable_dump, writes_since_commit, 1, 0
-
-
-
 
     # === 4.9) 危険素材判定 ===
     jp_title = (rec.get("title_jp") or "").strip()
@@ -1665,7 +1663,7 @@ def take_one_vendor_item(conn, preset_group, processing_by, account_name):
             )
             AND ISNULL(v.[出品状況], N'') NOT IN (N'NG(GA補色)', N'NG(危険素材)', N'ポリシーNG')
             AND ISNULL(v.shipping_days, N'') NOT IN (
-                N'4~7日で発送', N'4〜7日で発送', N'8〜14日で発送', N'90日以内で発送'
+                N'8〜14日で発送', N'90日以内で発送'
             )
             AND NOT (
                 ISNULL(v.[出品状況], N'') IN (N'低需要NG', N'配送条件NG')

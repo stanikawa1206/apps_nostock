@@ -35,7 +35,18 @@ from apps.adapters.ebay_api import delete_items_from_ebay_batch
 # =========================================================
 
 TARGET_SKUS_RAW = """
-m72083172826
+2JJVh3boxZfm7zC56nRh3Y
+2JPuW2TASkKLbGxjHcQGuZ
+2JQMS3E9VAMsSkKqD7ayjA
+2JRgFetE4JbUPX2yUmjdJg
+2JRgH5jLKamD2Q3EXP5Nrn
+2JRTMc8kUw8RwPq4wtc43S
+2JRVzBFJNuPEmRA5Rcdps2
+2JRW2wTaULDmxothmdcBLx
+2JRW5nkBjFbJTGfPDUP8X4
+2JRW6jfvLgpZnUsXFGk2b3
+m65615113456
+m65615113456
 """
 
 TARGET_SKUS = [
