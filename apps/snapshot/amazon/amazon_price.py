@@ -242,7 +242,7 @@ def print_price_result(result):
 # ==========================================
 if __name__ == "__main__":
     rates = get_exchange_rates()
-    test_asin = "B000VWDER8"  # 実際のASINに変更してください
+    test_asin = "B01HO40U0O"  # 実際のASINに変更してください
 
     print(f"--- {test_asin} の分析を開始します ---")
     result = analyze_trade_opportunity(test_asin, rates)

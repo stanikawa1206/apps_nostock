@@ -1,0 +1,595 @@
+ * Serving Flask app 'message_viewer'
+ * Debug mode: on
+[generate] message_id=3434058260012
+[generate] model=gpt-4o-mini
+[generate] instruction=''
+[generate] current_reply=(empty)
+[generate] prompt=
+You are a Japanese eBay seller.
+
+Conversation history:
+Buyer: hello ~~~
+Buyer: can you do $700? for this? i love to buy it right now.
+Buyer: what leather is it btw?
+Seller: Thank you for your offer. I appreciate your interest, but this discount is too large to consider.
+I'm open to reasonable offers, but this one is far below the item’s value.
+? Thank you for your understanding.
+Buyer: Helllo
+Buyer: Can you do $750 then? 
+Buyer: Can you send me more pics too?
+Seller: Thank you for your interest. We only offer small discounts, and large reductions are unlikely. If you are seriously considering purchasing, please let me know your best offer.
+
+Buyer message: Can you send me more pics too?
+
+Current draft:
+(none)
+
+MANDATORY INSTRUCTIONS - YOU MUST FOLLOW ALL OF THESE:
+(none)
+
+Rules:
+- Follow every instruction above without exception
+- reply_en must be 100% English only, no Japanese
+- reply_ja must be the Japanese translation of reply_en (NEVER leave it empty)
+- Do not add sign-off or placeholder names
+- Reply JSON only: {"reply_en": "...", "reply_ja": "日本語訳..."}
+---
+[generate] raw='{"reply_en": "I understand your request for more pictures. I will send additional photos shortly. Please let me know if you have any specific angles or details you would like to see.", "reply_ja": "追加'
+[generate] message_id=3434058260012
+[generate] model=gpt-4o-mini
+[generate] instruction=''
+[generate] current_reply=(empty)
+[generate] prompt=
+You are a Japanese eBay seller.
+
+Conversation history:
+Buyer: hello ~~~
+Buyer: can you do $700? for this? i love to buy it right now.
+Buyer: what leather is it btw?
+Seller: Thank you for your offer. I appreciate your interest, but this discount is too large to consider.
+I'm open to reasonable offers, but this one is far below the item’s value.
+? Thank you for your understanding.
+Buyer: Helllo
+Buyer: Can you do $750 then? 
+Buyer: Can you send me more pics too?
+Seller: Thank you for your interest. We only offer small discounts, and large reductions are unlikely. If you are seriously considering purchasing, please let me know your best offer.
+
+Buyer message: Can you send me more pics too?
+
+Current draft:
+(none)
+
+MANDATORY INSTRUCTIONS - YOU MUST FOLLOW ALL OF THESE:
+(none)
+
+Rules:
+- Follow every instruction above without exception
+- reply_en must be 100% English only, no Japanese
+- reply_ja must be the Japanese translation of reply_en (NEVER leave it empty)
+- Do not add sign-off or placeholder names
+- Reply JSON only: {"reply_en": "...", "reply_ja": "日本語訳..."}
+---
+[generate] raw='{"reply_en": "Thank you for your continued interest. I can send you more pictures. Please give me a moment to upload them for you.", "reply_ja": "ご関心をお持ちいただきありがとうございます。より多くの写真をお送りできますので、少々お待ちください。"}'
+[generate] message_id=3434058260012
+[generate] model=gpt-4o-mini
+[generate] instruction=''
+[generate] current_reply=(empty)
+[generate] prompt=
+You are a Japanese eBay seller.
+
+Conversation history:
+Buyer: hello ~~~
+Buyer: can you do $700? for this? i love to buy it right now.
+Buyer: what leather is it btw?
+Seller: Thank you for your offer. I appreciate your interest, but this discount is too large to consider.
+I'm open to reasonable offers, but this one is far below the item’s value.
+? Thank you for your understanding.
+Buyer: Helllo
+Buyer: Can you do $750 then? 
+Buyer: Can you send me more pics too?
+Seller: Thank you for your interest. We only offer small discounts, and large reductions are unlikely. If you are seriously considering purchasing, please let me know your best offer.
+
+Buyer message: Can you send me more pics too?
+
+Current draft:
+(none)
+
+MANDATORY INSTRUCTIONS - YOU MUST FOLLOW ALL OF THESE:
+(none)
+
+Rules:
+- Follow every instruction above without exception
+- reply_en must be 100% English only, no Japanese
+- reply_ja must be the Japanese translation of reply_en (NEVER leave it empty)
+- Do not add sign-off or placeholder names
+- Reply JSON only: {"reply_en": "...", "reply_ja": "日本語訳..."}
+---
+[generate] raw='{"reply_en": "Sure! I can send you more pictures. Please give me a moment to gather them for you.", "reply_ja": "もちろんです！もっと写真をお送りできます。少々お待ちください。"}'
+[generate] message_id=3434058330012
+[generate] model=gpt-4o-mini
+[generate] instruction=''
+[generate] current_reply=(empty)
+[generate] prompt=
+You are a Japanese eBay seller.
+
+Conversation history:
+Buyer: hello ~~~
+Buyer: can you do $700? for this? i love to buy it right now.
+Buyer: what leather is it btw?
+Seller: Thank you for your offer. I appreciate your interest, but this discount is too large to consider.
+I'm open to reasonable offers, but this one is far below the item’s value.
+? Thank you for your understanding.
+Buyer: Helllo
+Buyer: Can you do $750 then? 
+Buyer: Can you send me more pics too?
+Seller: Thank you for your interest. We only offer small discounts, and large reductions are unlikely. If you are seriously considering purchasing, please let me know your best offer.
+
+Buyer message: Can you send me more pics too?
+
+Current draft:
+(none)
+
+MANDATORY INSTRUCTIONS - YOU MUST FOLLOW ALL OF THESE:
+(none)
+
+Rules:
+- Follow every instruction above without exception
+- reply_en must be 100% English only, no Japanese
+- reply_ja must be the Japanese translation of reply_en (NEVER leave it empty)
+- Do not add sign-off or placeholder names
+- Reply JSON only: {"reply_en": "...", "reply_ja": "日本語訳..."}
+---
+[generate] raw='{"reply_en":"Thank you for your message! I will take additional pictures and send them to you shortly. Please let me know if you have any specific angles or details you want me to focus on.","reply_ja'
+[generate] message_id=3434058260012
+[generate] model=gpt-4o-mini
+[generate] instruction=''
+[generate] current_reply=(empty)
+[generate] prompt=
+You are a Japanese eBay seller.
+
+Conversation history:
+Buyer: hello ~~~
+Buyer: can you do $700? for this? i love to buy it right now.
+Buyer: what leather is it btw?
+Seller: Thank you for your offer. I appreciate your interest, but this discount is too large to consider.
+I'm open to reasonable offers, but this one is far below the item’s value.
+? Thank you for your understanding.
+Buyer: Helllo
+Buyer: Can you do $750 then? 
+Buyer: Can you send me more pics too?
+Seller: Thank you for your interest. We only offer small discounts, and large reductions are unlikely. If you are seriously considering purchasing, please let me know your best offer.
+
+Buyer message: Can you send me more pics too?
+
+Current draft:
+(none)
+
+MANDATORY INSTRUCTIONS - YOU MUST FOLLOW ALL OF THESE:
+(none)
+
+Rules:
+- Follow every instruction above without exception
+- reply_en must be 100% English only, no Japanese
+- reply_ja must be the Japanese translation of reply_en (NEVER leave it empty)
+- Do not add sign-off or placeholder names
+- Reply JSON only: {"reply_en": "...", "reply_ja": "日本語訳..."}
+---
+[generate] raw='{"reply_en": "Sure! I can send you more pictures. Please hold on for a moment while I gather them.", "reply_ja": "もちろん！もっと写真をお送りできます。少々お待ちください、写真を集めますので。"}'
+[generate] message_id=6238804598019
+[generate] model=gpt-4o-mini
+[generate] instruction=''
+[generate] current_reply=(empty)
+[generate] prompt=
+You are a Japanese eBay seller.
+
+Conversation history:
+Buyer: Hello, I am interested. Will you take an offer?
+Seller: Thank you for your interest. We only offer small discounts, and large reductions are unlikely. If you are seriously considering purchasing, please let me know your best offer.
+
+Buyer message: Hello, I am interested. Will you take an offer?
+
+Current draft:
+(none)
+
+MANDATORY INSTRUCTIONS - YOU MUST FOLLOW ALL OF THESE:
+(none)
+
+Rules:
+- Follow every instruction above without exception
+- reply_en must be 100% English only, no Japanese
+- reply_ja must be the Japanese translation of reply_en (NEVER leave it empty)
+- Do not add sign-off or placeholder names
+- Reply JSON only: {"reply_en": "...", "reply_ja": "日本語訳..."}
+---
+[generate] raw='{"reply_en": "Thank you for reaching out again. As mentioned earlier, we can consider small discounts but are unlikely to accept large reductions. If you\'re seriously thinking about purchasing, please'
+[generate] message_id=6238797689019
+[generate] model=gpt-4o-mini
+[generate] instruction=''
+[generate] current_reply=(empty)
+[generate] prompt=
+You are a Japanese eBay seller.
+
+Conversation history:
+Buyer: hello ~~~
+Buyer: can you do $700? for this? i love to buy it right now.
+Buyer: what leather is it btw?
+Seller: Thank you for your offer. I appreciate your interest, but this discount is too large to consider.
+I'm open to reasonable offers, but this one is far below the item’s value.
+? Thank you for your understanding.
+Buyer: Helllo
+Buyer: Can you do $750 then? 
+Buyer: Can you send me more pics too?
+Seller: Thank you for your interest. We only offer small discounts, and large reductions are unlikely. If you are seriously considering purchasing, please let me know your best offer.
+
+Buyer message: Can you send me more pics too?
+
+Current draft:
+(none)
+
+MANDATORY INSTRUCTIONS - YOU MUST FOLLOW ALL OF THESE:
+(none)
+
+Rules:
+- Follow every instruction above without exception
+- reply_en must be 100% English only, no Japanese
+- reply_ja must be the Japanese translation of reply_en (NEVER leave it empty)
+- Do not add sign-off or placeholder names
+- Reply JSON only: {"reply_en": "...", "reply_ja": "日本語訳..."}
+---
+[generate] raw='{"reply_en": "Sure! I can send you more pictures of the item. Please give me a moment to take some new photos for you.", "reply_ja": "もちろんです！アイテムの追加写真をお送りできますので、少々お待ちください。"}'
+[generate] message_id=6238728896019
+[generate] model=gpt-4o-mini
+[generate] instruction=''
+[generate] current_reply=(empty)
+[generate] prompt=
+You are a Japanese eBay seller.
+
+Conversation history:
+Buyer: Thank you for the quick shipping.
+
+​I was contacted by DHL today and informed that the fountain pen is currently held up for inspection at the airport in Japan. They stated that the package cannot be released or delivered to me until they receive confirmation from you (the sender).
+
+​Could you please contact DHL on your end and check the status of this shipment? The DHL tracking number is 5958597002.
+
+​Please let me know if there are any updates or if you need any information from my side.
+
+​Best regards,
+Kwang.
+Buyer: Hello,
+
+​I am contacting you regarding the shipment of the item I purchased.
+
+​The SpeedPAK tracking number you provided is EX1013094628285DL06020002D0N. As SpeedPAK works in partnership with DHL for final delivery, a secondary DHL tracking number has been assigned: 5958597002.
+​Currently, DHL has placed a hold on the package (the pen) at Chubu Nagoya Airport.
+
+​According to DHL, they need to verify the exact contents of the package with you, the shipper. They stated that you must contact DHL directly to provide a description/explanation of the item. DHL will not release the package for delivery until they receive this confirmation from you.
+
+​Could you please contact DHL as soon as possible to clarify the item details so that the shipment can resume?
+
+​Thank you for your prompt assistance.
+
+Kwang.
+Seller: Thank you for your message. I apologize for the inconvenience regarding the shipment of your fountain pen. Upon contacting DHL, I learned that they are waiting for you to submit a verification document. This is different from what you mentioned. Could you please reach out to DHL again to clarify this situation? Thank you for your understanding.
+
+Buyer message: Hello,
+
+​I am contacting you regarding the shipment of the item I purchased.
+
+​The SpeedPAK tracking number you provided is EX1013094628285DL06020002D0N. As SpeedPAK works in partnership with DHL for final delivery, a secondary DHL tracking number has been assigned: 5958597002.
+​Currently, DHL has placed a hold on the package (the pen) at Chubu Nagoya Airport.
+
+​According to DHL, they need to verify the exact contents of the package with you, the shipper. They stated that you must contact DHL directly to provide a description/explanation of the item. DHL will not release the package for delivery until they receive this confirmation from you.
+
+​Could you please contact DHL as soon as possible to clarify the item details so that the shipment can resume?
+
+​Thank you for your prompt assistance.
+
+Kwang.
+
+Current draft:
+(none)
+
+MANDATORY INSTRUCTIONS - YOU MUST FOLLOW ALL OF THESE:
+(none)
+
+Rules:
+- Follow every instruction above without exception
+- reply_en must be 100% English only, no Japanese
+- reply_ja must be the Japanese translation of reply_en (NEVER leave it empty)
+- Do not add sign-off or placeholder names
+- Reply JSON only: {"reply_en": "...", "reply_ja": "日本語訳..."}
+---
+[generate] raw='{"reply_en": "Thank you for your message. I understand that there is a hold on your package at Chubu Nagoya Airport. I will contact DHL to provide them with the necessary details about the fountain pe'
+[generate] message_id=3423796161013
+[generate] model=gpt-4o-mini
+[generate] instruction=''
+[generate] current_reply=(empty)
+[generate] prompt=
+You are a Japanese eBay seller.
+
+Conversation history:
+Buyer: Hello,
+Could you tell me if you know when this item will be shipped? 
+Thank you! 
+Seller: I expect to ship the item tomorrow, but there is a possibility it may be shipped on Monday. However, it will definitely be within the eBay shipping timeframe.
+Buyer: Great! Thank you! 
+Buyer:  I would like a full refund of $578.97 USD. Thank you. 
+
+Buyer message:  I would like a full refund of $578.97 USD. Thank you. 
+
+Current draft:
+(none)
+
+MANDATORY INSTRUCTIONS - YOU MUST FOLLOW ALL OF THESE:
+(none)
+
+Rules:
+- Follow every instruction above without exception
+- reply_en must be 100% English only, no Japanese
+- reply_ja must be the Japanese translation of reply_en (NEVER leave it empty)
+- Do not add sign-off or placeholder names
+- Reply JSON only: {"reply_en": "...", "reply_ja": "日本語訳..."}
+---
+[generate] raw='{"reply_en": "I understand that you would like a full refund of $578.97 USD. Please provide me with the reason for the refund request so I can assist you further. Thank you!", "reply_ja": "578.97米ドルの全'
+[generate] message_id=3423796161013
+[generate] model=gpt-4o-mini
+[generate] instruction='こちらが原因でのキャンセルなので、お詫びを軽く入れて、これからキャンセルします\nみたいな感じにして'
+[generate] current_reply='I understand that you would like a full refund of $578.97 USD. Please provide me'
+[generate] prompt=
+You are a Japanese eBay seller.
+
+Conversation history:
+Buyer: Hello,
+Could you tell me if you know when this item will be shipped? 
+Thank you! 
+Seller: I expect to ship the item tomorrow, but there is a possibility it may be shipped on Monday. However, it will definitely be within the eBay shipping timeframe.
+Buyer: Great! Thank you! 
+Buyer:  I would like a full refund of $578.97 USD. Thank you. 
+
+Buyer message:  I would like a full refund of $578.97 USD. Thank you. 
+
+Current draft:
+I understand that you would like a full refund of $578.97 USD. Please provide me with the reason for the refund request so I can assist you further. Thank you!
+
+MANDATORY INSTRUCTIONS - YOU MUST FOLLOW ALL OF THESE:
+こちらが原因でのキャンセルなので、お詫びを軽く入れて、これからキャンセルします
+みたいな感じにして
+
+Rules:
+- Follow every instruction above without exception
+- reply_en must be 100% English only, no Japanese
+- reply_ja must be the Japanese translation of reply_en (NEVER leave it empty)
+- Do not add sign-off or placeholder names
+- Reply JSON only: {"reply_en": "...", "reply_ja": "日本語訳..."}
+---
+[generate] raw='{"reply_en": "I apologize for any inconvenience caused. I will process your refund of $578.97 USD right away. Thank you for your understanding!", "reply_ja": "ご不便をおかけして申し訳ありません。すぐに578.97ドルの返金を処理いたします。'
+[generate] message_id=3421047844018
+[generate] model=gpt-4o-mini
+[generate] instruction=''
+[generate] current_reply=(empty)
+[generate] prompt=
+You are a Japanese eBay seller.
+
+Conversation history:
+Buyer: Thank you
+I’m looking forward to receiving this wallet!
+Buyer: This is perfect, thank you!
+Please send as soon as you can 
+
+Buyer message: This is perfect, thank you!
+Please send as soon as you can 
+
+Current draft:
+(none)
+
+MANDATORY INSTRUCTIONS - YOU MUST FOLLOW ALL OF THESE:
+(none)
+
+Rules:
+- Follow every instruction above without exception
+- reply_en must be 100% English only, no Japanese
+- reply_ja must be the Japanese translation of reply_en (NEVER leave it empty)
+- Do not add sign-off or placeholder names
+- Reply JSON only: {"reply_en": "...", "reply_ja": "日本語訳..."}
+---
+[generate] raw='{"reply_en": "I\'m glad to hear that you love the wallet! I will ship it as soon as possible. Thank you for your patience!", "reply_ja": "財布を気に入っていただけて嬉しいです！できるだけ早く発送いたしますので、しばらくお待ちください。"}'
+[generate] message_id=6240919776019
+[generate] model=gpt-4o-mini
+[generate] instruction=''
+[generate] current_reply=(empty)
+[generate] prompt=
+You are a Japanese eBay seller.
+
+Buyer message: Do you have photos of it opened? 
+
+Current draft:
+(none)
+
+MANDATORY INSTRUCTIONS - YOU MUST FOLLOW ALL OF THESE:
+(none)
+
+Rules:
+- Follow every instruction above without exception
+- reply_en must be 100% English only, no Japanese
+- reply_ja must be the Japanese translation of reply_en (NEVER leave it empty)
+- Do not add sign-off or placeholder names
+- Reply JSON only: {"reply_en": "...", "reply_ja": "日本語訳..."}
+---
+[generate] raw='{"reply_en": "Thank you for your inquiry! I currently do not have photos of the item opened, but I can offer additional details or answer any questions you may have about it.", "reply_ja": "ご質問ありがとうござ'
+[generate] message_id=6240919776019
+[generate] model=gpt-4o-mini
+[generate] instruction='中の写真を含めて、追加の写真をお送りします\nご確認ください'
+[generate] current_reply='Thank you for your inquiry! I currently do not have photos of the item opened, b'
+[generate] prompt=
+You are a Japanese eBay seller.
+
+Buyer message: Do you have photos of it opened? 
+
+Current draft:
+Thank you for your inquiry! I currently do not have photos of the item opened, but I can offer additional details or answer any questions you may have about it.
+
+MANDATORY INSTRUCTIONS - YOU MUST FOLLOW ALL OF THESE:
+中の写真を含めて、追加の写真をお送りします
+ご確認ください
+
+Rules:
+- Follow every instruction above without exception
+- reply_en must be 100% English only, no Japanese
+- reply_ja must be the Japanese translation of reply_en (NEVER leave it empty)
+- Do not add sign-off or placeholder names
+- Reply JSON only: {"reply_en": "...", "reply_ja": "日本語訳..."}
+---
+[generate] raw='{"reply_en": "Thank you for your inquiry! I will send you additional photos, including photos of the item opened. Please check back soon.", "reply_ja": "お問い合わせありがとうございます！中の写真を含めて、追加の写真をお送りします。ご確認ください。'
+[generate] message_id=6240413512019
+[generate] model=gpt-4o-mini
+[generate] instruction=''
+[generate] current_reply=(empty)
+[generate] prompt=
+You are a Japanese eBay seller.
+
+Buyer message: Is this available?
+
+Current draft:
+(none)
+
+MANDATORY INSTRUCTIONS - YOU MUST FOLLOW ALL OF THESE:
+(none)
+
+Rules:
+- Follow every instruction above without exception
+- reply_en must be 100% English only, no Japanese
+- reply_ja must be the Japanese translation of reply_en (NEVER leave it empty)
+- Do not add sign-off or placeholder names
+- Reply JSON only: {"reply_en": "...", "reply_ja": "日本語訳..."}
+---
+[generate] raw='{"reply_en": "Yes, this item is available for sale. Please let me know if you have any questions or need more information.", "reply_ja": "はい、この商品は販売中です。質問があればお知らせください。"}'
+[generate] message_id=6239688378019
+[generate] model=gpt-4o-mini
+[generate] instruction=''
+[generate] current_reply=(empty)
+[generate] prompt=
+You are a Japanese eBay seller.
+
+Conversation history:
+Buyer: May ı offer 300 dollars
+Seller: Thank you for your interest. We only offer small discounts, and large reductions are unlikely. If you are seriously considering purchasing, please let me know your best offer.
+Buyer: Is the item sold
+
+Buyer message: Is the item sold
+
+Current draft:
+(none)
+
+MANDATORY INSTRUCTIONS - YOU MUST FOLLOW ALL OF THESE:
+(none)
+
+Rules:
+- Follow every instruction above without exception
+- reply_en must be 100% English only, no Japanese
+- reply_ja must be the Japanese translation of reply_en (NEVER leave it empty)
+- Do not add sign-off or placeholder names
+- Reply JSON only: {"reply_en": "...", "reply_ja": "日本語訳..."}
+---
+[generate] raw='{"reply_en": "Thank you for your inquiry. The item is still available. If you would like to make an offer or have any questions, please let me know.", "reply_ja": "ご質問ありがとうございます。商品はまだ販売中です。オファーをしたい場合や'
+[generate] message_id=6239688378019
+[generate] model=gpt-4o-mini
+[generate] instruction='売り切れました'
+[generate] current_reply='Thank you for your inquiry. The item is still available. If you would like to ma'
+[generate] prompt=
+You are a Japanese eBay seller.
+
+Conversation history:
+Buyer: May ı offer 300 dollars
+Seller: Thank you for your interest. We only offer small discounts, and large reductions are unlikely. If you are seriously considering purchasing, please let me know your best offer.
+Buyer: Is the item sold
+
+Buyer message: Is the item sold
+
+Current draft:
+Thank you for your inquiry. The item is still available. If you would like to make an offer or have any questions, please let me know.
+
+MANDATORY INSTRUCTIONS - YOU MUST FOLLOW ALL OF THESE:
+売り切れました
+
+Rules:
+- Follow every instruction above without exception
+- reply_en must be 100% English only, no Japanese
+- reply_ja must be the Japanese translation of reply_en (NEVER leave it empty)
+- Do not add sign-off or placeholder names
+- Reply JSON only: {"reply_en": "...", "reply_ja": "日本語訳..."}
+---
+[generate] raw='{"reply_en":"Thank you for your inquiry. The item is sold out. If you have any other questions, please let me know.","reply_ja":"お問い合わせありがとうございます。商品は売り切れました。他に何か質問があればお知らせください。"}'
+[generate] message_id=6240292052019
+[generate] model=gpt-4o-mini
+[generate] instruction=''
+[generate] current_reply=(empty)
+[generate] prompt=
+You are a Japanese eBay seller.
+
+Buyer message: does this come with the box?
+
+Current draft:
+(none)
+
+MANDATORY INSTRUCTIONS - YOU MUST FOLLOW ALL OF THESE:
+(none)
+
+Rules:
+- Follow every instruction above without exception
+- reply_en must be 100% English only, no Japanese
+- reply_ja must be the Japanese translation of reply_en (NEVER leave it empty)
+- Do not add sign-off or placeholder names
+- Reply JSON only: {"reply_en": "...", "reply_ja": "日本語訳..."}
+---
+[generate] raw='{"reply_en": "Yes, this item does come with the box.", "reply_ja": "はい、この商品には箱が付いています。"}'
+[generate] message_id=6240292052019
+[generate] model=gpt-4o-mini
+[generate] instruction='箱は付属しません'
+[generate] current_reply='Yes, this item does come with the box.'
+[generate] prompt=
+You are a Japanese eBay seller.
+
+Buyer message: does this come with the box?
+
+Current draft:
+Yes, this item does come with the box.
+
+MANDATORY INSTRUCTIONS - YOU MUST FOLLOW ALL OF THESE:
+箱は付属しません
+
+Rules:
+- Follow every instruction above without exception
+- reply_en must be 100% English only, no Japanese
+- reply_ja must be the Japanese translation of reply_en (NEVER leave it empty)
+- Do not add sign-off or placeholder names
+- Reply JSON only: {"reply_en": "...", "reply_ja": "日本語訳..."}
+---
+[generate] raw='{"reply_en":"No, this item does not come with the box.","reply_ja":"いいえ、この商品は箱は付属しません。"}'
+[generate] message_id=3457849806010
+[generate] model=gpt-4o-mini
+[generate] instruction=''
+[generate] current_reply=(empty)
+[generate] prompt=
+You are a Japanese eBay seller.
+
+Conversation history:
+Buyer: 180?
+Seller: Thank you for your interest. We only offer small discounts, and large reductions are unlikely. If you are seriously considering purchasing, please let me know your best offer.
+Buyer: $200?
+
+Buyer message: $200?
+
+Current draft:
+(none)
+
+MANDATORY INSTRUCTIONS - YOU MUST FOLLOW ALL OF THESE:
+(none)
+
+Rules:
+- Follow every instruction above without exception
+- reply_en must be 100% English only, no Japanese
+- reply_ja must be the Japanese translation of reply_en (NEVER leave it empty)
+- Do not add sign-off or placeholder names
+- Reply JSON only: {"reply_en": "...", "reply_ja": "日本語訳..."}
+---
+[generate] raw='{"reply_en": "Thank you for your offer of $200. I appreciate your interest, but unfortunately, I cannot accept that price. The lowest I can go is $220. Please let me know if you\'re willing to meet tha'

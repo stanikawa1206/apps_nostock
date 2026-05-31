@@ -90,15 +90,6 @@ if os.name == "nt" and hasattr(sys.stdout, "reconfigure"):
 
 # ===== 軽量ロガー & セーフクローズ =====
 from datetime import datetime
-def log_ctx(msg: str) -> None:
-    """時刻付きログ（標準出力）。エンコード例外は潰す。"""
-    try:
-        print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {msg}")
-    except Exception:
-        try:
-            print(str(msg))
-        except Exception:
-            pass
 
 def safe_quit(driver: Optional[webdriver.Chrome]) -> None:
     """Selenium driver を安全終了"""
@@ -128,9 +119,6 @@ RATE = {
 
 
 # ===================== ユーティリティ =====================
-def human_sleep(a: float, b: float):
-    time.sleep(random.uniform(a, b))
-
 def get_status(page, driver: webdriver.Chrome, url: str) -> tuple[Status, Optional[int]]:
     """
     page (Playwright) と driver (Selenium) 両方を受け取れるように拡張
@@ -181,105 +169,10 @@ def update_vendor_item_price_and_status(conn, vendor_name: str, sku: str,
         """, (status, price_jpy, vendor_name, sku))
     conn.commit()
 
-def _is_transient_inventory_error(resp: dict | None) -> bool:
-    if not resp or resp.get("success"):
-        return False
-    raw = resp.get("raw") or {}
-    errors = ((raw.get("putOffer") or {}).get("errors") or []) or raw.get("errors") or []
-    msgs = " ".join(str(e.get("message","")) for e in errors if isinstance(e, dict)).lower()
-    codes = {int(e.get("errorId")) for e in errors if isinstance(e, dict) and str(e.get("errorId","")).isdigit()}
-    return (25001 in codes) or ("internal error" in msgs)
-
 def build_mercari_url(vendor_name: str, sku: str) -> str:
     if vendor_name == "メルカリshops":
         return f"https://jp.mercari.com/shops/product/{sku}"
     return f"https://jp.mercari.com/item/{sku}"
-
-
-
-def exists_remaining_target(conn):
-    with conn.cursor() as cur:
-        cur.execute("""
-            SELECT TOP (1) 1
-            FROM trx.listings AS l
-            INNER JOIN trx.vendor_item AS v
-                ON v.vendor_name = l.vendor_name
-               AND v.vendor_item_id = l.vendor_item_id
-            WHERE l.is_deleted = 0
-              AND v.vendor_name IN (N'メルカリ', N'メルカリshops')
-              AND v.remaining_check_at IS NULL -- 完了していない
-              AND (
-                  v.remaining_check_lock IS NULL -- 未着手
-                  OR v.remaining_check_lock < DATEADD(MINUTE, -15, SYSDATETIME()) -- 15分以上放置
-              )
-        """)
-        return cur.fetchone() is not None
-
-def pull_one_remaining_target(conn, worker_name: str):
-    sql = """
-        ;WITH cte AS (
-            SELECT TOP (1)
-                v.vendor_name,
-                v.vendor_item_id,
-                l.account,
-                l.listing_id,
-                v.preset,
-                p.mode,
-                p.low_usd_target,
-                p.high_usd_target
-            FROM trx.vendor_item AS v WITH (UPDLOCK, ROWLOCK, READPAST)
-            INNER JOIN trx.listings AS l
-                ON l.vendor_name    = v.vendor_name
-               AND l.vendor_item_id = v.vendor_item_id
-            INNER JOIN mst.v_presets AS p
-                ON p.preset = v.preset
-            WHERE
-                l.is_deleted = 0
-                AND v.vendor_name IN (N'メルカリ', N'メルカリshops')
-                AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')                               
-                AND v.remaining_check_at IS NULL -- 完了していない
-                AND (
-                    v.remaining_check_lock IS NULL -- 未着手
-                    OR v.remaining_check_lock < DATEADD(MINUTE, -5, SYSDATETIME()) -- 15分以上放置
-                )
-            ORDER BY v.remaining_check_lock ASC -- 古いロックから優先
-        )
-        UPDATE v
-        SET
-            remaining_check_by = ?,
-            remaining_check_lock = SYSDATETIME() -- lockに開始時刻を入れる
-        OUTPUT
-            inserted.vendor_name,
-            inserted.vendor_item_id,
-            cte.account,
-            cte.listing_id,
-            cte.preset,
-            cte.mode,
-            cte.low_usd_target,
-            cte.high_usd_target
-        FROM trx.vendor_item AS v
-        INNER JOIN cte
-            ON v.vendor_name     = cte.vendor_name
-           AND v.vendor_item_id  = cte.vendor_item_id;
-    """
-    cur = conn.cursor()
-    cur.execute(sql, (worker_name,))
-    row = cur.fetchone()
-    conn.commit()
-
-    if not row:
-        return None
-
-    return {
-        "vendor_name": row[0],
-        "vendor_item_id": row[1],
-        "account": row[2],
-        "listing_id": row[3],
-        "preset": row[4],
-        "mode": row[5],
-        "low_usd_target": float(row[6]),
-        "high_usd_target": float(row[7]),
-    }
 
 def count_total_remaining(conn):
     """DB全体で、まだ処理が必要な件数が何件あるかを確認する"""
