@@ -1,0 +1,1536 @@
+2026-06-02 11:57:29 [ERROR] ASIN: 0007477155 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 12:03:11 [ERROR] ASIN: 0071834087 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 12:03:35 [ERROR] ASIN: 0071837795 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 12:23:14 [ERROR] ASIN: 0141198419 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 12:23:37 [ERROR] ASIN: 0141395206 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 12:23:49 [ERROR] ASIN: 0141398876 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 12:47:05 [ERROR] ASIN: 0195392884 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 12:52:32 [ERROR] ASIN: 0198148801 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 13:31:12 [ERROR] ASIN: 0199580316 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 14:06:07 [ERROR] ASIN: 0300115717 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 14:18:16 [ERROR] ASIN: 0316587265 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 14:21:27 [ERROR] ASIN: 0323509347 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 14:21:39 [ERROR] ASIN: 0323523277 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 14:22:50 [ERROR] ASIN: 0323554458 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 14:24:26 [ERROR] ASIN: 0323697933 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 14:25:50 [ERROR] ASIN: 0323775578 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 14:26:01 [ERROR] ASIN: 0323775713 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 14:26:25 [ERROR] ASIN: 032377931X - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 14:26:49 [ERROR] ASIN: 0323790585 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 14:30:25 [ERROR] ASIN: 0323883044 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 14:31:38 [ERROR] ASIN: 0323932304 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 14:32:13 [ERROR] ASIN: 0323934994 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 14:32:25 [ERROR] ASIN: 0323935400 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 14:32:37 [ERROR] ASIN: 0323935923 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 14:47:02 [ERROR] ASIN: 0367895080 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 15:19:16 [ERROR] ASIN: 0443105138 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 15:21:39 [ERROR] ASIN: 0443114765 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 15:22:40 [ERROR] ASIN: 0443124787 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 15:25:53 [ERROR] ASIN: 0443249741 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 15:27:18 [ERROR] ASIN: 044327911X - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 15:29:31 [ERROR] ASIN: 0443380198 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 15:35:34 [ERROR] ASIN: 0465023827 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 16:00:14 [ERROR] ASIN: 0500027463 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 16:45:24 [ERROR] ASIN: 0545044251 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 17:06:09 [ERROR] ASIN: 0684313200 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 17:30:22 [ERROR] ASIN: 0721601464 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 18:24:39 [ERROR] ASIN: 0847826694 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 18:28:02 [ERROR] ASIN: 0847846598 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 18:29:26 [ERROR] ASIN: 0847864375 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 18:32:26 [ERROR] ASIN: 0847874230 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 18:34:03 [ERROR] ASIN: 0847875989 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 18:45:38 [ERROR] ASIN: 0875532993 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 19:15:25 [ERROR] ASIN: 103226246X - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 20:16:06 [ERROR] ASIN: 1119438888 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 20:16:18 [ERROR] ASIN: 1119441838 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 20:23:18 [ERROR] ASIN: 111982009X - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 20:28:43 [ERROR] ASIN: 1137580992 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]データ型 nvarchar を numeric に変換中にエラーが発生しました。 (8114) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]データ型 nvarchar を numeric に変換中にエラーが発生しました。 (8114) (SQLExecDirectW)')
+2026-06-02 20:45:31 [ERROR] ASIN: 1259642232 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 20:48:18 [ERROR] ASIN: 1264257562 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 20:50:41 [ERROR] ASIN: 1265979316 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 20:55:52 [ERROR] ASIN: 1292314737 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 21:11:56 [ERROR] ASIN: 1338603345 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 21:12:20 [ERROR] ASIN: 1338792164 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 21:12:32 [ERROR] ASIN: 1339043459 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 21:17:00 [ERROR] ASIN: 136802131X - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 21:25:49 [ERROR] ASIN: 1394360568 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 21:33:20 [ERROR] ASIN: 1405278455 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 21:33:32 [ERROR] ASIN: 1405294574 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 21:37:20 [ERROR] ASIN: 1408856786 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 21:44:27 [ERROR] ASIN: 1421560747 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 21:58:16 [ERROR] ASIN: 1449433251 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 22:00:05 [ERROR] ASIN: 1455743771 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 22:10:06 [ERROR] ASIN: 1466507284 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 22:17:11 [ERROR] ASIN: 1489979603 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 22:21:24 [ERROR] ASIN: 149398134X - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 22:22:01 [ERROR] ASIN: 1496386485 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 22:27:38 [ERROR] ASIN: 1506726593 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 22:32:50 [ERROR] ASIN: 1526624524 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 22:33:02 [ERROR] ASIN: 1526624583 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 22:33:14 [ERROR] ASIN: 1526650533 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 22:33:38 [ERROR] ASIN: 1526680068 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 22:40:52 [ERROR] ASIN: 1546130195 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 22:57:06 [ERROR] ASIN: 1590655559 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 23:03:05 [ERROR] ASIN: 1598570277 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 23:18:40 [ERROR] ASIN: 1635577713 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 23:26:53 [ERROR] ASIN: 1683674294 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 23:27:29 [ERROR] ASIN: 1684058716 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 23:39:52 [ERROR] ASIN: 1786394553 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]データ型 nvarchar を numeric に変換中にエラーが発生しました。 (8114) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]データ型 nvarchar を numeric に変換中にエラーが発生しました。 (8114) (SQLExecDirectW)')
+2026-06-02 23:47:40 [ERROR] ASIN: 1800221878 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-02 23:50:16 [ERROR] ASIN: 1805022873 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 00:08:51 [ERROR] ASIN: 1844144356 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 00:24:29 [ERROR] ASIN: 1873403356 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 00:39:24 [ERROR] ASIN: 1944903437 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 00:42:37 [ERROR] ASIN: 1961409933 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 00:43:12 [ERROR] ASIN: 1974708721 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 00:43:24 [ERROR] ASIN: 1974735990 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 00:44:47 [ERROR] ASIN: 1975141229 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 00:45:23 [ERROR] ASIN: 197516153X - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 00:47:10 [ERROR] ASIN: 1975184696 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 00:48:35 [ERROR] ASIN: 1975221265 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 00:49:22 [ERROR] ASIN: 1975234294 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 02:05:15 [ERROR] ASIN: 3039422480 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 02:11:17 [ERROR] ASIN: 3131174420 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 02:15:30 [ERROR] ASIN: 3319342967 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 02:15:42 [ERROR] ASIN: 3319353152 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 02:24:04 [ERROR] ASIN: 3406802230 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 02:24:16 [ERROR] ASIN: 3428030818 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 02:39:11 [ERROR] ASIN: 3540778764 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 02:50:21 [ERROR] ASIN: 3662569701 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 02:51:45 [ERROR] ASIN: 3754400037 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 02:59:43 [ERROR] ASIN: 3791377450 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:00:30 [ERROR] ASIN: 3791385208 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:02:42 [ERROR] ASIN: 3822821950 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:05:55 [ERROR] ASIN: 3836538725 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:06:06 [ERROR] ASIN: 3836545306 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:06:18 [ERROR] ASIN: 3836552914 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:06:54 [ERROR] ASIN: 3836566613 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:07:53 [ERROR] ASIN: 3836578190 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:08:30 [ERROR] ASIN: 3836586010 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:08:42 [ERROR] ASIN: 3836586126 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:08:54 [ERROR] ASIN: 383658932X - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:09:06 [ERROR] ASIN: 3836589583 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:09:18 [ERROR] ASIN: 3836590050 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:10:31 [ERROR] ASIN: 3836596938 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:10:42 [ERROR] ASIN: 383659823X - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:10:54 [ERROR] ASIN: 3836599082 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:14:20 [ERROR] ASIN: 386828530X - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:17:46 [ERROR] ASIN: 3931936996 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:22:45 [ERROR] ASIN: 4022681187 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:22:57 [ERROR] ASIN: 4023320366 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:23:08 [ERROR] ASIN: 4023320625 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:23:20 [ERROR] ASIN: 4023320773 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:23:32 [ERROR] ASIN: 4023321095 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:23:44 [ERROR] ASIN: 4023321109 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:23:56 [ERROR] ASIN: 4023321117 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:24:08 [ERROR] ASIN: 4041109620 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:24:20 [ERROR] ASIN: 4041131375 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:24:32 [ERROR] ASIN: 4041153689 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:24:43 [ERROR] ASIN: 4041153697 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:24:55 [ERROR] ASIN: 4041153700 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:25:07 [ERROR] ASIN: 4041153719 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:25:43 [ERROR] ASIN: 4065339464 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:26:19 [ERROR] ASIN: 4069353526 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:26:54 [ERROR] ASIN: 4091794599 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:27:06 [ERROR] ASIN: 4091939120 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:27:18 [ERROR] ASIN: 4092969236 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:27:30 [ERROR] ASIN: 4092969562 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:27:42 [ERROR] ASIN: 4092989318 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:27:53 [ERROR] ASIN: 4092989415 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:28:05 [ERROR] ASIN: 4097279149 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:28:29 [ERROR] ASIN: 412480007X - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:28:52 [ERROR] ASIN: 4198699011 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:29:16 [ERROR] ASIN: 4253903592 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:34:50 [ERROR] ASIN: 4431562974 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:36:01 [ERROR] ASIN: 4480770402 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:37:36 [ERROR] ASIN: 4591920569 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:38:00 [ERROR] ASIN: 4641104859 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:38:11 [ERROR] ASIN: 4641104867 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:38:23 [ERROR] ASIN: 4751526200 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:40:58 [ERROR] ASIN: 481563971X - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:42:56 [ERROR] ASIN: 4840753628 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:49:52 [ERROR] ASIN: 491551269X - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 03:54:38 [ERROR] ASIN: 8416728372 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 04:15:20 [ERROR] ASIN: 9354405231 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 04:19:31 [ERROR] ASIN: 9402405674 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 04:42:51 [ERROR] ASIN: B0000223IY - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 04:46:48 [ERROR] ASIN: B000056NOA - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 04:47:00 [ERROR] ASIN: B000056NOC - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 05:18:06 [ERROR] ASIN: B00005Q7BL - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 05:27:02 [ERROR] ASIN: B0000614US - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 06:37:52 [ERROR] ASIN: B00006ICO1 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 06:49:12 [ERROR] ASIN: B00006LUA9 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 06:52:22 [ERROR] ASIN: B000070G37 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 07:18:19 [ERROR] ASIN: B00009AJ9O - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 07:18:31 [ERROR] ASIN: B00009AJ9Q - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 07:18:43 [ERROR] ASIN: B00009AJCG - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 07:18:55 [ERROR] ASIN: B00009AJCJ - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 07:19:07 [ERROR] ASIN: B00009AJD2 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 07:26:04 [ERROR] ASIN: B0000A14MX - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 07:27:28 [ERROR] ASIN: B0000ACC8C - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 07:28:27 [ERROR] ASIN: B0000AIT9H - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 07:30:37 [ERROR] ASIN: B0000AR0I3 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 07:30:49 [ERROR] ASIN: B0000AR0L7 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 07:31:01 [ERROR] ASIN: B0000AR0OK - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 07:31:13 [ERROR] ASIN: B0000AR0PC - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 07:31:25 [ERROR] ASIN: B0000AR0PF - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 07:34:23 [ERROR] ASIN: B0000C9BOK - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 07:37:45 [ERROR] ASIN: B0000CNXTR - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 07:40:43 [ERROR] ASIN: B0000DIJ3W - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 07:40:55 [ERROR] ASIN: B0000DIJ41 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 07:43:17 [ERROR] ASIN: B0000E68WP - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 07:48:49 [ERROR] ASIN: B0000WRYR0 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 08:00:17 [ERROR] ASIN: B00012FVRY - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 08:02:51 [ERROR] ASIN: B000140B5O - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 08:11:56 [ERROR] ASIN: B0001654J0 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 08:30:45 [ERROR] ASIN: B00022749G - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 08:42:00 [ERROR] ASIN: B0002CZSDA - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 08:42:11 [ERROR] ASIN: B0002CZSEE - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 08:42:23 [ERROR] ASIN: B0002CZSI0 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 08:42:35 [ERROR] ASIN: B0002CZSJ4 - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 08:49:29 [ERROR] ASIN: B0002D020I - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+2026-06-03 08:49:40 [ERROR] ASIN: B0002D020S - 処理エラー: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')
+Traceback (most recent call last):
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 195, in run_phase1_batch
+    raise db_err
+  File "\\MOUSE\apps_nostock\apps\snapshot\amazon\batch_phase1.py", line 175, in run_phase1_batch
+    cursor.execute(update_query, params)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+pyodbc.ProgrammingError: ('42000', '[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]着信の表形式のデータ ストリーム (TDS) リモート プロシージャ コール (RPC) のプロトコル ストリームが正しくありません。パラメーター 22 (""): 指定した値はデータ型 float の有効なインスタンスではありません。ソース データに無効な値があるかどうかを確認してください。たとえば、小数点以下桁数が有効桁数より大きい数値型のデータは無効です。 (8023) (SQLExecDirectW)')

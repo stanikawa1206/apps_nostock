@@ -422,19 +422,6 @@ function selectModel(model) {
 let currentThread = null;
 // { sender_id, listing_id, last_buyer_message_id, skip_reply: 0|1 }
 
-function renderActionBar() {
-  const bar = document.getElementById('action-bar');
-  if (!bar || !currentThread) return;
-  if (currentThread.skip_reply) {
-    bar.innerHTML = `
-      <button class="btn-action-skip" disabled>✓ 対応不要にしました</button>
-      <button class="btn-action-compose" onclick="openReplyPanel()">✏️ 返信作成</button>`;
-  } else {
-    bar.innerHTML = `
-      <button class="btn-action-skip" onclick="skipReply()">対応不要</button>
-      <button class="btn-action-compose" onclick="openReplyPanel()">✏️ 返信作成</button>`;
-  }
-}
 
 function renderHeaderBadge() {
   const senderEl = document.querySelector('.chat-header-sender');
@@ -577,7 +564,7 @@ async function openThread(senderId, itemId, el) {
   };
 
   const replyPanelHtml = currentReplyMessageId ? `
-    <div class="reply-panel" id="reply-panel">
+    <div class="reply-panel open" id="reply-panel">
       <div class="reply-panel-body">
         <div class="reply-left">
           <div class="model-toggle">
@@ -586,7 +573,7 @@ async function openThread(senderId, itemId, el) {
           </div>
           <label>指示（任意）</label>
           <textarea class="reply-instruction" id="reply-instruction" placeholder="例：もっと丁寧に、値引き不可を強調して、短くして"></textarea>
-          <button class="btn-regenerate" id="btn-regenerate" onclick="generateReply()">再生成</button>
+          <button class="btn-regenerate" id="btn-regenerate" onclick="generateReply()">🤖 AI返信作成</button>
         </div>
         <div class="reply-right">
           <label>英語返信案</label>
@@ -611,19 +598,16 @@ async function openThread(senderId, itemId, el) {
 
   area.innerHTML = `
     <div class="chat-header">
-      <div class="chat-header-sender">${senderId}${ebayBtn}${vendorBtn}</div>
+      <div class="chat-header-sender"><span onclick="window.open('https://www.ebay.com/usr/${senderId}', '_blank')" style="cursor:pointer; text-decoration:underline;">${senderId}</span>${ebayBtn}${vendorBtn}</div>
       <div class="chat-header-item">${headerThumb}${thread ? (thread.item_title || thread.listing_id || '') : ''}</div>
     </div>
     <div class="chat-messages" id="chat-messages">${messagesHtml}</div>
-    ${currentReplyMessageId ? '<div class="action-bar" id="action-bar"></div>' : ''}
     ${replyPanelHtml}
   `;
 
   const msgs = area.querySelector('#chat-messages');
   if (msgs) msgs.scrollTop = msgs.scrollHeight;
 
-  // 状態に基づいてアクションバーとバッジを描画
-  renderActionBar();
   renderHeaderBadge();
 
   // 未返信のbuyerメッセージを全件チェックして優先カテゴリを決定
@@ -637,8 +621,6 @@ async function openThread(senderId, itemId, el) {
   }
   if (templateKey && REPLY_TEMPLATES[templateKey]) {
     const tpl = REPLY_TEMPLATES[templateKey];
-    document.getElementById('action-bar').style.display = 'none';
-    document.getElementById('reply-panel').classList.add('open');
     document.getElementById('reply-en').value = tpl.reply_en;
     document.getElementById('reply-ja').textContent = '🇯🇵 ' + tpl.reply_ja;
     document.getElementById('btn-send-final').disabled = false;
@@ -652,34 +634,6 @@ async function openThread(senderId, itemId, el) {
   }
 }
 
-async function openReplyPanel() {
-  if (!currentThread) return;
-
-  // 対応不要状態だった場合はリセット
-  if (currentThread.skip_reply) {
-    const unskipRes  = await fetch('/api/unskip/' + currentThread.last_buyer_message_id, { method: 'POST' });
-    const unskipData = await unskipRes.json();
-    if (!unskipData.ok) {
-      console.error('unskip error:', unskipData.error || '対応不要のリセットに失敗しました');
-      return;
-    }
-    currentThread.skip_reply = 0;
-    renderActionBar();
-    renderHeaderBadge();
-    // 返信パネルフッターの「対応不要」ボタンも初期状態に戻す
-    document.querySelectorAll('.btn-skip-reply').forEach(btn => {
-      btn.textContent = '対応不要';
-      btn.disabled = false;
-      btn.style.opacity = '';
-      btn.style.cursor = '';
-    });
-    loadThreads();  // 左パネルを非同期で更新
-  }
-
-  document.getElementById('action-bar').style.display = 'none';
-  document.getElementById('reply-panel').classList.add('open');
-  generateReply();
-}
 
 async function generateReply() {
   if (!currentReplyMessageId) return;
@@ -929,9 +883,13 @@ def api_threads():
 
 @app.route("/api/thread/<sender_id>/<listing_id>")
 def api_thread(sender_id, listing_id):
+    import time
+    t0 = time.time()
     cn = cur = None
     try:
         cn  = get_sql_server_connection()
+        t1 = time.time()
+        print(f"[thread] DB接続: {t1-t0:.3f}s")
         cur = cn.cursor()
 
         # メッセージ一覧
@@ -945,6 +903,8 @@ def api_thread(sender_id, listing_id):
         """, sender_id, listing_id)
         cols = [d[0] for d in cur.description]
         msgs = [dict(zip(cols, row)) for row in cur.fetchall()]
+        t2 = time.time()
+        print(f"[thread] メッセージ取得({len(msgs)}件): {t2-t1:.3f}s")
         for m in msgs:
             if m.get('received_at'):
                 m['received_at'] = m['received_at'].isoformat() + 'Z'
@@ -962,6 +922,8 @@ def api_thread(sender_id, listing_id):
             ORDER BY l.is_deleted ASC, l.deleted_at DESC
         """, sender_id, listing_id)
         row = cur.fetchone()
+        t3 = time.time()
+        print(f"[thread] 仕入先情報取得: {t3-t2:.3f}s")
 
         vendor_item_id = row[0] if row else None
         vendor_name    = row[1] if row else None
@@ -974,13 +936,15 @@ def api_thread(sender_id, listing_id):
         else:
             vendor_url = None
 
-        return jsonify({
+        result = jsonify({
             "messages":       msgs,
             "vendor_url":     vendor_url,
             "vendor_name":    vendor_name,
             "vendor_item_id": vendor_item_id,
             "image_url1":     image_url1,
         })
+        print(f"[thread] 合計: {time.time()-t0:.3f}s")
+        return result
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:
@@ -1061,7 +1025,9 @@ Rules:
 
         print(f"[generate] prompt=\n{user_prompt}\n---")
 
+        print("①翻訳開始")
         client   = OpenAI()
+        print("②API呼び出し前")
         response = client.chat.completions.create(
             model=model,
             max_tokens=1500,
@@ -1069,6 +1035,7 @@ Rules:
             timeout=60,
             messages=[{"role": "user", "content": user_prompt}],
         )
+        print("③API応答受信")
         raw = (response.choices[0].message.content or "") if response.choices else ""
 
         print(f"[generate] raw={repr(raw[:200])}")
@@ -1079,10 +1046,14 @@ Rules:
                 raise ValueError("not a dict")
         except Exception:
             result = {"reply_en": raw, "reply_ja": "（解析エラー）"}
+        print("④JSON解析完了")
 
         result.setdefault("reply_en", "")
         result.setdefault("reply_ja", "")
-        return jsonify(result)
+        print("⑤画面更新開始")
+        response_data = jsonify(result)
+        print("⑥画面更新完了")
+        return response_data
 
     except Exception as e:
         print(f"[generate] ERROR: {e}")
@@ -1229,7 +1200,7 @@ def api_fetch():
     try:
         result = subprocess.run(
             [sys.executable, str(fetch_script), "--once"],
-            capture_output=True, text=True, timeout=300
+            capture_output=True, text=True, encoding='utf-8', timeout=300
         )
         if result.returncode == 0:
             return jsonify({"ok": True, "log": result.stdout[-2000:]})
@@ -1242,4 +1213,6 @@ def api_fetch():
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5050, host="0.0.0.0", use_reloader=False)
+    from waitress import serve
+    print("Starting server on http://0.0.0.0:5050")
+    serve(app, host="0.0.0.0", port=5050)

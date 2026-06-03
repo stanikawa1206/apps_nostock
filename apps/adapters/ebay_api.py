@@ -393,6 +393,85 @@ def post_one_item(payload: Dict[str, Any], account_name: str, acct_policies: Dic
             
     return item_id
 
+# ====== Trading API（バイヤーへのメッセージ送信）======
+def send_buyer_thankyou_message(
+    account: str,
+    order_id: str,
+    buyer_username: str,
+    ebay_id: str,
+) -> dict:
+    """
+    Trading API AddMemberMessageAAQToPartner でバイヤーへサンキューメッセージを送信。
+    1注文につき1回だけ呼ぶこと（呼び出し側で制御）。
+    """
+    if not ebay_id or not buyer_username:
+        print(f"  [ThankYou] SKIP: ebay_id or buyer_username missing (order={order_id})")
+        return {"success": False, "error": "missing_ebay_id_or_buyer"}
+
+    token = get_access_token_new(account)
+    if not token:
+        print(f"  [ThankYou] FAIL: token error (order={order_id})")
+        return {"success": False, "error": "no_token"}
+
+    subject = "Thank you for your purchase!"
+    body = (
+        "Thank you so much for your order! "
+        "We will ship your item as quickly as possible. "
+        "Please feel free to message us if you have any questions."
+    )
+
+    xml_data = f"""<?xml version="1.0" encoding="utf-8"?>
+<AddMemberMessageAAQToPartnerRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+  <ErrorLanguage>en_US</ErrorLanguage>
+  <WarningLevel>High</WarningLevel>
+  <ItemID>{ebay_id}</ItemID>
+  <MemberMessage>
+    <Body>{body}</Body>
+    <MessageType>AskSellerQuestion</MessageType>
+    <Subject>{subject}</Subject>
+    <RecipientID>{buyer_username}</RecipientID>
+  </MemberMessage>
+</AddMemberMessageAAQToPartnerRequest>""".encode("utf-8")
+
+    headers = {
+        "X-EBAY-API-CALL-NAME": "AddMemberMessageAAQToPartner",
+        "X-EBAY-API-SITEID": "0",
+        "X-EBAY-API-COMPATIBILITY-LEVEL": TRADING_COMPAT_LEVEL,
+        "X-EBAY-API-IAF-TOKEN": token,
+        "Content-Type": "text/xml",
+    }
+
+    try:
+        r = requests.post(TRADING_ENDPOINT, headers=headers, data=xml_data, timeout=30)
+
+        if r.status_code != 200:
+            print(f"  [ThankYou] FAIL: HTTP {r.status_code} order={order_id} raw={r.text[:300]}")
+            return {"success": False, "http_status": r.status_code}
+
+        root = ET.fromstring(r.text)
+        ns = {"e": "urn:ebay:apis:eBLBaseComponents"}
+        ack = (root.findtext("e:Ack", default="", namespaces=ns) or "").strip()
+
+        if ack in ("Success", "Warning"):
+            print(f"  [ThankYou] OK: order={order_id} buyer={buyer_username}")
+            return {"success": True}
+
+        errs = []
+        for err in root.findall("e:Errors", namespaces=ns):
+            code = (err.findtext("e:ErrorCode", default="", namespaces=ns) or "").strip()
+            msg  = (err.findtext("e:LongMessage", default="", namespaces=ns) or
+                    err.findtext("e:ShortMessage", default="", namespaces=ns) or "").strip()
+            errs.append(f"{code}: {msg}")
+
+        err_str = "; ".join(errs) or f"Ack={ack}"
+        print(f"  [ThankYou] FAIL: order={order_id} buyer={buyer_username} error={err_str}")
+        return {"success": False, "error": err_str}
+
+    except Exception as e:
+        print(f"  [ThankYou] EXCEPTION: order={order_id} {e}")
+        return {"success": False, "error": str(e)}
+
+
 # ====== Trading API（価格改定 / 削除）======
 def revise_price(*, item_id: str, new_price_usd: str | float | int,
                  account_name: str,

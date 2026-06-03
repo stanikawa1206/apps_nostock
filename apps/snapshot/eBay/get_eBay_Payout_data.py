@@ -1,3 +1,21 @@
+# ==============================================================================
+# eBay 出金履歴（Payout）データ取得スクリプト
+#
+# 【処理概要】
+# eBay Finances API（/sell/finances/v1/payout）を使用して、
+# 指定アカウントの出金履歴（Payoneer振込データ）を全件取得する。
+#
+# 【データ取得元】
+# eBay Finances API（apiz.ebay.com）
+# 取得期間: 2024-04-01 から実行時の現在日時まで（UTC）
+#
+# 【出力内容】
+# 出金日・Payout ID・出金額(USD)・ステータス・銀行振込参照番号をCSV出力
+# 出力先: \\MOUSE\apps_nostock\apps\snapshot\eBay\Payout\eBay_Payouts_{account}.csv
+#
+# 【対象アカウント】
+# 実行時に対話形式で選択（BUZZ / 貴文 / 貴文② / 川島 / 谷川 / 谷川② / 谷川③ / 谷川④）
+# ==============================================================================
 import sys
 import time
 import csv

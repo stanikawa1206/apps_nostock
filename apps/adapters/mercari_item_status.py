@@ -547,6 +547,22 @@ def handle_listing_price_update(
         if not _is_transient_inventory_error(resp or {}):
             break
 
+    if resp and resp.get("error") == "offer_not_found_for_sku":
+
+        # trx.vendor_item.status = '判定不能'
+
+        print(
+            f"[判定不能] sku={vendor_item_id} "
+            f"listing_id={listing_id} "
+            f"account={account} "
+            f"reason=offer_not_found_for_sku",
+            flush=True,
+        )
+
+        return
+
+
+
     if not did_update:
         raise RuntimeError(
             f"eBay価格更新失敗 sku={vendor_item_id} listing_id={listing_id} account={account}"

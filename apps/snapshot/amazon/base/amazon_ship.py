@@ -1,12 +1,12 @@
 #   4. 商品サイズ取得および送料計算プログラム (File 4)
 import os
 import pandas as pd
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
 from sp_api.api import CatalogItemsV20220401 
 from sp_api.base import Marketplaces
 from sp_api.base.exceptions import SellingApiException
 
-load_dotenv()
+load_dotenv(find_dotenv())
 
 LWA_APP_ID = os.environ.get("LWA_CLIENT_ID")
 LWA_CLIENT_SECRET = os.environ.get("LWA_CLIENT_SECRET")

@@ -1,112 +1,73 @@
-from playwright.sync_api import sync_playwright
+import socket
+import subprocess
 import time
-import os
-from datetime import datetime
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
 
-TARGET_DATE = datetime(2026, 3, 16)
+CHROME_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
 
-def parse_date(dt_str):
-    return datetime.strptime(dt_str, "%Y-%m-%dT%H:%M:%SZ")
+TARGET_URL = "https://jp.mercari.com/mypage/purchases"
 
 
-def run():
-    with sync_playwright() as p:
-        # デスクトップのプロファイル
-        save_path = os.path.join(os.environ["USERPROFILE"], "Desktop", "mercari_session")
+def _is_debug_port_open(host: str = "127.0.0.1", port: int = 9222) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(1)
+        return s.connect_ex((host, port)) == 0
 
-        context = p.chromium.launch_persistent_context(
-            user_data_dir=save_path,
-            executable_path=r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-            headless=False,
-            # 通信を軽くするための設定を追加
-            bypass_csp=True, 
-            ignore_https_errors=True,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--disable-features=IsolateOrigins,site-per-process", # サイト間の制限を緩める
-            ],
-            ignore_default_args=["--enable-automation"]
-        )
 
-        # 最初のページを強制的にGoogleにする
-        page = context.pages[0] if context.pages else context.new_page()
-        
-        print("ブラウザ起動。Googleへ直接移動を試みます...")
-        
-        try:
-            # タイムアウトを15秒に絞って、まずGoogleへ
-            page.goto("https://www.google.com", timeout=15000)
-            print("Googleが開きました。次にメルカリへ移動します。")
-            page.goto("https://jp.mercari.com/mypage/purchases")
-        except Exception as e:
-            print(f"移動中にエラー（またはタイムアウト）: {e}")
-            print("手動でアドレスバーに URL を打ち込んでみてください。")
+def start_chrome():
+    if _is_debug_port_open():
+        # Chrome がすでにデバッグポート付きで起動済みならそのまま使う
+        print("Chrome debug port 9222 already open, reusing existing instance.")
+        return
 
-        print("--- 待機中 ---")
-        input("ログインできたらEnterを押してください >>> ")
-        context.close()
+    # 同じプロファイルで Chrome が起動中だとシングルインスタンス機構により
+    # --remote-debugging-port が無視されるため、先に終了させる
+    subprocess.run(["taskkill", "/F", "/IM", "chrome.exe"], capture_output=True)
+    time.sleep(1)
 
-def run_bk():
-    with sync_playwright() as p:
-       
-        context = p.chromium.launch_persistent_context(
-            user_data_dir=r"C:\Users\stani\AppData\Local\Google\Chrome\User Data\Profile 7",
-            executable_path=r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-            headless=False
-        )
+    subprocess.Popen([
+        CHROME_PATH,
+        "--remote-debugging-port=9222",
+        r"--user-data-dir=C:\Users\stani\AppData\Local\Google\Chrome\User Data",
+        "--profile-directory=Default",
+        "--no-first-run",
+        "--no-default-browser-check",
+    ])
 
-        page = context.new_page()
+    # ポートが開くまで最大10秒待機
+    for _ in range(10):
+        time.sleep(1)
+        if _is_debug_port_open():
+            return
+    raise RuntimeError("Chrome debug port 9222 did not open within 10 seconds.")
 
-        latest_json = {}
-        stop_flag = False
 
-        def handle_response(response):
-            nonlocal latest_json
+def main():
+    
+    print("0")
+    start_chrome()
+    print("0.5")
 
-            if "orders" in response.url:
-                try:
-                    data = response.json()
-                    if "orders" in data:
-                        latest_json = data
-                        print("JSON取得:", len(data["orders"]))
-                except:
-                    pass
+    options = Options()
+    options.debugger_address = "127.0.0.1:9222"
 
-        page.on("response", handle_response)
+    print("1")
+    driver = webdriver.Chrome(options=options)
 
-        page.goto("https://jp.mercari.com/mypage/purchases")
-        time.sleep(3)
+    print("2")
 
-        while not stop_flag:
+    driver.get(TARGET_URL)
 
-            # もっと見るクリック
-            try:
-                page.click("text=もっと見る")
-                time.sleep(2)
-            except:
-                print("もっと見るなし → 終了")
-                break
+    print("3")
 
-            # JSON処理
-            if "orders" in latest_json:
-                for order in latest_json["orders"]:
+    time.sleep(5)
 
-                    create_time = parse_date(order["createTime"])
+    print("4")
 
-                    # 日付チェック
-                    if create_time < TARGET_DATE:
-                        print("指定日付に到達 → 終了")
-                        stop_flag = True
-                        break
-
-                    try:
-                        origin_id = order["orderDetail"]["lineItems"][0]["product"]["originId"]
-                        print(origin_id)
-                    except:
-                        pass
-
-        context.close()
+    print(driver.current_url)
+    print(driver.title)
 
 
 if __name__ == "__main__":
-    run()
+    main()

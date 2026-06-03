@@ -47,7 +47,7 @@ load_dotenv()
 USD_JPY_RATE = 155.0   # 為替レート
 PROFIT_RATE = 0.10     # 利益率
 EBAY_FEE_RATE = 0.17   # eBay手数料
-DOMESTIC_SHIPPING_JPY = 470   # 国内GAセンターまで送料
+DOMESTIC_SHIPPING_JPY = 380   # 国内GAセンターまで送料
 INTL_SHIPPING_JPY = 3300      # 国際送料
 DUTY_RATE = 0.15              # 関税
 
