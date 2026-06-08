@@ -62,8 +62,8 @@ import xml.etree.ElementTree as ET
 # 自前ユーティリティ（pyodbc統一）
 from apps.common.utils import get_sql_server_connection
 
-from dotenv import load_dotenv
-load_dotenv()
+from dotenv import load_dotenv, find_dotenv
+load_dotenv(find_dotenv())
 
 # --- Third-party ---
 import requests

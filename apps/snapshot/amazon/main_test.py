@@ -1,6 +1,7 @@
 import os
 import time
 import sys  
+import re      # 💡 日数の数値化処理のために追加
 import pprint  # 💡 生データを綺麗に表示するために追加
 import pandas as pd
 from amazon_common import (
@@ -32,6 +33,21 @@ def trace_calls(frame, event, arg):
     return trace_calls
 
 # ==========================================
+# ユーティリティ関数
+# ==========================================
+def parse_handling_days(handling_str):
+    """日数文字列から最大日数を数値として抽出する"""
+    if not handling_str:
+        return None
+    handling_str = str(handling_str)
+    if "即日" in handling_str:
+        return 0
+    numbers = re.findall(r'\d+', handling_str)
+    if numbers:
+        return int(numbers[-1])
+    return None
+
+# ==========================================
 # メニュー画面
 # ==========================================
 def menu():
@@ -45,8 +61,8 @@ def menu():
         print(" [4] 🔄 出品管理: 価格・在庫の変更")
         print(" [5] ✨ 新規出品: 相乗り出品")
         print(" [6] 📥 レポート: 出品情報の取得")
-        print(" [7] 📁 一括処理: 複数ASINの総合検証 (CSV)")
-        print(" [8] 🔍 単一ASIN: 生データ確認 (デバッグ用)") # 💡 ここに追加
+        print(" [7] 📁 一括処理: 複数ASINの総合検証 (DB書き込み用データ出力)") # 💡 変更
+        print(" [8] 🔍 単一ASIN: 生データ確認 (デバッグ用)")
         print(" [0] ❌ 終了")
         print("="*50)
         
@@ -56,7 +72,7 @@ def menu():
             print("終了します。お疲れ様でした！")
             break
             
-        if choice in ['1', '2', '3', '4', '5', '6', '7', '8']: # 💡 8を追加
+        if choice in ['1', '2', '3', '4', '5', '6', '7', '8']:
             print("\n" + "-"*40)
             sys.settrace(trace_calls) 
             try:
@@ -67,7 +83,7 @@ def menu():
                 elif choice == '5': run_create_listing()
                 elif choice == '6': run_get_reports()
                 elif choice == '7': run_batch_pipeline()
-                elif choice == '8': run_debug_raw_data() # 💡 実行関数を追加
+                elif choice == '8': run_debug_raw_data()
             finally:
                 sys.settrace(None) 
             print("-"*40)
@@ -98,7 +114,6 @@ def run_single_pipeline():
     pipeline_data = verify_export_pipeline(asin, EXCEL_FILE_PATH)
     print_pipeline_result(pipeline_data)
 
-# 💡 追加：生データをすべて表示するデバッグ用関数
 def run_debug_raw_data():
     print("\n--- 生データ確認 (デバッグ用) ---")
     asin = input("🔍 生データを確認するASINを入力してください: ").strip()
@@ -110,7 +125,6 @@ def run_debug_raw_data():
     print("\n" + "="*60)
     print(f" 📦 ASIN: {asin} の取得生データ（辞書形式）")
     print("="*60)
-    # pprint.pprintを使うと、複雑な辞書もインデント付きで見やすく表示されます
     pprint.pprint(pipeline_data, sort_dicts=False)
     print("="*60 + "\n")
 
@@ -156,8 +170,9 @@ def run_get_reports():
         except Exception as e:
             print(f"❌ {country} の処理エラー: {e}")
 
+# 💡 修正：DB書き込み用フォーマットでの出力
 def run_batch_pipeline():
-    print(f"\n--- 複数ASINの総合検証 (対象: {INPUT_CSV}) ---")
+    print(f"\n--- 複数ASINの総合検証 (DB書き込み用データ出力) ---")
     if not os.path.exists(INPUT_CSV):
         print("⚠️ 入力CSVが見つかりません。")
         return
@@ -174,23 +189,71 @@ def run_batch_pipeline():
         print(f"\n[{idx}/{len(unique_asins)}] ASIN: {asin} を処理中...")
         data = verify_export_pipeline(asin, EXCEL_FILE_PATH)
         
-        row = {"ASIN": asin, "ステータス": data["status"], "確定仕入値(円)": data["cost_jpy"]}
-        if data["status"] == "error":
-            row["エラー内容"] = data["error_message"]
-        else:
-            for country, mkt in data["markets"].items():
-                if mkt["has_competitor"]:
-                    row[f"{country}_利益判定"] = "⭕️" if mkt["is_prof"] else "❌"
-                    row[f"{country}_利益額(円)"] = int(mkt["profit_jpy"])
-                    row[f"{country}_販売額"] = round(mkt["target_native"], 2)
-                else:
-                    row[f"{country}_利益判定"] = "競合なし"
+        trade = data.get("raw_trade", {})
+        ship = data.get("raw_ship", {})
+        jp_source = trade.get("sourcing_candidates", [{}])[0] if trade.get("sourcing_candidates") else {}
+        us_mkt = data.get("markets", {}).get("US", {})
+        ca_mkt = data.get("markets", {}).get("CA", {})
+
+        lowest = trade.get("lowest_prices", {})
+        jp_prices = lowest.get("JP") or {}
+        us_prices = lowest.get("US") or {}
+        ca_prices = lowest.get("CA") or {}
+        has_catalog = trade.get("has_catalog", {})
+
+        vol = ship.get("vol")
+        dim_weight = (vol / 5000.0 * 1000.0) if vol is not None else None
+
+        row = {
+            "asin": asin,
+            "status": data["status"],
+            "error_message": data.get("error_message", ""),
+            
+            "jp_lowest_price_y": jp_prices.get("jpy"),
+            "us_lowest_price_d": us_prices.get("original"),
+            "us_lowest_price_y": us_prices.get("jpy"),
+            "ca_lowest_price_d": ca_prices.get("original"),
+            "ca_lowest_price_y": ca_prices.get("jpy"),
+            
+            "us_existence": 1 if has_catalog.get("US") else 0,
+            "ca_existence": 1 if has_catalog.get("CA") else 0,
+            "Sales_Category": trade.get("judgment", "None"),
+            
+            "length": ship.get("l"),
+            "width": ship.get("w"),
+            "height": ship.get("h"),
+            "total_size": ship.get("sum_cm"),
+            "actual_weight": ship.get("actual_w"),
+            "dim_weight": dim_weight,
+            "chargeable_weight": ship.get("chargeable_w"),
+            
+            "jp_shipping_fee": ship.get("cost_jp"),
+            "us_shipping_fee": ship.get("cost_us"),
+            "ca_shipping_fee": ship.get("cost_ca"),
+            "MyUS_shipping_fee": ship.get("cost_myus"),
+            
+            "jp_sourcing_price": jp_source.get("total_jpy"),
+            "jp_sourcing_fulfillment": jp_source.get("fulfillment"),
+            "jp_sourcing_buybox": 1 if jp_source.get("is_buybox") else 0,
+            "jp_sourcing_handling_days": parse_handling_days(jp_source.get("handling_time")),
+            "jp_sourcing_feedback_count": jp_source.get("feedback_count"),
+            "jp_sourcing_feedback_percent": jp_source.get("feedback_percent"),
+            
+            "us_target_price_d": us_mkt.get("target_native") if us_mkt else None,
+            "us_target_price_y": us_mkt.get("target_jpy") if us_mkt else None,
+            "us_is_profitable": 1 if us_mkt.get("is_prof") else 0,
+            
+            "ca_target_price_d": ca_mkt.get("target_native") if ca_mkt else None,
+            "ca_target_price_y": ca_mkt.get("target_jpy") if ca_mkt else None,
+            "ca_is_profitable": 1 if ca_mkt.get("is_prof") else 0
+        }
+        
         results.append(row)
         time.sleep(1.5)
 
     if results:
         pd.DataFrame(results).to_csv(OUTPUT_CSV, index=False, encoding="utf-8-sig")
-        print(f"\n🎉 一括処理完了！ 保存先: {OUTPUT_CSV}")
+        print(f"\n🎉 一括処理完了！ DB書き込み用データを保存しました: {OUTPUT_CSV}")
 
 # ==========================================
 # 起動

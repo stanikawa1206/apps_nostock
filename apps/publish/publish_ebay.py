@@ -1290,8 +1290,7 @@ def post_to_ebay(
             payload["C:Material"] = "Steel"
 
         if category_group == "アクセサリー":
-            payload["C:Style"] = "Necklace"
-            payload["C:Type"] = "Necklace"
+            payload["C:Style"] = type_ebay
 
         return post_one_item(payload, acct, acct_policies_map[acct])
 

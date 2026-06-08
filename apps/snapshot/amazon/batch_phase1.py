@@ -3,7 +3,9 @@ import sys
 import time
 import pyodbc
 import re  
-import logging 
+import logging
+import math
+import pandas as pd
 from dotenv import load_dotenv, find_dotenv
 
 # ==========================================
@@ -39,10 +41,22 @@ if os.environ.get("DB_SERVER") == "sqlserver":
 EXCEL_FILE_PATH = r"X:\apps\snapshot\amazon\ship_cost.xlsx"
 
 def to_py(val):
-    if val is None:
+    # Pandasの機能で NaN や NaT (Not a Time), None をまとめて弾く
+    if pd.isna(val):
         return None
+    
+    # 文字列化して空文字になるものも NULL とする
+    if str(val).strip() == "":
+        return None
+        
+    # numpyの型をPython標準型に変換
     if hasattr(val, 'item'):
-        return val.item()
+        val = val.item()
+        
+    # Python標準の float 型になった後の NaN や Infinity のチェック
+    if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
+        return None
+        
     return val
 
 def parse_handling_days(handling_str):
@@ -75,11 +89,7 @@ def run_phase1_batch():
         FROM trx.amazon_cross_market_asin
         WHERE wakarunda IN ('-', 'D')
         AND (US_restriction IS NULL OR US_restriction = '' OR US_restriction = '〇')
-        AND (
-            last_seen_at IS NULL 
-            OR last_seen_at < DATEADD(day, -3, GETDATE())
-            OR (US_listed_date IS NOT NULL AND last_seen_at < DATEADD(day, -1, GETDATE()))
-        )
+        AND (last_seen_at IS NULL )
     """
     try:
         cursor.execute(select_query)

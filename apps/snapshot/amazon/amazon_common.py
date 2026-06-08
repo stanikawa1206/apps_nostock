@@ -1,5 +1,6 @@
 # amazon_common.py
 import os
+import re
 import time
 import requests
 import gzip
@@ -109,10 +110,40 @@ def fetch_amazon_fee_rate(asin: str, country_code: str) -> float:
 def filter_and_sort_candidates(offers):
     safe_offers = []
     for offer in offers:
+        handling_str = offer.get('handling_time', '不明')
+        fulfillment = offer.get('fulfillment', 'FBM')
+
+        # 💡 追加条件1: FBMでハンドリングタイムが「不明」または「未設定/自動」の場合は除外
+        if fulfillment == 'FBM' and handling_str in ['不明', '未設定/自動']:
+            continue
+        
+        # 💡 追加条件2: ハンドリングタイムが10日以上のものは除外
+        max_days = 0
+        if "即日" in handling_str:
+            max_days = 0
+        else:
+            # "14-15日" などの文字列から数字を取り出し、最大日数(後ろの数字)を取得
+            numbers = re.findall(r'\d+', handling_str)
+            if numbers:
+                max_days = int(numbers[-1])
+        
+        # print(max_days, handling_str)
+        if max_days >= 10:
+            continue
+
+        # 既存条件: カートを取得していない出品者は「評価10件未満」または「評価80%未満」で除外
         if not offer.get('is_buybox', False):
-            count, percent = int(offer.get('feedback_count', 0)), float(offer.get('feedback_percent', 0.0) if str(offer.get('feedback_percent', '0')).replace('.','',1).isdigit() else 0.0)
-            if count < 10 or percent < 80.0: continue
+            count_val = offer.get('feedback_count', 0)
+            pct_val = offer.get('feedback_percent', 0.0)
+            count = int(count_val) if count_val else 0
+            percent = float(pct_val) if str(pct_val).replace('.','',1).isdigit() else 0.0
+            
+            if count < 10 or percent < 80.0:
+                continue
+                
         safe_offers.append(offer)
+        
+    # 最終的に仕入価格（円）が安い順に並び替えて返す
     return sorted(safe_offers, key=lambda x: x['total_jpy'])
 
 def analyze_trade_opportunity(asin: str, exchange_rates: dict) -> dict:
@@ -365,7 +396,7 @@ def print_price_info(result: dict):
     print(f"\n【仕入対象国】: {result['sourcing_country']}")
     print("\n【✨ 安全な仕入先候補 ✨】")
     for idx, cand in enumerate(result['sourcing_candidates'], 1):
-        print(f" {idx}. {'★カート' if cand['is_buybox'] else '　　　'} | {cand['total_jpy']:,}円 | {cand['fulfillment']} | 評価:{cand['feedback_count']}件")
+        print(f" {idx}. {'★カート' if cand['is_buybox'] else '   '} | {cand['total_jpy']:,}円 | {cand['fulfillment']} | 評価:{cand['feedback_count']}件 | 発送:{cand.get('handling_time', '不明')}")
 
 def print_shipping_info(ship_data: dict):
     if ship_data.get("error"): return print(f"❌ エラー: {ship_data['error']}")
