@@ -1004,6 +1004,10 @@ def heavy_check_detail(
     if item_condition_id == 1 and category_group != "ペン" and category_group != "製図用品":
         is_high_risk = True
 
+    # トレカ
+    if category_group == "トレカ":
+        is_high_risk = True
+
     # ヴィトン・シャネル中古
     if (
         item_condition_id != 1
