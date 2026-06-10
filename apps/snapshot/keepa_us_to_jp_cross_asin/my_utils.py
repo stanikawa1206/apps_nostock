@@ -5,9 +5,9 @@ import time
 import requests
 import pyodbc
 from typing import List, Dict, Any, Optional
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
 
-load_dotenv()
+load_dotenv(find_dotenv())
 
 # ============================================================
 # 設定値
@@ -25,7 +25,7 @@ MARKETPLACE_ID_US = "ATVPDKIKX0DER"
 # ============================================================
 def get_sql_server_connection():
     conn_str = (
-        f"DRIVER={{ODBC Driver 17 for SQL Server}};"
+        f"DRIVER={os.getenv('DB_DRIVER')};"
         f"SERVER={os.getenv('DB_SERVER')};"
         f"DATABASE={os.getenv('DB_NAME')};"
         f"UID={os.getenv('DB_USER')};"

@@ -663,7 +663,6 @@ def get_sql_server_connection():
         "Encrypt=no;"
         "TrustServerCertificate=yes;"
     )
-
     return pyodbc.connect(conn_str)
 
 

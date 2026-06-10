@@ -227,6 +227,7 @@ def register_inventory_item(row: Dict[str, Any], token: str) -> Dict[str, Any]:
 
     ink_color = row.get("C:Ink Color")
     material = row.get("C:Material")
+    model_name = row.get("C:Model")
 
     aspects: Dict[str, list[str]] = {"Brand": [brand]}
     if department:
@@ -245,7 +246,8 @@ def register_inventory_item(row: Dict[str, Any], token: str) -> Dict[str, Any]:
         aspects["Ink Color"] = ink_color if isinstance(ink_color, list) else [str(ink_color)]
     if material:
         aspects["Material"] = material if isinstance(material, list) else [str(material)]
-
+    if model_name:                            # ← 追加②（aspects変換）
+        aspects["Model"] = [model_name]
 
     payload = {
         "sku": sku,

@@ -16,8 +16,8 @@ LOG_DIR = r"X:\apps\snapshot\keepa_us_to_jp_cross_asin\logs"
 # ------------------
 
 # 2. 価格フィルタ (新品価格 90日平均)
-PRICE_MIN_JPY = 10000
-PRICE_MAX_JPY = 300000
+PRICE_MIN_JPY = 5000
+PRICE_MAX_JPY = 200000
 
 # 3. サイズ・重量フィルタ
 MAX_EDGE_MM = 1600
@@ -75,13 +75,12 @@ def fetch_and_save_recursive(cat_id, min_rank, max_rank, cursor):
     
     selection = {
         "rootCategory": cat_id,
-        "productType": 0,
-        "avg180_SALES_gte": min_rank,
-        "avg180_SALES_lte": max_rank,
+        "productType": 0,                           # 物理的な商品
+        "avg365_SALES_gte": min_rank,               # 180日 → 365日に変更
+        "avg365_SALES_lte": max_rank,               # 180日 → 365日に変更
         "avg90_NEW_gte": PRICE_MIN_JPY,
         "avg90_NEW_lte": PRICE_MAX_JPY,
-        "packageLength_lte": MAX_EDGE_MM,
-        "packageWeight_lte": MAX_WEIGHT_G,
+        "fbaFees_lte": 650,                         # サイズ・重量を削除し、FBA料金(上限650円)を追加
         "perPage": QUERY_LIMIT
     }
     

@@ -1007,6 +1007,10 @@ def heavy_check_detail(
     # トレカ
     if category_group == "トレカ":
         is_high_risk = True
+    
+    # デジカメ
+    if category_group == "デジカメ":
+        is_high_risk = True
 
     # ヴィトン・シャネル中古
     if (
@@ -1219,6 +1223,58 @@ def classify_ebay_error(err_msg: str):
         return "ポリシーNG"
     return None
 
+def extract_camera_model(title_jp: str, description_jp: str) -> str:
+    """
+    デジタルカメラの商品名・説明から
+    eBayのModelに設定する値のみを返す。
+
+    例:
+        Pentax Optio M30 -> Optio M30
+        Canon EOS Kiss X7 レンズキット -> EOS Kiss X7
+        SONY DSC-WX350 ブラック -> DSC-WX350
+    """
+
+    try:
+        client = get_openai_client()
+
+        prompt = f"""
+あなたは中古カメラの専門家です。
+
+商品タイトルと商品説明から、
+eBay Item Specific の Model を抽出してください。
+
+ルール:
+- ブランド名は含めない
+- 色は含めない
+- レンズキット等の販売形態は含めない
+- 付属品は含めない
+- 回答はModelのみ
+- 説明文は不要
+
+商品タイトル:
+{title_jp}
+
+商品説明:
+{description_jp}
+"""
+
+        response = client.responses.create(
+            model="gpt-4o-mini",
+            input=prompt,
+            temperature=0
+        )
+
+        model_name = response.output_text.strip()
+
+        # 念のため改行除去
+        model_name = model_name.split("\n")[0].strip()
+
+        return model_name
+    
+    except Exception as e:
+        print(f"extract_camera_model failed: {e}")
+        return ""
+
 def post_to_ebay(
     *,
     conn,
@@ -1295,6 +1351,15 @@ def post_to_ebay(
 
         if category_group == "アクセサリー":
             payload["C:Style"] = type_ebay
+
+        if category_group == "デジカメ":
+            model = extract_camera_model(
+                rec.get("title_jp") or "",
+                rec.get("description") or "",
+            )
+            if model:
+                payload["C:Model"] = model
+
 
         return post_one_item(payload, acct, acct_policies_map[acct])
 

@@ -35,10 +35,12 @@ from apps.adapters.ebay_api import delete_items_from_ebay_batch
 # =========================================================
 
 TARGET_SKUS_RAW = """
-2JPaNBqiUzMxqx8Yox5vpL
-m87545912144
-m88935315655
-m90740311092
+2JRzS2qzkboWQVm6h83ND8
+2JS9Q4xuH5RBZgvDnv8w8s
+2JSGyoJ5Nif43pnWFJHAck
+m24393617732
+m76735953522
+m78719891865
 """
 
 TARGET_SKUS = [
@@ -312,6 +314,7 @@ def delete_rows_from_sql(account: str, item_ids):
             # trx.vendor_item
             # =================================================
 
+            
             cur.execute("""
                 UPDATE trx.vendor_item
                 SET 出品不可flg = 1

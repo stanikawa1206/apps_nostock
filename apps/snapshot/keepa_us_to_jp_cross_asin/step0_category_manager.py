@@ -10,7 +10,6 @@ def get_next_category(target_min_rank, target_max_rank):
     """
     conn = get_sql_server_connection()
     cursor = conn.cursor()
-    
     query = """
         SELECT TOP 1 category_id, category_name 
         FROM mst.amazon_category 
