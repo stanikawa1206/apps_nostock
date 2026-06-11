@@ -1139,6 +1139,26 @@ def heavy_check_detail(
         )
         rec["title_en"] = clean_for_ebay(title_en)
 
+    # カメラモデル取得 (デジカメのみ)
+    camera_models = None
+    if category_group == "デジカメ":
+        camera_models = extract_camera_model(
+            rec.get("title_jp") or "",
+            rec.get("description") or "",
+        )
+        _mjp = (camera_models or {}).get("model_jp", "")
+        _mus = (camera_models or {}).get("model_us", "")
+        if _mjp and _mus and _mjp != _mus:
+            print("######################################################################")
+            print("# 🌎 CAMERA MODEL CANDIDATE")
+            print(f"# SKU       : {sku}")
+            print(f"# JP MODEL  : {_mjp}")
+            print(f"# US MODEL  : {_mus}")
+            print("######################################################################")
+
+    _model_jp_desc = (camera_models or {}).get("model_jp", "")
+    _model_us_desc = (camera_models or {}).get("model_us", "")
+
     desc_jp = rec.get("description") or ""
     desc_en = ""
     if desc_jp:
@@ -1148,6 +1168,8 @@ def heavy_check_detail(
                 rec.get("title_en") or "",
                 desc_jp,
                 expected_brand_en=expected_brand_en,
+                model_jp=_model_jp_desc,
+                model_us=_model_us_desc,
             )
             desc_en = clean_for_ebay(desc_en_raw)
         except Exception as e:
@@ -1170,6 +1192,7 @@ def heavy_check_detail(
         "department": department,
         "type_ebay": type_ebay,
         "category_group": category_group,
+        "camera_models": camera_models,
     }
 
     return heavy, debug_unavailable_dump, writes_since_commit, 0, 0
@@ -1223,39 +1246,41 @@ def classify_ebay_error(err_msg: str):
         return "ポリシーNG"
     return None
 
-def extract_camera_model(title_jp: str, description_jp: str) -> str:
+def extract_camera_model(title_jp: str, description_jp: str) -> dict:
     """
-    デジタルカメラの商品名・説明から
-    eBayのModelに設定する値のみを返す。
-
-    例:
-        Pentax Optio M30 -> Optio M30
-        Canon EOS Kiss X7 レンズキット -> EOS Kiss X7
-        SONY DSC-WX350 ブラック -> DSC-WX350
+    デジタルカメラの商品名・説明から日本型番と国際型番を返す。
+    Returns: {"model_jp": "...", "model_us": "..."}
     """
-
     try:
+        import json as _json
         client = get_openai_client()
 
         prompt = f"""
 あなたは中古カメラの専門家です。
 
-商品タイトルと商品説明から、
-eBay Item Specific の Model を抽出してください。
+商品タイトルと商品説明から、eBay Item Specific の Model を抽出してください。
+
+以下の2つを返してください：
+- model_jp: 日本市場での型番（例: IXY 130, EOS Kiss X7）
+- model_us: US/国際市場での対応型番（例: PowerShot ELPH 140 IS, EOS Rebel SL1）
 
 ルール:
 - ブランド名は含めない
 - 色は含めない
 - レンズキット等の販売形態は含めない
 - 付属品は含めない
-- 回答はModelのみ
-- 説明文は不要
+- 日本型番と国際型番が同じ場合（例: PowerShot SX710 HS）は両方に同じ値を入れる
+- 国際型番が不明な場合は model_jp と同じ値を入れる
+- 回答はJSON形式のみ（説明文不要）
 
 商品タイトル:
 {title_jp}
 
 商品説明:
 {description_jp}
+
+JSON形式で回答:
+{{"model_jp": "...", "model_us": "..."}}
 """
 
         response = client.responses.create(
@@ -1264,16 +1289,17 @@ eBay Item Specific の Model を抽出してください。
             temperature=0
         )
 
-        model_name = response.output_text.strip()
+        raw = (response.output_text or "").strip()
+        raw = re.sub(r"^```json\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+        data = _json.loads(raw)
+        model_jp = (data.get("model_jp") or "").strip()
+        model_us = (data.get("model_us") or "").strip()
+        return {"model_jp": model_jp, "model_us": model_us or model_jp}
 
-        # 念のため改行除去
-        model_name = model_name.split("\n")[0].strip()
-
-        return model_name
-    
     except Exception as e:
         print(f"extract_camera_model failed: {e}")
-        return ""
+        return {"model_jp": "", "model_us": ""}
 
 def post_to_ebay(
     *,
@@ -1318,7 +1344,9 @@ def post_to_ebay(
 
     fail_other_delta = 0
 
-    def _attempt_post(use_mode: str) -> str:
+    _camera_models = heavy.get("camera_models")
+
+    def _attempt_post(use_mode: str, model_name: str = None) -> str:
         pic_urls = build_pic_urls(
             rec=rec,
             sku=sku,
@@ -1352,20 +1380,17 @@ def post_to_ebay(
         if category_group == "アクセサリー":
             payload["C:Style"] = type_ebay
 
-        if category_group == "デジカメ":
-            model = extract_camera_model(
-                rec.get("title_jp") or "",
-                rec.get("description") or "",
-            )
-            if model:
-                payload["C:Model"] = model
-
+        if category_group == "デジカメ" and model_name:
+            payload["C:Model"] = model_name
 
         return post_one_item(payload, acct, acct_policies_map[acct])
 
     # 1回目（現モード）
+    _model_jp = (_camera_models or {}).get("model_jp") or None
+    _model_us = (_camera_models or {}).get("model_us") or None
+
     try:
-        item_id_ebay = _attempt_post(image_mode)
+        item_id_ebay = _attempt_post(image_mode, model_name=_model_jp)
 
         if item_id_ebay:
             print(f"✅ 出品成功: acct={acct} SKU={sku} listing_id={item_id_ebay}")
@@ -1444,6 +1469,70 @@ def post_to_ebay(
         err_msg = str(e) or ""
         print(f"❌ 出品失敗(API): acct={acct} SKU={sku} reason={err_msg}")
 
+        # ── 25604: Product not found → model_us でリトライ ────────
+        if e.code == 25604 and _model_us and _model_us != _model_jp:
+            print("######################################################################")
+            print("# 🚨 CAMERA RETRY 25604 🚨")
+            print(f"# SKU       : {sku}")
+            print(f"# JP MODEL  : {_model_jp}")
+            print(f"# US MODEL  : {_model_us}")
+            print("######################################################################")
+            try:
+                item_id_ebay = _attempt_post(image_mode, model_name=_model_us)
+                if item_id_ebay:
+                    print(f"✅ 出品成功(model_us retry): acct={acct} SKU={sku} listing_id={item_id_ebay}")
+                    record_ebay_listing(item_id_ebay, acct, sku, vendor_name, start_price_usd)
+                    with conn.cursor() as cursor:
+                        cursor.execute("""
+                            UPDATE mst.ebay_accounts
+                            SET listing_left = listing_left - 1
+                            WHERE account = ?
+                        """, acct)
+                    conn.commit()
+                    rec["processing_by"] = None
+                    rec["processing_at"] = None
+                    rec["listing_head"] = "出品"
+                    rec["listing_detail"] = ""
+                    upsert_vendor_item(conn, rec)
+                    writes_since_commit += 1
+                    writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
+                    acct_success[acct] += 1
+                    if acct_targets[acct] is not None:
+                        acct_targets[acct] -= 1
+                    total_listings += 1
+                    if total_listings >= MAX_LISTINGS:
+                        stop_all = True
+                    return (acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
+                            fail_other_delta, image_mode, image_error_count, cdn_mode_until)
+                rec["listing_head"] = "出品失敗"
+                rec["listing_detail"] = "model_us retry: listing_id未返却"
+                upsert_vendor_item(conn, rec)
+                writes_since_commit += 1
+                writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
+                fail_other_delta += 1
+                return (acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
+                        fail_other_delta, image_mode, image_error_count, cdn_mode_until)
+            except ApiHandledError as e2:
+                print(f"[25604 retry] 失敗: errorId={e2.code} {e2.message}")
+                rec["listing_head"] = "出品失敗"
+                rec["listing_detail"] = f"25604→model_us retry failed: {e2.message}"
+                upsert_vendor_item(conn, rec)
+                writes_since_commit += 1
+                writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
+                fail_other_delta += 1
+                return (acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
+                        fail_other_delta, image_mode, image_error_count, cdn_mode_until)
+            except Exception as e2:
+                print(f"[25604 retry] 例外: {e2}")
+                rec["listing_head"] = "出品失敗"
+                rec["listing_detail"] = f"25604→model_us retry exception: {e2}"
+                upsert_vendor_item(conn, rec)
+                writes_since_commit += 1
+                writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
+                fail_other_delta += 1
+                return (acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
+                        fail_other_delta, image_mode, image_error_count, cdn_mode_until)
+
         # ★ 画像エラーを数える（NORMAL時のみ）
         switched_now = False
         if image_mode == "NORMAL" and is_image_too_small_error(err_msg):
@@ -1460,7 +1549,7 @@ def post_to_ebay(
         if switched_now:
             try:
                 print(f"[IMG_ERR] retry with CDN: sku={sku}")
-                item_id_ebay = _attempt_post("CDN")
+                item_id_ebay = _attempt_post("CDN", model_name=_model_jp)
                 if item_id_ebay:
                     print(f"✅ 出品成功(CDN retry): acct={acct} SKU={sku} listing_id={item_id_ebay}")
                     record_ebay_listing(item_id_ebay, acct, sku, vendor_name, start_price_usd)

@@ -578,6 +578,8 @@ def generate_ebay_description(
     title_en: str,
     description_jp: str,
     expected_brand_en: str | None = None,  # ★ DBの default_brand_en を渡す
+    model_jp: str = "",
+    model_us: str = "",
 ) -> str:
     """
     eBay用 英語説明文生成
@@ -590,6 +592,13 @@ def generate_ebay_description(
     description_jp = strip_authenticity_doubt(description_jp)
     description_jp = strip_no_return_policy(description_jp)
 
+    _regional_note = ""
+    if model_jp and model_us and model_jp != model_us:
+        _regional_note = (
+            f"\n\nThis camera is sold in Japan as {model_jp}"
+            f" and internationally as {model_us}."
+        )
+
     if not description_jp:
         # 既存仕様に合わせた最小フォールバック（余計な保険は入れない）
         fb = (
@@ -597,7 +606,7 @@ def generate_ebay_description(
             "Please contact us via eBay messages for details.\n"
             "Ships from Japan with tracking."
         )
-        return fb.replace("\n", "<br>")
+        return (fb + _regional_note).replace("\n", "<br>")
 
     brand_rule = ""
     if expected_brand_en:
@@ -637,7 +646,7 @@ Japanese description:
         )
         desc = (response.output_text or "").replace("\r\n", "\n").strip()
         desc = re.sub(r"\n{3,}", "\n\n", desc).strip()
-        return desc.replace("\n", "<br>")
+        return (desc + _regional_note).replace("\n", "<br>")
 
     except Exception as e:
         print(f"[WARN] generate_ebay_description failed: {e}")
@@ -646,7 +655,7 @@ Japanese description:
             "Please contact us via eBay messages for details.\n"
             "Ships from Japan with tracking."
         )
-        return fb.replace("\n", "<br>")
+        return (fb + _regional_note).replace("\n", "<br>")
 
 
 

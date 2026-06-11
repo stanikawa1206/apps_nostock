@@ -359,7 +359,7 @@ def main():
     refresh_presets_lookup(conn)
     
     try:
-        SET_N = 1
+        SET_N = 4
         print(f"=== 🧭 inventory_ebay_manager.py 開始（4工程×{SET_N}回転） ===")
 
         for set_no in range(1, SET_N + 1):

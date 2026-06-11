@@ -8,7 +8,7 @@ from apps.adapters.ebay_api import delete_items_from_ebay_batch
 
 # ===== 設定 =====
 DELETE_CONFIG = {
-    "谷川④": 1074,
+    "谷川④": 256,
 }
 
 MAX_WORKERS = 2

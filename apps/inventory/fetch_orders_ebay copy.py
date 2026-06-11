@@ -30,11 +30,6 @@ _ACCESS_CONN_STR = r"Driver={Microsoft Access Driver (*.mdb, *.accdb)};DBQ=Y:\�
 _JST = timezone(timedelta(hours=9))
 _rate_cache: dict = {"value": None, "expires": 0.0}
 
-# ==== LINE Messaging API トークン ====
-_LINE_TOKEN_TAKAFUMI = "fsrkRPiEQ5Lyb/vV2NSbNeI9CeT5nkjIFvUrh5H2k+Ubi06UaZob4kRlh5ox/+q+Mt7ahfkb4BX/0PSYAaisFT/qSeCsHHjl1p095GRmJKOT7K8u0O+AEr8VO9oV4ShIEX2Yd5RMbICIpkJzvwc2kgdB04t89/1O/w1cDnyilFU="
-_LINE_TOKEN_BUZZ     = "wrbm40jAHmim1bRL+xvJz0ZApOxzBAYYbbK4G//NXvGrsOxv3vmk5GloFQviuWmCJDsDnwMUciQqs4BcIiTINB5AAvVXtCqfv5JrARfgqtQS5c8qIl/XNH0fOQ6N9A2m5e6MPlWEmbr5JRWLnDe4DQdB04t89/1O/w1cDnyilFU="
-_LINE_TOKEN_DEFAULT  = "Shdz82NrcFpbUirZ57RcFWDr8cHaP84QN4LOTiXGwnm0nQHpChPzOJ3J/G6H1Y/IDllje+wiDPSQ0diuYIN5Iau04MwMov89AIg9YSRdCGyQ3ByW7JL/plDYSEe4NutFqM07npe1gxSF+cYocFOduQdB04t89/1O/w1cDnyilFU="
-
 
 # ==== GA（Authenticity Guarantee）センター住所定義 ====
 # 将来的にセンターが増えた場合はここにエントリを追加する
@@ -381,95 +376,6 @@ def send_new_order_mail(
 
     print("Mail sent OK")
 
-
-# --------------------------------------------------
-# LINE通知
-# --------------------------------------------------
-def _get_line_token(account: str) -> str:
-    if account == "貴文②":
-        return _LINE_TOKEN_TAKAFUMI
-    elif account == "BUZZ②":
-        return _LINE_TOKEN_BUZZ
-    return _LINE_TOKEN_DEFAULT
-
-
-def send_line_broadcast(token: str, text: str = None, image_url: str = None):
-    """LINE Broadcast APIでテキスト・画像を送信する。"""
-    url = "https://api.line.me/v2/bot/message/broadcast"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-    }
-    messages = []
-    if text:
-        messages.append({"type": "text", "text": text[:5000]})
-    if image_url:
-        # LINE画像メッセージにはHTTPS公開URLが必要
-        messages.append({
-            "type": "image",
-            "originalContentUrl": image_url,
-            "previewImageUrl": image_url,
-        })
-    if not messages:
-        return
-    r = requests.post(url, headers=headers, json={"messages": messages}, timeout=10)
-    if r.status_code == 200:
-        print("  LINE broadcast OK")
-    else:
-        print(f"  [WARN] LINE broadcast failed: {r.status_code} {r.text}")
-
-
-def send_line_new_order(
-    account: str,
-    vendor_item_id: str,
-    ebay_id: str,
-    price_usd: float,
-    country: str,
-    buyer: str,
-):
-    """受注時にLINE Broadcast通知を送信する。失敗しても処理を止めない。"""
-    try:
-        token = _get_line_token(account)
-
-        # DBから画像URL取得（send_new_order_mail と同じソース）
-        image_url = None
-        try:
-            cn = get_sql_server_connection()
-            cur = cn.cursor()
-            cur.execute(
-                "SELECT image_url1 FROM trx.vendor_item WHERE vendor_item_id = ?",
-                vendor_item_id,
-            )
-            row = cur.fetchone()
-            cur.close()
-            cn.close()
-            image_url = row[0] if row else None
-        except Exception as e:
-            print(f"  [WARN] LINE: 画像URL取得失敗: {e}")
-
-        ebay_url     = f"https://www.ebay.com/itm/{ebay_id}" if ebay_id else ""
-        mercari_url  = f"https://jp.mercari.com/item/{vendor_item_id}" if vendor_item_id else ""
-        text = (
-            f"🟢【新規受注】{account}\n"
-            f"\n"
-            f"メルカリ:\n"
-            f"{mercari_url}\n"
-            f"\n"
-            f"eBay:\n"
-            f"{ebay_url}\n"
-            f"\n"
-            f"💰 ${price_usd}\n"
-            f"\n"
-            f"Buyer: {buyer}\n"
-            f"Country: {country}"
-        )
-
-        send_line_broadcast(token, text=text, image_url=image_url)
-
-    except Exception as e:
-        print(f"  [WARN] LINE通知エラー: {e}")
-
-
 # --------------------------------------------------
 # DB最終受注日時取得
 # --------------------------------------------------
@@ -653,16 +559,6 @@ def run():
                             ebay_id=ebay_id,
                             price_usd=float(price_usd),
                             country=initial_country,
-                        )
-
-                        # ① LINE通知（追加 / メール送信に続いて即時送信）
-                        send_line_new_order(
-                            account=account,
-                            vendor_item_id=vendor_item_id,
-                            ebay_id=ebay_id,
-                            price_usd=float(price_usd),
-                            country=initial_country,
-                            buyer=buyer,
                         )
 
                         # ② バイヤーへサンキューメッセージ（注文単位で1回のみ）
