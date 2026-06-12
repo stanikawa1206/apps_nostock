@@ -163,7 +163,7 @@ def get_spapi_prices_batch(asin_list: List[str], region: str, access_token: str)
     base_url = SPAPI_ENDPOINT_US if region == "US" else SPAPI_ENDPOINT_JP
     mp_id = MARKETPLACE_ID_US if region == "US" else MARKETPLACE_ID_JP
 
-    url = f"{base_url}/products/pricing/v0/price"
+    url = f"{base_url}/products/pricing/v0/competitivePrice"
     params = {"Asins": ",".join(asin_list), "ItemType": "Asin", "MarketplaceId": mp_id}
     headers = {"X-Amz-Access-Token": access_token, "Content-Type": "application/json"}
 

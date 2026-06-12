@@ -574,10 +574,18 @@ def strip_no_return_policy(text: str) -> str:
     return t
 
 
+_IMPORT_NOTICE = (
+    "<hr>\n"
+    "<b>⚠️ International Buyers:</b><br>\n"
+    "Please refer to the import fees information displayed by eBay at checkout.<br>\n"
+    'If eBay shows "Includes import fees", no additional payment is normally required.<br>\n'
+    "Import duties, taxes, and customs-related charges are determined by eBay, customs authorities, and/or shipping carriers, not by the seller."
+)
+
 def generate_ebay_description(
     title_en: str,
     description_jp: str,
-    expected_brand_en: str | None = None,  # ★ DBの default_brand_en を渡す
+    expected_brand_en: str | None = None,
     model_jp: str = "",
     model_us: str = "",
 ) -> str:
@@ -600,13 +608,12 @@ def generate_ebay_description(
         )
 
     if not description_jp:
-        # 既存仕様に合わせた最小フォールバック（余計な保険は入れない）
         fb = (
             f"{title_en}\n\n"
             "Please contact us via eBay messages for details.\n"
             "Ships from Japan with tracking."
         )
-        return (fb + _regional_note).replace("\n", "<br>")
+        return (fb + "\n\n" + _IMPORT_NOTICE + _regional_note).replace("\n", "<br>")
 
     brand_rule = ""
     if expected_brand_en:
@@ -644,19 +651,22 @@ Japanese description:
             ],
             temperature=0.3,
         )
+
         desc = (response.output_text or "").replace("\r\n", "\n").strip()
         desc = re.sub(r"\n{3,}", "\n\n", desc).strip()
-        return (desc + _regional_note).replace("\n", "<br>")
+
+        return (desc + "\n\n" + _IMPORT_NOTICE + _regional_note).replace("\n", "<br>")
 
     except Exception as e:
         print(f"[WARN] generate_ebay_description failed: {e}")
+
         fb = (
             f"{title_en}\n\n"
             "Please contact us via eBay messages for details.\n"
             "Ships from Japan with tracking."
         )
-        return (fb + _regional_note).replace("\n", "<br>")
 
+        return (fb + "\n\n" + _IMPORT_NOTICE + _regional_note).replace("\n", "<br>")
 
 
 # =========================

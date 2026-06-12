@@ -437,18 +437,39 @@ def send_line_new_order(
             cn = get_sql_server_connection()
             cur = cn.cursor()
             cur.execute(
-                "SELECT image_url1 FROM trx.vendor_item WHERE vendor_item_id = ?",
+                "SELECT image_url1, vendor_name FROM trx.vendor_item WHERE vendor_item_id = ?",
                 vendor_item_id,
             )
             row = cur.fetchone()
             cur.close()
             cn.close()
-            image_url = row[0] if row else None
+            if row:
+                image_url = row[0]
+                vendor_name = row[1]
+            else:
+                image_url = None
+                vendor_name = None
         except Exception as e:
             print(f"  [WARN] LINE: 画像URL取得失敗: {e}")
+ 
+        ebay_url = f"https://www.ebay.com/itm/{ebay_id}" if ebay_id else ""
 
-        ebay_url     = f"https://www.ebay.com/itm/{ebay_id}" if ebay_id else ""
-        mercari_url  = f"https://jp.mercari.com/item/{vendor_item_id}" if vendor_item_id else ""
+        if vendor_item_id:
+            if vendor_item_id.startswith("m"):
+                # 通常メルカリ
+                mercari_url = (
+                    f"https://jp.mercari.com/item/{vendor_item_id}"
+                    f"?openExternalBrowser=1"
+                )
+            else:
+                # メルカリShops
+                mercari_url = (
+                    f"https://jp.mercari.com/shops/product/{vendor_item_id}"
+                    f"?openExternalBrowser=1"
+                )
+        else:
+            mercari_url = ""
+
         text = (
             f"🟢【新規受注】{account}\n"
             f"\n"
@@ -465,6 +486,7 @@ def send_line_new_order(
         )
 
         send_line_broadcast(token, text=text, image_url=image_url)
+
 
     except Exception as e:
         print(f"  [WARN] LINE通知エラー: {e}")
