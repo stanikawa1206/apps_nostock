@@ -1,0 +1,520 @@
+{
+  "localizedAspectName": "Game",
+  "aspectConstraint": {
+    "aspectDataType": "STRING",
+    "itemToAspectCardinality": "SINGLE",
+    "aspectMode": "FREE_TEXT",
+    "aspectRequired": true,
+    "aspectUsage": "RECOMMENDED",
+    "aspectEnabledForVariations": false,
+    "aspectApplicableTo": [
+      "PRODUCT"
+    ]
+  },
+  "aspectValues": [
+    {
+      "localizedValue": "7th Sea CCG"
+    },
+    {
+      "localizedValue": "A Game of Thrones CCG"
+    },
+    {
+      "localizedValue": "Age of Empires: Expandable Card Game"
+    },
+    {
+      "localizedValue": "Aliens vs Predator CCG"
+    },
+    {
+      "localizedValue": "Anachronism"
+    },
+    {
+      "localizedValue": "Animal Kaiser"
+    },
+    {
+      "localizedValue": "Ani-Mayhem"
+    },
+    {
+      "localizedValue": "Argent Saga TCG"
+    },
+    {
+      "localizedValue": "Austin Powers CCG"
+    },
+    {
+      "localizedValue": "Babylon 5 CCG"
+    },
+    {
+      "localizedValue": "Bakugan TCG"
+    },
+    {
+      "localizedValue": "Battle Spirits TCG"
+    },
+    {
+      "localizedValue": "Battlestar Galactica CCG"
+    },
+    {
+      "localizedValue": "BattleTech CCG"
+    },
+    {
+      "localizedValue": "Behind TCG"
+    },
+    {
+      "localizedValue": "Bella Sara"
+    },
+    {
+      "localizedValue": "Bleach TCG"
+    },
+    {
+      "localizedValue": "Blood Wars"
+    },
+    {
+      "localizedValue": "Buffy the Vampire Slayer CCG"
+    },
+    {
+      "localizedValue": "Cardfight!! Vanguard TCG"
+    },
+    {
+      "localizedValue": "Chaotic TCG"
+    },
+    {
+      "localizedValue": "Corunea CCG"
+    },
+    {
+      "localizedValue": "Cyberpunk CCG"
+    },
+    {
+      "localizedValue": "Dark Age: Feudal Lords"
+    },
+    {
+      "localizedValue": "Dark Eden"
+    },
+    {
+      "localizedValue": "Deadlands: Lost Colony - Showdown"
+    },
+    {
+      "localizedValue": "Deadman's Cross"
+    },
+    {
+      "localizedValue": "Dice Masters"
+    },
+    {
+      "localizedValue": "Digimon CCG"
+    },
+    {
+      "localizedValue": "Dinosaur King TCG"
+    },
+    {
+      "localizedValue": "Disney Lorcana TCG"
+    },
+    {
+      "localizedValue": "Dixie"
+    },
+    {
+      "localizedValue": "Doctor Who Alien Armies TCG"
+    },
+    {
+      "localizedValue": "Doctor Who Alien Attax TCG"
+    },
+    {
+      "localizedValue": "Doctor Who Battles in Time CCG"
+    },
+    {
+      "localizedValue": "Doctor Who CCG"
+    },
+    {
+      "localizedValue": "Doctor Who Monster Invasion TCG"
+    },
+    {
+      "localizedValue": "Doomtown: Reloaded"
+    },
+    {
+      "localizedValue": "Doomtrooper CCG"
+    },
+    {
+      "localizedValue": "Dragoborne"
+    },
+    {
+      "localizedValue": "Dragon Ball CCG"
+    },
+    {
+      "localizedValue": "Dragon Ball GT TCG"
+    },
+    {
+      "localizedValue": "Dragon Ball Super Card Game"
+    },
+    {
+      "localizedValue": "Dragon Ball Z TCG"
+    },
+    {
+      "localizedValue": "Dragon Storm CCG"
+    },
+    {
+      "localizedValue": "D-Spirits"
+    },
+    {
+      "localizedValue": "Duel Masters TCG"
+    },
+    {
+      "localizedValue": "Dune CCG"
+    },
+    {
+      "localizedValue": "Eagles CCG"
+    },
+    {
+      "localizedValue": "Epic Battles"
+    },
+    {
+      "localizedValue": "Epic TCG"
+    },
+    {
+      "localizedValue": "Exodus TCG"
+    },
+    {
+      "localizedValue": "Final Fantasy TCG"
+    },
+    {
+      "localizedValue": "Fire Emblem 0 (Cipher)"
+    },
+    {
+      "localizedValue": "Flesh and Blood TCG"
+    },
+    {
+      "localizedValue": "Force of Will TCG"
+    },
+    {
+      "localizedValue": "Fortnite TCG"
+    },
+    {
+      "localizedValue": "Free Realms TCG"
+    },
+    {
+      "localizedValue": "Future Card Buddyfight"
+    },
+    {
+      "localizedValue": "G.I. Joe TCG"
+    },
+    {
+      "localizedValue": "Galactic Empires"
+    },
+    {
+      "localizedValue": "Gate Ruler TCG"
+    },
+    {
+      "localizedValue": "Gridiron: Fantasy Football Game"
+    },
+    {
+      "localizedValue": "Guardian Cross TCG"
+    },
+    {
+      "localizedValue": "Guardians CCG"
+    },
+    {
+      "localizedValue": "Gundam War TCG"
+    },
+    {
+      "localizedValue": "Gwent: The Witcher Card Game"
+    },
+    {
+      "localizedValue": "Gym Heroes TCG"
+    },
+    {
+      "localizedValue": "Harry Potter TCG"
+    },
+    {
+      "localizedValue": "Hecatomb"
+    },
+    {
+      "localizedValue": "Heresy: Kingdom Come"
+    },
+    {
+      "localizedValue": "Highlander: The Card Game"
+    },
+    {
+      "localizedValue": "Illuminati: New World Order"
+    },
+    {
+      "localizedValue": "InuYasha TCG"
+    },
+    {
+      "localizedValue": "James Bond 007 CCG"
+    },
+    {
+      "localizedValue": "Jedi Knights TCG"
+    },
+    {
+      "localizedValue": "Justice League TCG"
+    },
+    {
+      "localizedValue": "Kaijudo TCG"
+    },
+    {
+      "localizedValue": "KeyForge"
+    },
+    {
+      "localizedValue": "Kingdoms CCG"
+    },
+    {
+      "localizedValue": "L.O.L. Surprise! Dance Off! TCG"
+    },
+    {
+      "localizedValue": "Legendary: Marvel Studios"
+    },
+    {
+      "localizedValue": "Legend of the Five Rings"
+    },
+    {
+      "localizedValue": "LEGO Ninjago TCG"
+    },
+    {
+      "localizedValue": "Lightseekers TCG"
+    },
+    {
+      "localizedValue": "Looney Tunes TCG"
+    },
+    {
+      "localizedValue": "Luck & Logic"
+    },
+    {
+      "localizedValue": "Magic: The Gathering"
+    },
+    {
+      "localizedValue": "Magi-Nation Duel"
+    },
+    {
+      "localizedValue": "MapleStory iTCG"
+    },
+    {
+      "localizedValue": "Marvel ReCharge CCG"
+    },
+    {
+      "localizedValue": "Marvel Superstars TCG"
+    },
+    {
+      "localizedValue": "Marvel Ultimate Battles TCG"
+    },
+    {
+      "localizedValue": "Mega Man NT Warrior TCG"
+    },
+    {
+      "localizedValue": "MetaX TCG"
+    },
+    {
+      "localizedValue": "MetaZoo CCG"
+    },
+    {
+      "localizedValue": "Middle-earth CCG"
+    },
+    {
+      "localizedValue": "Minions TCG"
+    },
+    {
+      "localizedValue": "Moshi Monsters Mash Up TCG"
+    },
+    {
+      "localizedValue": "Munchkin CCG"
+    },
+    {
+      "localizedValue": "My Hero Academia: The Card Game"
+    },
+    {
+      "localizedValue": "My Little Pony CCG"
+    },
+    {
+      "localizedValue": "Mythos CCG"
+    },
+    {
+      "localizedValue": "Naruto CCG"
+    },
+    {
+      "localizedValue": "Neopets TCG"
+    },
+    {
+      "localizedValue": "Netrunner"
+    },
+    {
+      "localizedValue": "One Piece CCG"
+    },
+    {
+      "localizedValue": "On The Edge TCG"
+    },
+    {
+      "localizedValue": "OverPower"
+    },
+    {
+      "localizedValue": "Pirates Constructible Strategy Game"
+    },
+    {
+      "localizedValue": "Pirates of the Caribbean TCG"
+    },
+    {
+      "localizedValue": "Pirates of the Spanish Main"
+    },
+    {
+      "localizedValue": "Pokémon TCG"
+    },
+    {
+      "localizedValue": "Power Rangers ACG"
+    },
+    {
+      "localizedValue": "Precious Memories"
+    },
+    {
+      "localizedValue": "Raw Deal CCG"
+    },
+    {
+      "localizedValue": "Redakai"
+    },
+    {
+      "localizedValue": "Redemption TCG"
+    },
+    {
+      "localizedValue": "Riftbound: League of Legends TCG"
+    },
+    {
+      "localizedValue": "Robotech CCG"
+    },
+    {
+      "localizedValue": "Sailor Moon CCG"
+    },
+    {
+      "localizedValue": "Shadowfist TCG"
+    },
+    {
+      "localizedValue": "Shadowrun: The Trading Card Game"
+    },
+    {
+      "localizedValue": "Shadowverse"
+    },
+    {
+      "localizedValue": "Skylanders Battlecast"
+    },
+    {
+      "localizedValue": "Sorcery TCG"
+    },
+    {
+      "localizedValue": "Spawn PowerCardz"
+    },
+    {
+      "localizedValue": "Spellfire: Master the Magic"
+    },
+    {
+      "localizedValue": "Stargate TCG"
+    },
+    {
+      "localizedValue": "Star Trek: The Card Game"
+    },
+    {
+      "localizedValue": "Star Trek CCG"
+    },
+    {
+      "localizedValue": "Star Trek Tribbles CCG"
+    },
+    {
+      "localizedValue": "Star Wars: Destiny"
+    },
+    {
+      "localizedValue": "Star Wars CCG"
+    },
+    {
+      "localizedValue": "Star Wars Episode I CCG"
+    },
+    {
+      "localizedValue": "Star Wars Force Attax"
+    },
+    {
+      "localizedValue": "Star Wars PocketModel TCG"
+    },
+    {
+      "localizedValue": "Star Wars TCG"
+    },
+    {
+      "localizedValue": "The Caster Chronicles TCG"
+    },
+    {
+      "localizedValue": "The Eye of Judgment"
+    },
+    {
+      "localizedValue": "The Lord of the Rings TCG"
+    },
+    {
+      "localizedValue": "The Simpsons TCG"
+    },
+    {
+      "localizedValue": "The Terminator CCG"
+    },
+    {
+      "localizedValue": "The Wheel of Time CCG"
+    },
+    {
+      "localizedValue": "The X-Files CCG"
+    },
+    {
+      "localizedValue": "Tomb Raider CCG"
+    },
+    {
+      "localizedValue": "Transformers TCG"
+    },
+    {
+      "localizedValue": "Universal Fighting System"
+    },
+    {
+      "localizedValue": "UniVersus"
+    },
+    {
+      "localizedValue": "Vampire: The Eternal Struggle"
+    },
+    {
+      "localizedValue": "Vs. System"
+    },
+    {
+      "localizedValue": "WarCry"
+    },
+    {
+      "localizedValue": "Warhammer: Age of Sigmar TCG"
+    },
+    {
+      "localizedValue": "Warhammer 40,000 CCG"
+    },
+    {
+      "localizedValue": "Warlord: Saga of the Storm"
+    },
+    {
+      "localizedValue": "Webkinz TCG"
+    },
+    {
+      "localizedValue": "Weiss Schwarz"
+    },
+    {
+      "localizedValue": "Wildstorms CCG"
+    },
+    {
+      "localizedValue": "Wing Commander TCG"
+    },
+    {
+      "localizedValue": "Wixoss"
+    },
+    {
+      "localizedValue": "World of Warcraft TCG"
+    },
+    {
+      "localizedValue": "World of Warriors TCG"
+    },
+    {
+      "localizedValue": "Wyvern"
+    },
+    {
+      "localizedValue": "X-Men TCG"
+    },
+    {
+      "localizedValue": "Young Jedi CCG"
+    },
+    {
+      "localizedValue": "Yu-Gi-Oh! TCG"
+    },
+    {
+      "localizedValue": "Yu Yu Hakusho TCG"
+    },
+    {
+      "localizedValue": "Zombie World Order TCG"
+    }
+  ]
+}

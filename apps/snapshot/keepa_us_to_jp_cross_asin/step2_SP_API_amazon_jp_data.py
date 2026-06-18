@@ -1,14 +1,9 @@
 # step2_SP_API_amazon_jp_data.py
 # -*- coding: utf-8 -*-
 import time
-import requests
 import sys
-import traceback
 from datetime import datetime
 
-# ==========================================
-# 1. importの修正: get_spapi_prices_batch を追加
-# ==========================================
 from my_utils import (
     get_sql_server_connection, 
     get_spapi_access_token, 
@@ -22,21 +17,72 @@ from my_utils import (
 BATCH_SIZE = 10
 BASE_WAIT_TIME = 2.0
 
+# SELECT文の修正
 SQL_SELECT = """
     SELECT asin 
     FROM trx.amazon_cross_market_asin WITH (NOLOCK) 
     WHERE (jp_title IS NULL OR jp_title = '')
+       OR jp_price_updated_at IS NULL
+       OR jp_price_updated_at < keepa_last_caught_at
     ORDER BY last_seen_at DESC
 """
 
+# UPDATE文にタイムスタンプ更新を追加
 SQL_UPDATE = """
 UPDATE trx.amazon_cross_market_asin WITH (ROWLOCK)
-SET jp_title = ?, jp_lowest_price_y = ?, jp_brand = ?, last_seen_at = SYSDATETIME()
+SET jp_title = ?, 
+    jp_lowest_price_y = ?, 
+    jp_brand = ?, 
+    [length] = ?, 
+    [width] = ?, 
+    [height] = ?, 
+    [actual_weight] = ?, 
+    jp_price_updated_at = SYSDATETIME(),  -- ←追加
+    last_seen_at = SYSDATETIME()
 WHERE asin = ?
 """
 
 # ==========================================
-# 2. process_itemsの修正: 引数に price_map を追加
+# 単位変換ヘルパー関数
+# ==========================================
+def convert_to_cm(value, unit):
+    """各種長さの単位をセンチメートル(cm)に変換する"""
+    if value is None or not unit:
+        return None
+    
+    unit = unit.lower()
+    if unit in ['centimeters', 'centimeter', 'cm']:
+        return float(value)
+    elif unit in ['millimeters', 'millimeter', 'mm']:
+        return float(value) / 10.0
+    elif unit in ['meters', 'meter', 'm']:
+        return float(value) * 100.0
+    elif unit in ['inches', 'inch', 'in']:
+        return float(value) * 2.54
+    else:
+        return float(value)
+
+def convert_to_g(value, unit):
+    """各種重さの単位をグラム(g)に変換する"""
+    if value is None or not unit:
+        return None
+    
+    unit = unit.lower()
+    if unit in ['grams', 'gram', 'g']:
+        return float(value)
+    elif unit in ['kilograms', 'kilogram', 'kg']:
+        return float(value) * 1000.0
+    elif unit in ['milligrams', 'milligram', 'mg']:
+        return float(value) / 1000.0
+    elif unit in ['pounds', 'pound', 'lb', 'lbs']:
+        return float(value) * 453.592
+    elif unit in ['ounces', 'ounce', 'oz']:
+        return float(value) * 28.3495
+    else:
+        return float(value)
+
+# ==========================================
+# データ処理・DB保存関数
 # ==========================================
 def process_items(cursor, items, price_map):
     """取得したアイテムリストと価格マップをDBに保存する"""
@@ -46,24 +92,36 @@ def process_items(cursor, items, price_map):
         if not asin: continue
 
         summaries = item.get("summaries", [])
-        if not summaries:
-            continue
+        if not summaries: continue
             
         summary = summaries[0]
         attr = item.get("attributes", {})
         
+        # 1. タイトル、ブランド、価格の取得
         title = summary.get("itemName")
         brand = summary.get("brand") or attr.get("brand", [{}])[0].get("value")
-        
-        # Pricing APIから取得したprice_mapから価格を抽出（なければNone）
+        if brand: brand = str(brand).strip()
         price = price_map.get(asin)
         
-        if brand:
-            brand = str(brand).strip()
+        # 2. パッケージ寸法の取得と cm への変換
+        pkg_dims = attr.get("item_package_dimensions", [{}])[0] if attr.get("item_package_dimensions") else {}
+        length_cm = convert_to_cm(pkg_dims.get("length", {}).get("value"), pkg_dims.get("length", {}).get("unit"))
+        width_cm  = convert_to_cm(pkg_dims.get("width", {}).get("value"), pkg_dims.get("width", {}).get("unit"))
+        height_cm = convert_to_cm(pkg_dims.get("height", {}).get("value"), pkg_dims.get("height", {}).get("unit"))
+
+        # 3. パッケージ重量の取得と g への変換
+        pkg_weight = attr.get("item_package_weight", [{}])[0] if attr.get("item_package_weight") else {}
+        weight_g = convert_to_g(pkg_weight.get("value"), pkg_weight.get("unit"))
         
+        # 4. DBへの更新処理
         for retry in range(3):
             try:
-                cursor.execute(SQL_UPDATE, [title, price, brand, asin])
+                # SQLのパラメータ順に合わせる (タイトル, 価格, ブランド, 長さ, 幅, 高さ, 重量, ASIN)
+                cursor.execute(SQL_UPDATE, [
+                    title, price, brand, 
+                    length_cm, width_cm, height_cm, weight_g, 
+                    asin
+                ])
                 cursor.connection.commit() 
                 count += 1
                 break 
@@ -76,92 +134,79 @@ def process_items(cursor, items, price_map):
                 break
     return count
 
+# ==========================================
+# メイン処理
+# ==========================================
 def main():
-    conn = None
-    try:
-        conn = get_sql_server_connection()
-        cursor = conn.cursor()
-    except Exception as e:
-        print(f"DB接続エラー: {e}")
-        sys.exit(1)
-
-    print("更新対象を検索中...")
-    try:
-        cursor.execute(SQL_SELECT)
-        rows = cursor.fetchall()
-        target_asins = [row[0] for row in rows]
-    except Exception as e:
-        print(f"SQL実行エラー: {e}")
-        conn.close()
-        sys.exit(1)
-
-    print(f"更新対象: {len(target_asins)}件")
-
-    if not target_asins:
-        print("処理対象のASINがありませんでした。")
-        conn.close()
-        return
-
-    # 初回のトークン取得
-    try:
-        token = get_spapi_access_token("JP")
-    except Exception as e:
-        print(f"初期トークン取得失敗: {e}")
-        conn.close()
-        sys.exit(1)
-
-    total_processed = 0
-    
-    # ==========================================
-    # 3. mainループの修正: 両方のAPIを呼び出す
-    # ==========================================
-    for i in range(0, len(target_asins), BATCH_SIZE):
-        batch = target_asins[i : i + BATCH_SIZE]
-        
+    # 全体を無限ループで囲み、トークン切れ時にリスタートできるようにする
+    while True:
+        conn = None
         try:
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Processing batch {i} - {i+len(batch)}")
+            print("\n=== JPデータ更新処理を開始（または再開）します ===")
+            conn = get_sql_server_connection()
+            cursor = conn.cursor()
 
-            start_time = time.perf_counter()
-
-            # ① カタログ情報の取得 (タイトル・ブランド)
-            items = get_spapi_items_batch(batch, "JP", token)
+            cursor.execute(SQL_SELECT)
+            target_asins = [row[0] for row in cursor.fetchall()]
             
-            if items is None:
-                print("!!! APIから有効なレスポンスがありませんでした。トークン切れの可能性があるため終了します !!!")
-                conn.close()
-                sys.exit(1)
+            print(f"更新対象: {len(target_asins)}件")
+            if not target_asins:
+                print("処理対象のASINがありませんでした。")
+                break # 正常終了
 
-            # ② 価格情報の取得
-            # ここで price_map が定義されます
-            price_map = get_spapi_prices_batch(batch, "JP", token)
-            print(price_map)
+            token = get_spapi_access_token("JP")
+            total_processed = 0
+            
+            for i in range(0, len(target_asins), BATCH_SIZE):
+                batch = target_asins[i : i + BATCH_SIZE]
+                
+                try:
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Processing batch {i} - {i+len(batch)}")
+                    start_time = time.perf_counter()
 
-            end_time = time.perf_counter()
-            execution_time = end_time - start_time
-            print(f"実行時間: {execution_time:.5f} 秒")
+                    # ① カタログ情報の取得 (寸法データもここに含まれます)
+                    items = get_spapi_items_batch(batch, "JP", token)
+                    if items is None:
+                        raise ValueError("NEED_RESTART")
 
-            # ③ DB保存処理 (items と price_map の両方を渡す)
-            if items:
-                processed_count = process_items(cursor, items, price_map)
-                total_processed += processed_count
+                    # ② 価格情報の取得
+                    price_map = get_spapi_prices_batch(batch, "JP", token)
+
+                    # ③ DB保存処理
+                    if items:
+                        processed_count = process_items(cursor, items, price_map)
+                        total_processed += processed_count
+
+                    execution_time = time.perf_counter() - start_time
+                    print(f"  実行時間: {execution_time:.3f} 秒")
+                    
+                except Exception as e:
+                    error_msg = str(e)
+                    if "Unauthorized" in error_msg or "expired" in error_msg or str(e) == "NEED_RESTART":
+                        print("!!! トークン期限切れ検知。プログラムの最初からやり直します !!!")
+                        raise ValueError("NEED_RESTART") # 外側の例外処理へ飛ばす
+                    
+                    print(f"  [Error Occurred] {error_msg}")
+                    raise e # 予期せぬエラーはそのまま投げる
+                
+                time.sleep(BASE_WAIT_TIME)
+
+            print(f"=== 正常終了: 合計 {total_processed}件 処理しました ===")
+            break # 全て完了したらループを抜ける
             
         except Exception as e:
-            error_msg = str(e)
-            print(f"  [Error Occurred] {error_msg}")
-            
-            if "Unauthorized" in error_msg or "expired" in error_msg:
-                print("!!! トークン期限切れ検知。強制終了して再起動を待機します !!!")
-                if conn: conn.close()
+            if str(e) == "NEED_RESTART":
+                print("5秒後に再起動します...")
+                time.sleep(5)
+                continue # ループの先頭に戻ってやり直す
+            else:
+                print(f"致命的なエラーのため終了します: {e}")
                 sys.exit(1)
-            
-            print("!!! 予期せぬエラーのためシステムを再起動します !!!")
-            if conn: conn.close()
-            sys.exit(1)
-        
-        time.sleep(BASE_WAIT_TIME)
-
-    conn.close()
-    print(f"=== 正常終了: 合計 {total_processed}件 処理しました ===")
+                
+        finally:
+            # やり直す場合でも終了する場合でも、DB接続は必ず閉じる
+            if conn:
+                conn.close()
 
 if __name__ == "__main__":
     main()

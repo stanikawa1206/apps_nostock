@@ -1,0 +1,26 @@
+--- vendor_name ---
+'メルカリ'
+--- vendor_item_id ---
+'m15861926008'
+--- title_jp ---
+'ミュウ ★ 第3弾拡張パック 化石の秘密\u3000psa7'
+--- title_en ---
+'Mew ★ Expansion Pack 3 Fossil Secrets psa7'
+--- title_en_bk ---
+None
+--- description ---
+'ミュウ ★ 第3弾拡張パック 化石の秘密\u3000psa7'
+--- description_en ---
+'Title: Mew ★ Expansion Pack 3 Fossil Secrets PSA 7<br><br>Description: <br>This is a Mew card from the Expansion Pack 3: Fossil Secrets. It is graded PSA 7. Condition details are not provided.<br><br><hr><br><b>⚠️ International Buyers:</b><br><br>Please refer to the import fees information displayed by eBay at checkout.<br><br>If eBay shows "Includes import fees", no additional payment is normally required.<br><br>Import duties, taxes, and customs-related charges are determined by eBay, customs authorities, and/or shipping carriers, not by the seller.'
+--- 出品状況 ---
+'ポリシーNG'
+--- 出品状況詳細 ---
+None
+--- preset ---
+'ポケモンカードゲームポケモンカードゲームM'
+--- price ---
+45999
+--- created_at ---
+datetime.datetime(2026, 6, 18, 17, 6, 15)
+--- last_checked_at ---
+datetime.datetime(2026, 6, 18, 20, 38, 4)

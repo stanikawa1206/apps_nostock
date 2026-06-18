@@ -49,10 +49,11 @@ ON tgt.asin = src.asin
 WHEN MATCHED THEN
     UPDATE SET 
         last_seen_at = SYSDATETIME(), 
+        keepa_last_caught_at = SYSDATETIME(),  -- ←追加
         jp_category_id = src.jp_category_id
 WHEN NOT MATCHED THEN
-    INSERT (asin, last_seen_at, jp_category_id, us_existence)
-    VALUES (src.asin, SYSDATETIME(), src.jp_category_id, 0);
+    INSERT (asin, last_seen_at, keepa_last_caught_at, jp_category_id, us_existence)
+    VALUES (src.asin, SYSDATETIME(), SYSDATETIME(), src.jp_category_id, 0); -- ←追加
 """
 
 def save_asins_to_db(cursor, asin_list, cat_id):

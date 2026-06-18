@@ -1,0 +1,40 @@
+Game | required=True | mode=FREE_TEXT | usage=RECOMMENDED | cardinality=SINGLE
+Card Name | required=False | mode=FREE_TEXT | usage=RECOMMENDED | cardinality=SINGLE
+Character | required=False | mode=FREE_TEXT | usage=RECOMMENDED | cardinality=MULTI
+Grade | required=False | mode=SELECTION_ONLY | usage=RECOMMENDED | cardinality=SINGLE
+Age Level | required=False | mode=FREE_TEXT | usage=RECOMMENDED | cardinality=SINGLE
+Card Type | required=False | mode=FREE_TEXT | usage=RECOMMENDED | cardinality=SINGLE
+Speciality | required=False | mode=FREE_TEXT | usage=RECOMMENDED | cardinality=SINGLE
+Set | required=False | mode=FREE_TEXT | usage=RECOMMENDED | cardinality=SINGLE
+Rarity | required=False | mode=FREE_TEXT | usage=RECOMMENDED | cardinality=SINGLE
+Features | required=False | mode=FREE_TEXT | usage=RECOMMENDED | cardinality=MULTI
+Language | required=False | mode=FREE_TEXT | usage=RECOMMENDED | cardinality=SINGLE
+Manufacturer | required=False | mode=FREE_TEXT | usage=RECOMMENDED | cardinality=SINGLE
+Finish | required=False | mode=FREE_TEXT | usage=RECOMMENDED | cardinality=SINGLE
+Attribute/MTG:Color | required=False | mode=FREE_TEXT | usage=RECOMMENDED | cardinality=MULTI
+Creature/Monster Type | required=False | mode=FREE_TEXT | usage=RECOMMENDED | cardinality=MULTI
+Card Number | required=False | mode=FREE_TEXT | usage=RECOMMENDED | cardinality=SINGLE
+Autographed | required=False | mode=SELECTION_ONLY | usage=RECOMMENDED | cardinality=SINGLE
+Graded | required=False | mode=SELECTION_ONLY | usage=OPTIONAL | cardinality=SINGLE
+Card Condition | required=False | mode=SELECTION_ONLY | usage=OPTIONAL | cardinality=SINGLE
+Professional Grader | required=False | mode=FREE_TEXT | usage=OPTIONAL | cardinality=SINGLE
+Certification Number | required=False | mode=FREE_TEXT | usage=OPTIONAL | cardinality=SINGLE
+Year Manufactured | required=False | mode=SELECTION_ONLY | usage=OPTIONAL | cardinality=SINGLE
+Stage | required=False | mode=FREE_TEXT | usage=OPTIONAL | cardinality=SINGLE
+Country of Origin | required=False | mode=SELECTION_ONLY | usage=OPTIONAL | cardinality=SINGLE
+Vintage | required=False | mode=SELECTION_ONLY | usage=OPTIONAL | cardinality=SINGLE
+Material | required=False | mode=FREE_TEXT | usage=OPTIONAL | cardinality=SINGLE
+Card Size | required=False | mode=FREE_TEXT | usage=OPTIONAL | cardinality=SINGLE
+Illustrator | required=False | mode=FREE_TEXT | usage=OPTIONAL | cardinality=SINGLE
+HP | required=False | mode=FREE_TEXT | usage=OPTIONAL | cardinality=SINGLE
+Attack/Power | required=False | mode=FREE_TEXT | usage=OPTIONAL | cardinality=SINGLE
+Defense/Toughness | required=False | mode=FREE_TEXT | usage=OPTIONAL | cardinality=SINGLE
+Autograph Authentication | required=False | mode=SELECTION_ONLY | usage=OPTIONAL | cardinality=SINGLE
+California Prop 65 Warning | required=False | mode=FREE_TEXT | usage=OPTIONAL | cardinality=SINGLE
+Cost | required=False | mode=FREE_TEXT | usage=OPTIONAL | cardinality=SINGLE
+Autograph Format | required=False | mode=FREE_TEXT | usage=OPTIONAL | cardinality=SINGLE
+Signed By | required=False | mode=FREE_TEXT | usage=OPTIONAL | cardinality=MULTI
+Autograph Authentication Number | required=False | mode=FREE_TEXT | usage=OPTIONAL | cardinality=SINGLE
+Convention/Event | required=False | mode=FREE_TEXT | usage=OPTIONAL | cardinality=SINGLE
+Customized | required=False | mode=FREE_TEXT | usage=OPTIONAL | cardinality=SINGLE
+Franchise | required=False | mode=FREE_TEXT | usage=OPTIONAL | cardinality=SINGLE

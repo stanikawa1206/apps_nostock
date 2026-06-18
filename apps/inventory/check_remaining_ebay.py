@@ -206,7 +206,7 @@ def pull_remaining_targets(conn, worker_name: str, batch_size: int = 5):
             INNER JOIN trx.listings AS l
                 ON l.vendor_name    = v.vendor_name
                AND l.vendor_item_id = v.vendor_item_id
-            INNER JOIN mst.v_presets AS p
+            INNER JOIN mst.presets_lookup AS p
                 ON p.preset = v.preset
             WHERE
                 l.is_deleted = 0

@@ -90,10 +90,16 @@ def keepa_request(endpoint: str, params: dict = None, data: dict = None) -> dict
 def get_spapi_access_token(region: str = "JP") -> str:
     client_id = os.getenv("LWA_CLIENT_ID")
     client_secret = os.getenv("LWA_CLIENT_SECRET")
-    refresh_token = os.getenv("REFRESH_TOKEN_US") if region == "US" else os.getenv("REFRESH_TOKEN")
+    
+    # USとCAは北米(NA)用のトークンを共有
+    if region in ("US", "CA"):
+        refresh_token = os.getenv("REFRESH_TOKEN_US")
+        target = "REFRESH_TOKEN_US"
+    else:
+        refresh_token = os.getenv("REFRESH_TOKEN")
+        target = "REFRESH_TOKEN"
 
     if not (refresh_token and client_id and client_secret):
-        target = "REFRESH_TOKEN_US" if region == "US" else "REFRESH_TOKEN"
         raise RuntimeError(f"SP-API認証情報不足: {target}")
 
     url = "https://api.amazon.com/auth/o2/token"
@@ -112,16 +118,18 @@ def get_spapi_access_token(region: str = "JP") -> str:
 def get_spapi_items_batch(asin_list: List[str], region: str, access_token: str) -> List[Dict[str, Any]]:
     if not asin_list: return []
 
+    # 3カ国対応の分岐
     if region == "US":
         base_url = SPAPI_ENDPOINT_US
         mp_id = MARKETPLACE_ID_US
+    elif region == "CA":
+        base_url = SPAPI_ENDPOINT_US  # CAはUSと同じ北米サーバーを使用
+        mp_id = "A2EUQ1WTGCTBG2"      # カナダのマーケットプレイスID
     else:
         base_url = SPAPI_ENDPOINT_JP
         mp_id = MARKETPLACE_ID_JP
 
     url = f"{base_url}/catalog/2022-04-01/items"
-    
-    # 【重要】offers を削除しました (これがエラーの原因でした)
     included_data = "summaries,attributes"
 
     params = {
@@ -139,16 +147,13 @@ def get_spapi_items_batch(asin_list: List[str], region: str, access_token: str) 
     
     try:
         r = requests.get(url, params=params, headers=headers, timeout=30)
-        
         if r.status_code == 404:
             return []
-            
         r.raise_for_status()
         data = r.json()
         return data.get("items", [])
         
     except Exception as e:
-        # デバッグ用に詳細エラーを表示
         if 'r' in locals() and r is not None:
              print(f"[SP-API Error Detail] {r.text}")
         print(f"[SP-API Error ({region})] {e}")
@@ -160,8 +165,16 @@ def get_spapi_items_batch(asin_list: List[str], region: str, access_token: str) 
 def get_spapi_prices_batch(asin_list: List[str], region: str, access_token: str) -> Dict[str, float]:
     if not asin_list: return {}
 
-    base_url = SPAPI_ENDPOINT_US if region == "US" else SPAPI_ENDPOINT_JP
-    mp_id = MARKETPLACE_ID_US if region == "US" else MARKETPLACE_ID_JP
+    # 3カ国対応の分岐
+    if region == "US":
+        base_url = SPAPI_ENDPOINT_US
+        mp_id = MARKETPLACE_ID_US
+    elif region == "CA":
+        base_url = SPAPI_ENDPOINT_US  # CAはUSと同じ北米サーバーを使用
+        mp_id = "A2EUQ1WTGCTBG2"      # カナダのマーケットプレイスID
+    else:
+        base_url = SPAPI_ENDPOINT_JP
+        mp_id = MARKETPLACE_ID_JP
 
     url = f"{base_url}/products/pricing/v0/competitivePrice"
     params = {"Asins": ",".join(asin_list), "ItemType": "Asin", "MarketplaceId": mp_id}
@@ -178,26 +191,21 @@ def get_spapi_prices_batch(asin_list: List[str], region: str, access_token: str)
         for item in payload:
             asin = item.get("ASIN")
             product = item.get("Product", {})
-            
             price = None
             
-            # 1. カート価格 (CompetitivePricing) の中から "New" を探す
             comp_pricing = product.get("CompetitivePricing", {})
             comp_prices = comp_pricing.get("CompetitivePrices", [])
             for cp in comp_prices:
-                # conditionが 'New' であることを確認
                 if cp.get("condition") == "New":
                     amt = cp.get("Price", {}).get("ListingPrice", {}).get("Amount")
                     if amt:
                         price = amt
                         break
             
-            # 2. カート価格に新品がない場合、一般出品 (Offers) から "New" を探す
             if price is None:
                 offers = product.get("Offers", [])
                 for offer in offers:
-                    # condition が 'New' または 'New' の派生（subcondition）を確認
-                    cond = offer.get("SubCondition") # Offers内は SubCondition 表記の場合が多い
+                    cond = offer.get("SubCondition")
                     if cond == "new":
                         amt = offer.get("BuyingPrice", {}).get("ListingPrice", {}).get("Amount")
                         if amt:

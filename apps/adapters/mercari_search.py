@@ -220,7 +220,7 @@ def make_search_url(*,
 
 def fetch_active_presets(conn) -> List[Dict]:
     """
-    mst.v_presets から行を読み込む（共通）
+    mst.presets_lookupから行を読み込む（共通）
     """
     sql = """
         SELECT
@@ -236,7 +236,7 @@ def fetch_active_presets(conn) -> List[Dict]:
             default_brand_en,
             type_ebay,
             category_group
-          FROM [nostock].[mst].[v_presets] WITH (NOLOCK)
+          FROM [nostock].[mst].[presets_lookup] WITH (NOLOCK)
          ORDER BY preset
     """
     with conn.cursor() as cur:

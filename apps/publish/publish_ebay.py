@@ -79,6 +79,101 @@ HEADS_FOR_7DAY_SKIP: Set[str] = {
     "計算価格が範囲外",
 }
 
+# ========= トレカ（鑑定済みカード）Condition 関連定義 =========
+# eBay get_item_condition_policies（categoryId=183454）で確認した実際の conditionDescriptorValueId。
+# 鑑定機関の略称 → conditionDescriptorValues[].conditionDescriptorValueId (descriptor 27501: Professional Grader)
+CARD_GRADER_VALUE_IDS: Dict[str, str] = {
+    "PSA": "275010",
+    "BCCG": "275011",
+    "BVG": "275012",
+    "BGS": "275013",
+    "CGC": "275015",
+    "SGC": "275016",
+    "KSA": "275017",
+    "GMA": "275018",
+    "HGA": "275019",
+    "ISA": "2750110",
+    "PCA": "2750111",
+    "GSG": "2750112",
+    "PGS": "2750113",
+    "MNT": "2750114",
+    "TAG": "2750115",
+    "RCG": "2750117",
+    "PCG": "2750118",
+    "ACE": "2750119",
+    "CGA": "2750120",
+    "TCG": "2750121",
+    "ARK": "2750122",
+    "AGS": "2750124",
+    "DSG": "2750125",
+    "GRAAD": "2750127",
+}
+
+# グレード数値 → conditionDescriptorValueId (descriptor 27502: Grade)
+CARD_GRADE_VALUE_IDS: Dict[str, str] = {
+    "10": "275020",
+    "9.5": "275021",
+    "9": "275022",
+    "8.5": "275023",
+    "8": "275024",
+    "7.5": "275025",
+    "7": "275026",
+    "6.5": "275027",
+    "6": "275028",
+    "5.5": "275029",
+    "5": "2750210",
+    "4.5": "2750211",
+    "4": "2750212",
+    "3.5": "2750213",
+    "3": "2750214",
+    "2.5": "2750215",
+    "2": "2750216",
+    "1.5": "2750217",
+    "1": "2750218",
+}
+
+_CARD_GRADE_TEXT_RE = re.compile(r"^([A-Za-z]{2,6})\s*([0-9]+(?:\.[0-9])?)$")
+
+def parse_card_grade_text(text: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    「グレード」属性の values[0].text（例: "PSA10" / "BGS 9.5"）から
+    鑑定機関の略称とグレード数値を抽出する。解析できない場合は (None, None)。
+    """
+    s = (text or "").strip().upper()
+    m = _CARD_GRADE_TEXT_RE.match(s)
+    if not m:
+        return None, None
+    return m.group(1), m.group(2)
+
+def build_card_condition_fields(item_attributes: List[Dict[str, Any]]) -> Tuple[str, List[Dict[str, Any]]]:
+    """
+    トレカの item_attributes から *ConditionID と conditionDescriptors を組み立てる。
+
+    - 「グレード」属性が存在しない → 未鑑定（4000 / Card Condition = Lightly Played (Excellent) 固定）
+    - 「グレード」属性が存在し、values[0].text が "PSA10" 等の形式で解析できる
+        → 鑑定済み（2750 / Professional Grader + Grade）
+    - 「グレード」属性が存在するが解析できない（未知の鑑定機関表記など）
+        → タイトル/説明文は見ずに安全側に倒し、未鑑定（4000）として扱う
+    """
+    grade_attr = next((a for a in (item_attributes or []) if a.get("text") == "グレード"), None)
+
+    if grade_attr:
+        values = grade_attr.get("values") or []
+        grade_text = (values[0].get("text") if values else "") or ""
+        grader_abbr, grade_num = parse_card_grade_text(grade_text)
+        grader_value_id = CARD_GRADER_VALUE_IDS.get(grader_abbr or "")
+        grade_value_id = CARD_GRADE_VALUE_IDS.get(grade_num or "")
+
+        if grader_value_id and grade_value_id:
+            return "2750", [
+                {"name": "27501", "values": [grader_value_id]},
+                {"name": "27502", "values": [grade_value_id]},
+            ]
+
+        print(f"[WARN] トレカ グレード解析失敗: text={grade_text!r} → 未鑑定として処理")
+
+    return "4000", [{"name": "40001", "values": ["400015"]}]
+
 def is_fatal_renderer_error(e: Exception) -> bool:
     s = str(e).lower()
 
@@ -181,6 +276,7 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str, driver) ->
         "preset": preset,
         "description": detail.get("description", ""),
         "description_en": "",
+        "item_attributes": detail.get("item_attributes", []) ,
     }
 
 
@@ -255,6 +351,7 @@ def parse_detail_personal(page, url: str, preset: str, vendor_name: str) -> Dict
         "preset": preset,
         "description": item.get("description", ""),
         "description_en": "",
+        "item_attributes": item.get("item_attributes", []),
     }
 
 # ========= DB I/O =========
@@ -779,6 +876,80 @@ JSON format:
     return is_ng, reason
 
 
+def has_junk_or_defective_condition(
+    jp_title: str,
+    jp_description: str,
+) -> tuple[bool, str]:
+    """
+    日本語タイトル・説明から、ジャンク品・動作未確認・現状品など
+    正常使用できない可能性が高い商品かを GPT で判定する。
+    デジカメカテゴリ専用。
+
+    戻り値:
+      (is_ng, reason)
+        - is_ng: True なら出品除外
+        - reason: NG と判断した理由（短文）。OK の場合は空文字。
+    """
+    text = ((jp_title or "") + "\n" + (jp_description or "")).strip()
+    if not text:
+        return False, ""
+
+    client = get_openai_client()
+
+    prompt = f"""
+You are checking whether a used Japanese item listing describes a defective, junk, or non-functional product.
+
+Determine if the following Japanese text indicates ANY of these conditions:
+- Junk item (ジャンク品)
+- Operation unconfirmed (動作未確認)
+- Powers on only (通電のみ確認)
+- As-is / current condition only (現状品, 現状渡し)
+- For parts (部品取り)
+- Requires repair (修理前提)
+- No operation guarantee (動作保証なし)
+- Broken or damaged functionality
+
+Important rules:
+- "ジャンクではありません" / "ジャンク品ではない" → NOT defective (safe to list)
+- "動作確認済み" / "動作問題なし" / "動作良好" → NOT defective (safe to list)
+- If the text only describes cosmetic flaws (scratches, dirt) but NOT functional issues → safe to list
+- If unclear or ambiguous → treat as safe (return ng: false)
+
+Return ONLY valid JSON. No explanation, no markdown.
+
+Japanese text:
+{text}
+
+JSON format:
+{{
+  "ng": true or false,
+  "reason": "short explanation"
+}}
+""".strip()
+
+    resp = client.responses.create(
+        model="gpt-4o-mini",
+        input=prompt,
+        temperature=0,
+    )
+
+    import json
+
+    raw = (resp.output_text or "").strip()
+    if not raw:
+        return False, ""
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return False, ""
+
+    is_ng = bool(data.get("ng"))
+    reason = data.get("reason") or ""
+
+    return is_ng, reason
+
+
 # =========================
 # heavy_check_detail / post_to_ebay（あなたが貼った版のまま）
 # =========================
@@ -1071,6 +1242,21 @@ def heavy_check_detail(
         writes_since_commit += 1
         writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
         return None, debug_unavailable_dump, writes_since_commit, 1, 0
+
+    # === 5) ジャンク品・動作未確認判定（デジカメのみ） ===
+    if category_group == "デジカメ":
+        is_junk, junk_reason = has_junk_or_defective_condition(
+            jp_title=jp_title,
+            jp_description=desc_jp,
+        )
+        if is_junk:
+            print(f"  └─ [NG] ジャンク疑い判定により却下: {junk_reason}")
+            rec["listing_head"] = "NG(ジャンク疑い)"
+            rec["listing_detail"] = junk_reason or "Junk / defective / no operation guarantee"
+            upsert_vendor_item(conn, rec)
+            writes_since_commit += 1
+            writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
+            return None, debug_unavailable_dump, writes_since_commit, 1, 0
 
     # =========================
     # GA 補色・修復チェック
@@ -1382,6 +1568,13 @@ def post_to_ebay(
 
         if category_group == "デジカメ" and model_name:
             payload["C:Model"] = model_name
+
+        if category_group == "トレカ":
+            condition_id, condition_descriptors = build_card_condition_fields(rec.get("item_attributes"))
+            payload["*ConditionID"] = condition_id
+            payload["conditionDescriptors"] = condition_descriptors
+            # 現在のトレカ運用はポケモンカードのみのため固定値
+            payload["C:Game"] = "Pokémon TCG"
 
         return post_one_item(payload, acct, acct_policies_map[acct])
 
@@ -1818,7 +2011,7 @@ def take_one_vendor_item(conn, preset_group, processing_by, account_name):
                 v.vendor_updated_at IS NULL
                 OR v.vendor_updated_at >= DATEADD(DAY, -40, SYSDATETIME())
             )
-            AND ISNULL(v.[出品状況], N'') NOT IN (N'NG(GA補色)', N'NG(危険素材)', N'ポリシーNG')
+            AND ISNULL(v.[出品状況], N'') NOT IN (N'NG(GA補色)', N'NG(危険素材)', N'ポリシーNG', N'NG(ジャンク疑い)')
             AND ISNULL(v.shipping_days, N'') NOT IN (
                 N'8〜14日で発送', N'90日以内で発送'
             )

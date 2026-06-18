@@ -192,13 +192,22 @@ def register_inventory_item(row: Dict[str, Any], token: str) -> Dict[str, Any]:
     - Type は未指定なら送らない（誤って "Wallet" などが入らないように）
     - Platform / Game Name が payload にあれば Item Specifics に反映
     - *ConditionID の綴り修正
+    - トレカカテゴリ（183050/183454/261328）は ConditionID の意味が異なるため専用マッピングを使用
     """
     sku = str(row["CustomLabel"]).strip()
     url = f"https://api.ebay.com/sell/inventory/v1/inventory_item/{sku}"
 
     # Condition（*ConditionID に合わせて綴り修正）
     cond_map = {"1000": "NEW", "3000": "USED_EXCELLENT", "4000": "USED_GOOD", "5000": "USED_ACCEPTABLE"}
-    cond = cond_map.get(str(row.get("*ConditionID", "3000")).strip(), "USED_EXCELLENT")
+    # トレカ専用: 2750(鑑定済み)=LIKE_NEW, 4000(未鑑定)=USED_VERY_GOOD
+    TCG_CATEGORY_IDS = {"183050", "183454", "261328"}
+    TCG_COND_MAP = {"2750": "LIKE_NEW", "4000": "USED_VERY_GOOD"}
+
+    category_id = str(row.get("category_id", "")).strip()
+    if category_id in TCG_CATEGORY_IDS:
+        cond = TCG_COND_MAP.get(str(row.get("*ConditionID", "4000")).strip(), "USED_VERY_GOOD")
+    else:
+        cond = cond_map.get(str(row.get("*ConditionID", "3000")).strip(), "USED_EXCELLENT")
 
     # Title/Description 長さ調整
     title = (row.get("*Title", "") or "").strip()
@@ -224,6 +233,7 @@ def register_inventory_item(row: Dict[str, Any], token: str) -> Dict[str, Any]:
     style_name = (row.get("C:Style") or row.get("Style") or "").strip()
     platform = (row.get("platform") or row.get("C:Platform") or "").strip()
     game_name = (row.get("game_name") or row.get("C:Game Name") or "").strip()
+    game = (row.get("C:Game") or "").strip()
 
     ink_color = row.get("C:Ink Color")
     material = row.get("C:Material")
@@ -242,6 +252,8 @@ def register_inventory_item(row: Dict[str, Any], token: str) -> Dict[str, Any]:
         aspects["Platform"] = [platform]
     if game_name:
         aspects["Game Name"] = [game_name]
+    if game:
+        aspects["Game"] = [game]
     if ink_color:
         aspects["Ink Color"] = ink_color if isinstance(ink_color, list) else [str(ink_color)]
     if material:
@@ -262,6 +274,11 @@ def register_inventory_item(row: Dict[str, Any], token: str) -> Dict[str, Any]:
         "availability": {"shipToLocationAvailability": {"quantity": int(row.get("*Quantity", 1))}},
         "condition": cond,
     }
+
+    # conditionDescriptors（トレカの鑑定情報 / Card Condition 等）
+    condition_descriptors = row.get("conditionDescriptors")
+    if condition_descriptors:
+        payload["conditionDescriptors"] = condition_descriptors
 
     for attempt in range(3):
         try:
