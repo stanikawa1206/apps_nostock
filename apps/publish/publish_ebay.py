@@ -109,6 +109,13 @@ CARD_GRADER_VALUE_IDS: Dict[str, str] = {
     "GRAAD": "2750127",
 }
 
+# ========= 危険素材（NG素材）判定 対象カテゴリグループ定義 =========
+# 財布・財布メンズのみ判定対象。それ以外（デジカメ/ペン/スカーフ/スカーフメンズ等）はスキップ。
+RISKY_MATERIAL_TARGET_CATEGORY_GROUPS: Set[str] = {
+    "財布",
+    "財布メンズ",
+}
+
 # グレード数値 → conditionDescriptorValueId (descriptor 27502: Grade)
 CARD_GRADE_VALUE_IDS: Dict[str, str] = {
     "10": "275020",
@@ -1231,11 +1238,14 @@ def heavy_check_detail(
 
             return None, debug_unavailable_dump, writes_since_commit, 1, 0
 
-    # === 4.9) 危険素材判定 ===
+    # === 4.9) 危険素材判定（財布・財布メンズのみ対象） ===
     jp_title = (rec.get("title_jp") or "").strip()
     desc_jp = (rec.get("description") or "").strip()
 
-    if contains_risky_word(jp_title, desc_jp):
+    if (
+        category_group in RISKY_MATERIAL_TARGET_CATEGORY_GROUPS
+        and contains_risky_word(jp_title, desc_jp)
+    ):
         rec["listing_head"] = "NG(危険素材)"
         rec["listing_detail"] = "エキゾチック/危険素材キーワード検出"
         upsert_vendor_item(conn, rec)
