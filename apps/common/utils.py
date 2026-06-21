@@ -104,8 +104,6 @@ def compute_cost_range_jpy_from_usd_range(
             return "DDP"
         elif mode_up == "GA":
             return "GA" if usd >= Decimal("500") else "DDP"
-        elif mode_up == "GA_CARD":
-            return "GA" if usd >= Decimal("250") else "DDP"
         else:
             raise ValueError(f"未知のmodeです: {mode}")
 
@@ -243,29 +241,6 @@ def compute_start_price_usd(
         # -------------------------
         else:
             final_price = usd_ga
-
-    elif mode_up == "GA_CARD":
-
-        ship_ga = Decimal(DOMESTIC_SHIPPING_JPY)
-        duty_ga = Decimal("0")
-        usd_ga = calc_usd(ship_ga, duty_ga)
-
-        ship_ddp = Decimal(INTL_SHIPPING_JPY)
-        duty_ddp = Decimal(str(DUTY_RATE))
-        usd_ddp = calc_usd(ship_ddp, duty_ddp)
-
-        GA_THRESHOLD = Decimal("200.00")
-        GA_FORCE_PRICE = Decimal("275.00")
-
-        if usd_ddp < GA_THRESHOLD:
-            final_price = usd_ddp
-
-        elif usd_ga <= GA_FORCE_PRICE:
-            final_price = GA_FORCE_PRICE
-
-        else:
-            final_price = usd_ga
-
 
     # -------------------------
     # 最終レンジチェック
