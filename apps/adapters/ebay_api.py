@@ -689,12 +689,26 @@ def delete_items_from_ebay_batch(account: str, item_ids: list[str]) -> Dict[str,
         has_endtime = re.search(r"<EndTime>", b) is not None
         em = re.search(r"<ErrorCode>(\d+)</ErrorCode>", b)
         err = int(em.group(1)) if em else None
+        lm = re.search(r"<LongMessage>(.*?)</LongMessage>", b, flags=re.S)
+        sm = re.search(r"<ShortMessage>(.*?)</ShortMessage>", b, flags=re.S)
+        error_message = (lm.group(1).strip() if lm else (sm.group(1).strip() if sm else ""))
         ok = (not has_errors) or (err == 1047) or has_endtime
-        results.append({"item_id": mid, "success": bool(ok), "error_code": err})
+        results.append({
+            "item_id": mid,
+            "success": bool(ok),
+            "error_code": err,
+            "error_message": error_message,
+        })
 
     if not results:
         em = re.search(r"<ErrorCode>(\d+)</ErrorCode>", text)
-        return {"success": False, "error_code": int(em.group(1)) if em else "parse_error", "raw_response": text}
+        lm = re.search(r"<LongMessage>(.*?)</LongMessage>", text, flags=re.S)
+        return {
+            "success": False,
+            "error_code": int(em.group(1)) if em else "parse_error",
+            "error_message": lm.group(1).strip() if lm else "",
+            "raw_response": text,
+        }
     if any(r.get("error_code") in (518, 429) for r in results):
         return {"success": False, "error_code": 518, "results": results, "message": "per-container rate limit", "raw_response": text}
     return {"success": True, "results": results, "raw_response": text}

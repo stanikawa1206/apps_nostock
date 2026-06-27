@@ -2035,6 +2035,16 @@ def take_one_vendor_item(conn, preset_group, processing_by, account_name):
                 AND l.vendor_item_id = v.vendor_item_id
                 AND l.is_deleted = 0
             )
+            AND NOT (
+                (
+                    (v.item_condition_id = 1 AND pl.category_group NOT IN (N'ペン', N'製図用品'))
+                    OR pl.category_group IN (N'トレカ', N'デジカメ')
+                    OR (v.item_condition_id <> 1 AND pl.default_brand_en IN ('Louis Vuitton', 'CHANEL'))
+                )
+                AND ISNULL(s.allow_new_items, 0) <> 1
+                AND ISNULL(s.rating_count, 0) < 500
+                AND s.last_checked_at >= DATEADD(DAY, -30, SYSDATETIME())
+            )
         OPTION (MAXDOP 1);
         """
 

@@ -2,6 +2,9 @@
 from my_utils import get_sql_server_connection
 from datetime import datetime
 
+# mst.amazon_category から処理対象カテゴリを1件取得する。
+# ASINが1件以上存在し、かつランキング閾値が目標値と一致していない
+# カテゴリをcategory_id昇順で取り出す。
 def get_next_category(target_min_rank, target_max_rank):
     """
     指定されたランキング閾値とDBの値が一致しない、
@@ -30,6 +33,9 @@ def get_next_category(target_min_rank, target_max_rank):
         return {"id": row[0], "name": row[1]}
     return None
 
+# 指定カテゴリのランキング閾値（min/max）と処理日（fetched_at）を
+# mst.amazon_category へUPDATEする。
+# 更新失敗時はロールバックし、エラー内容を標準出力へ出力する。
 def update_category_status(category_id, min_rank, max_rank):
     """指定されたカテゴリIDの取得日とランキング閾値を更新する"""
     conn = get_sql_server_connection()

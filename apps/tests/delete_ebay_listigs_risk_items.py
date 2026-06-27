@@ -4,10 +4,13 @@ trim_ebay_listings_manual_list.py
 
 仕様:
 - TARGET_SKUS_RAW に SKU を貼るだけ
-- trx.listings から account を逆引き
+- trx.listings から account, listing_id を逆引き
+  (eBay の EndItems API には listing_id（eBay側の実ItemID）を渡す。
+   vendor_item_id は出品者側SKUであり eBay の ItemID ではないため、
+   削除APIにはそのまま渡さない)
 - eBay削除成功後:
-    1. trx.listings.is_deleted = 1
-    2. trx.vendor_item.出品不可flg = 1
+    1. trx.listings.is_deleted = 1   (listing_id で更新)
+    2. trx.vendor_item.出品不可flg = 1  (vendor_item_id で更新)
 
 前提:
 - vendor_item_id は trx.listings 上で1件のみ
@@ -35,7 +38,7 @@ from apps.adapters.ebay_api import delete_items_from_ebay_batch
 # =========================================================
 
 TARGET_SKUS_RAW = """
-m13309873446
+m67671632499
 """
 
 TARGET_SKUS = [
@@ -229,12 +232,10 @@ def get_target_pairs():
 
     """
     TARGET_SKUS を元に
-
     trx.listings から
-
     account,
-    vendor_item_id
-
+    listing_id,   (eBay側の実ItemID。EndItems APIに渡すのはこちら)
+    vendor_item_id  (出品者側SKU。DB更新キーとしてのみ使う)
     を取得
     """
 
@@ -252,6 +253,7 @@ def get_target_pairs():
             cur.execute("""
                 SELECT
                     account,
+                    listing_id,
                     vendor_item_id
                 FROM trx.listings
                 WHERE vendor_item_id = ?
@@ -266,18 +268,25 @@ def get_target_pairs():
                 continue
 
             account = str(row[0])
-            vendor_item_id = str(row[1])
+            listing_id = str(row[1])
+            vendor_item_id = str(row[2])
 
             pairs.append(
-                (account, vendor_item_id)
+                (account, listing_id, vendor_item_id)
             )
 
     return pairs
 
 
-def delete_rows_from_sql(account: str, item_ids):
+def delete_rows_from_sql(account: str, pairs):
 
-    if not item_ids:
+    """
+    pairs: [(listing_id, vendor_item_id), ...]
+    eBay側で削除済みと判定された listing_id に対して、
+    trx.listings は listing_id で、trx.vendor_item は vendor_item_id で更新する。
+    """
+
+    if not pairs:
         return 0
 
     deleted = 0
@@ -286,7 +295,7 @@ def delete_rows_from_sql(account: str, item_ids):
 
         cur = conn.cursor()
 
-        for iid in item_ids:
+        for listing_id, vendor_item_id in pairs:
 
             # =================================================
             # trx.listings
@@ -299,9 +308,9 @@ def delete_rows_from_sql(account: str, item_ids):
                     deleted_at = SYSDATETIME(),
                     delete_reason = N'特別'
                 WHERE account = ?
-                AND vendor_item_id = ?
+                AND listing_id = ?
                 AND is_deleted = 0
-            """, account, iid)
+            """, account, listing_id)
 
             deleted += cur.rowcount
 
@@ -309,12 +318,11 @@ def delete_rows_from_sql(account: str, item_ids):
             # trx.vendor_item
             # =================================================
 
-            
             cur.execute("""
                 UPDATE trx.vendor_item
                 SET 出品不可flg = 1
                 WHERE vendor_item_id = ?
-            """, iid)
+            """, vendor_item_id)
 
         conn.commit()
 
@@ -339,6 +347,11 @@ def run_enditems_batch(account: str, batch_ids):
             "ng_ids": [],
             "rate_limited": False
         }
+
+    print(
+        f"📤 {account}: "
+        f"eBayへ渡すID(listing_id)={batch_ids}"
+    )
 
     RATE_LIMITER.before_call()
 
@@ -383,15 +396,19 @@ def run_enditems_batch(account: str, batch_ids):
 
             print(
                 f"DEBUG: "
+                f"listing_id={iid}, "
                 f"code={code}, "
                 f"message={message}"
             )
 
-            if code == "37":
-
-                ok_ids.append(iid)
-
-            elif code in ("518", "429"):
+            # 注意: code "37" は eBay公式定義では
+            # "Input data is invalid"（入力データ不正）であり、
+            # 「既に終了済み」ではない。
+            # 以前はここで成功扱いしていたため、誤った listing_id
+            # (=SKUを渡してしまうバグ) を送っても DB だけ
+            # is_deleted=1 になり、eBay側の出品は残るという
+            # 不整合が発生していた。成功扱いにしない。
+            if code in ("518", "429"):
 
                 rl_ids.append(iid)
 
@@ -425,13 +442,24 @@ def run_enditems_batch(account: str, batch_ids):
 
 def delete_items_from_ebay_and_sql(
     account: str,
-    item_ids
+    items
 ):
 
+    """
+    items: [(listing_id, vendor_item_id), ...]
+    eBayへ渡すのは listing_id。vendor_item_id は
+    trx.vendor_item 更新のために listing_id と紐付けて保持する。
+    """
+
+    sku_by_listing_id = {
+        str(listing_id): str(vendor_item_id)
+        for listing_id, vendor_item_id in items
+    }
+
     item_ids = [
-        str(i)
-        for i in item_ids
-        if not is_deferred(i)
+        listing_id
+        for listing_id in sku_by_listing_id.keys()
+        if not is_deferred(listing_id)
     ]
 
     if not item_ids:
@@ -445,7 +473,8 @@ def delete_items_from_ebay_and_sql(
 
     print(
         f"▶ {account}: "
-        f"{len(item_ids)}件 削除開始"
+        f"{len(item_ids)}件 削除開始 "
+        f"(listing_id={item_ids})"
     )
 
     deleted_total = 0
@@ -498,11 +527,19 @@ def delete_items_from_ebay_and_sql(
 
             for iid in res["ok_ids"]:
 
-                print(f"    ✔ {iid}")
+                print(
+                    f"    ✔ listing_id={iid} "
+                    f"(sku={sku_by_listing_id.get(iid, '?')})"
+                )
+
+            ok_pairs = [
+                (iid, sku_by_listing_id.get(iid))
+                for iid in res["ok_ids"]
+            ]
 
             n = delete_rows_from_sql(
                 account,
-                res["ok_ids"]
+                ok_pairs
             )
 
             print(
@@ -544,9 +581,11 @@ def main():
 
     by_account = defaultdict(list)
 
-    for acc, iid in target_pairs:
+    for acc, listing_id, vendor_item_id in target_pairs:
 
-        by_account[str(acc)].append(str(iid))
+        by_account[str(acc)].append(
+            (str(listing_id), str(vendor_item_id))
+        )
 
     print(
         f"🧪 手動削除"
