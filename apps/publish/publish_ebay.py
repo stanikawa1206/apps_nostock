@@ -109,6 +109,15 @@ CARD_GRADER_VALUE_IDS: Dict[str, str] = {
     "GRAAD": "2750127",
 }
 
+# ========= トレカ: eBay "Game" aspect 値マッピング =========
+# default_brand_en (mst.presets_lookup) → eBay aspects["Game"] の有効値
+CARD_BRAND_TO_GAME: Dict[str, str] = {
+    "Pokemon":    "Pokémon TCG",
+    "Pokémon":   "Pokémon TCG",
+    "Yu-Gi-Oh!": "Yu-Gi-Oh! TCG",
+    "Konami":    "Yu-Gi-Oh! TCG",
+}
+
 # ========= 危険素材（NG素材）判定 対象カテゴリグループ定義 =========
 # 財布・財布メンズのみ判定対象。それ以外（デジカメ/ペン/スカーフ/スカーフメンズ等）はスキップ。
 RISKY_MATERIAL_TARGET_CATEGORY_GROUPS: Set[str] = {
@@ -1579,12 +1588,20 @@ def post_to_ebay(
         if category_group == "デジカメ" and model_name:
             payload["C:Model"] = model_name
 
-        if category_group == "トレカ":
+        if category_group in ("トレカ", "遊戯王カード"):
             condition_id, condition_descriptors = build_card_condition_fields(rec.get("item_attributes"))
             payload["*ConditionID"] = condition_id
             payload["conditionDescriptors"] = condition_descriptors
-            # 現在のトレカ運用はポケモンカードのみのため固定値
-            payload["C:Game"] = "Pokémon TCG"
+
+            if category_group == "遊戯王カード":
+                game = "Yu-Gi-Oh! TCG"
+            else:
+                game = CARD_BRAND_TO_GAME.get(default_brand_en, "")
+
+            if game:
+                payload["C:Game"] = game
+            else:
+                print(f"[WARN] C:Game未解決: default_brand_en={default_brand_en!r}")
 
         return post_one_item(payload, acct, acct_policies_map[acct])
 
