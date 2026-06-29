@@ -1262,8 +1262,8 @@ def heavy_check_detail(
         writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
         return None, debug_unavailable_dump, writes_since_commit, 1, 0
 
-    # === 5) ジャンク品・動作未確認判定（デジカメのみ） ===
-    if category_group == "デジカメ":
+    # === 5) ジャンク品・動作未確認判定（デジカメ・腕時計） ===
+    if category_group in ("デジカメ", "腕時計"):
         is_junk, junk_reason = has_junk_or_defective_condition(
             jp_title=jp_title,
             jp_description=desc_jp,
@@ -1276,6 +1276,7 @@ def heavy_check_detail(
             writes_since_commit += 1
             writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
             return None, debug_unavailable_dump, writes_since_commit, 1, 0
+
 
     # =========================
     # GA 補色・修復チェック
