@@ -2,7 +2,7 @@ import requests
 from apps.adapters.ebay_api import get_access_token_new
 
 CATEGORY_IDS = list(dict.fromkeys([
-    "14017",
+    "31387",
 ]))
 
 def get_item_aspects():

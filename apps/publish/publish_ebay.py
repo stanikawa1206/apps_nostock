@@ -2060,6 +2060,7 @@ def take_one_vendor_item(conn, preset_group, processing_by, account_name):
                 )
                 AND ISNULL(s.allow_new_items, 0) <> 1
                 AND ISNULL(s.rating_count, 0) < 500
+                AND s.last_checked_at IS NOT NULL
                 AND s.last_checked_at >= DATEADD(DAY, -30, SYSDATETIME())
             )
         OPTION (MAXDOP 1);
