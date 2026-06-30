@@ -1595,14 +1595,11 @@ def post_to_ebay(
             payload["conditionDescriptors"] = condition_descriptors
 
             if category_group == "遊戯王カード":
-                game = "Yu-Gi-Oh! TCG"
+                payload["C:Game"] = "Yu-Gi-Oh!"
             else:
-                game = CARD_BRAND_TO_GAME.get(default_brand_en, "")
+                payload["C:Game"] = "Pokémon TCG"
 
-            if game:
-                payload["C:Game"] = game
-            else:
-                print(f"[WARN] C:Game未解決: default_brand_en={default_brand_en!r}")
+            print(f"[INFO] C:Game={payload['C:Game']!r} (category_group={category_group!r})")
 
         return post_one_item(payload, acct, acct_policies_map[acct])
 
@@ -2054,7 +2051,8 @@ def take_one_vendor_item(conn, preset_group, processing_by, account_name):
                 AND l.is_deleted = 0
             )
             AND NOT (
-                (
+                s.seller_id IS NOT NULL
+                AND (
                     (v.item_condition_id = 1 AND pl.category_group NOT IN (N'ペン', N'製図用品'))
                     OR pl.category_group IN (N'トレカ', N'デジカメ')
                     OR (v.item_condition_id <> 1 AND pl.default_brand_en IN ('Louis Vuitton', 'CHANEL'))
