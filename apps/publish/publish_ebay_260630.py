@@ -2011,37 +2011,88 @@ class PublishState:
 
 def take_one_vendor_item(conn, preset_group, processing_by, account_name):
     """
-    【TVF委譲版】
-    候補抽出は dbo.fn_take_one_candidates(@preset_group) に全委譲。
-    この関数は TVF が返した候補の中から1件をロック・確保して返すだけ。
+    【在庫死蔵防止ロジック：物理テーブル3層結合版】
+    1. v (商品) → pl (マスタ) でカテゴリを特定
+    2. pl → r (レンジ) で、引数の preset_group に応じた担当範囲を特定
+    3. 1段階の UPDATE で確保と全データ取得を同時に実行
     """
 
+    # 1段階でロックとデータ取得を同時に行うSQL
     sql = r"""
         UPDATE TOP (1) v
         SET
             v.processing_by = ?,
             v.processing_at = SYSDATETIME()
-        OUTPUT
-            inserted.vendor_item_id,
-            inserted.vendor_name,
-            inserted.price,
-            inserted.shipping_region,
+        OUTPUT 
+            inserted.vendor_item_id, 
+            inserted.vendor_name, 
+            inserted.price, 
+            inserted.shipping_region, 
             inserted.shipping_days,
-            c.preset,
-            c.mode,
-            c.default_brand_en,
-            c.category_id_ebay,
-            c.department,
-            c.type_ebay,
-            c.category_group,
-            c.low_jpy_target,
-            c.high_jpy_target,
+            inserted.preset, 
+            pl.mode, 
+            pl.default_brand_en, 
+            pl.category_id_ebay, 
+            pl.department,
+            pl.type_ebay, 
+            pl.category_group,
+            r.low_jpy_target, 
+            r.high_jpy_target,
             inserted.item_condition_id,
-            c.is_ok_logic
+            CAST(1 AS bit) AS is_ok_logic
         FROM trx.vendor_item v WITH (UPDLOCK, READPAST, ROWLOCK)
-        INNER JOIN dbo.fn_take_one_candidates(?) c
-            ON c.vendor_name    = v.vendor_name
-           AND c.vendor_item_id = v.vendor_item_id
+        INNER JOIN mst.presets_lookup pl ON pl.preset = v.preset
+        INNER JOIN mst.presets_price_ranges r 
+            ON r.preset_group = ? 
+            AND r.category_group = pl.category_group
+        LEFT JOIN mst.seller s
+            ON s.seller_id = v.seller_id
+        WHERE
+            v.processing_at IS NULL
+            AND (v.status = N'販売中' OR v.status IS NULL)
+            AND ISNULL(v.出品不可flg, 0) = 0
+            AND ISNULL(s.is_ng, 0) = 0
+            AND (v.price IS NULL OR (v.price >= r.low_jpy_target AND v.price <= r.high_jpy_target))
+            AND (
+                v.seller_id IS NULL
+                OR (
+                    ISNULL(s.rating_count, 0)
+                    + ISNULL(DATEDIFF(DAY, s.last_checked_at, SYSDATETIME()), 0) * 0.5
+                ) >= CASE 
+                        WHEN v.vendor_name = N'メルカリ' THEN 50
+                        WHEN v.vendor_name = N'メルカリshops' THEN 20
+                    END
+            )                   
+            AND (
+                v.vendor_updated_at IS NULL
+                OR v.vendor_updated_at >= DATEADD(DAY, -40, SYSDATETIME())
+            )
+            AND ISNULL(v.[出品状況], N'') NOT IN (N'NG(GA補色)', N'NG(危険素材)', N'ポリシーNG', N'NG(ジャンク疑い)')
+            AND ISNULL(v.shipping_days, N'') NOT IN (
+                N'8〜14日で発送', N'90日以内で発送'
+            )
+            AND NOT (
+                ISNULL(v.[出品状況], N'') IN (N'低需要NG', N'配送条件NG')
+                AND v.last_checked_at >= DATEADD(MONTH, -1, SYSDATETIME())
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM trx.listings l
+                WHERE l.vendor_name = v.vendor_name
+                AND l.vendor_item_id = v.vendor_item_id
+                AND l.is_deleted = 0
+            )
+            AND NOT (
+                s.seller_id IS NOT NULL
+                AND (
+                    (v.item_condition_id = 1 AND pl.category_group NOT IN (N'ペン', N'製図用品'))
+                    OR pl.category_group IN (N'トレカ', N'デジカメ')
+                    OR (v.item_condition_id <> 1 AND pl.default_brand_en IN ('Louis Vuitton', 'CHANEL'))
+                )
+                AND ISNULL(s.allow_new_items, 0) <> 1
+                AND ISNULL(s.rating_count, 0) < 500
+                AND s.last_checked_at IS NOT NULL
+                AND s.last_checked_at >= DATEADD(DAY, -30, SYSDATETIME())
+            )
         OPTION (MAXDOP 1);
         """
 
