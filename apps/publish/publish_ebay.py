@@ -1227,7 +1227,7 @@ def heavy_check_detail(
         is_high_risk = True
     
     # デジカメ
-    if category_group in ("デジカメ", "ビデオカメラ"):
+    if category_group in ("デジカメ", "ビデオカメラ","レンズ"):
         is_high_risk = True    
 
     # ヴィトン・シャネル中古
@@ -1294,7 +1294,7 @@ def heavy_check_detail(
         return None, debug_unavailable_dump, writes_since_commit, 1, 0
 
     # === 5) ジャンク品・動作未確認判定（デジカメ・腕時計） ===
-    if category_group in ("デジカメ", "腕時計", "ビデオカメラ"):
+    if category_group in ("デジカメ", "腕時計", "ビデオカメラ","レンズ"):
         is_junk, junk_reason = has_junk_or_defective_condition(
             jp_title=jp_title,
             jp_description=desc_jp,
@@ -1378,7 +1378,7 @@ def heavy_check_detail(
 
     # カメラモデル取得 (デジカメのみ)
     camera_models = None
-    if category_group in ("デジカメ", "ビデオカメラ"):
+    if category_group in ("デジカメ", "ビデオカメラ","レンズ"):
         camera_models = extract_camera_model(
             rec.get("title_jp") or "",
             rec.get("description") or "",
@@ -1617,7 +1617,7 @@ def post_to_ebay(
         if category_group == "アクセサリー":
             payload["C:Style"] = type_ebay
 
-        if category_group in ("デジカメ", "ビデオカメラ") and model_name:
+        if category_group in ("デジカメ", "ビデオカメラ","レンズ") and model_name:
             payload["C:Model"] = model_name
 
         if category_group in ("トレカ", "遊戯王カード"):
