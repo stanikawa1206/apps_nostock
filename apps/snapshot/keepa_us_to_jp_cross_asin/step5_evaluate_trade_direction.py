@@ -258,7 +258,8 @@ def main():
             ca_existence, ca_lowest_price_d,
             length, width, height, actual_weight
         FROM trx.amazon_cross_market_asin WITH (NOLOCK)
-        WHERE (wakarunda IN ('D', '-'))
+        WHERE step1_flag = 1  -- ← 【追加】Step1で処理されたフラグ
+          AND (wakarunda IN ('D', '-'))
           AND (us_existence IN (1, 2) OR ca_existence IN (1, 2))
           AND (
             last_evaluated_at IS NULL

@@ -21,9 +21,16 @@ RESTART_INTERVAL = 3000  # 1時間
 
 def launch_persistent_chrome():
     """拡張機能の状態を保持するための専用Chromeを起動する"""
-    print("[System] 永続化Chromeをデバッグモードで起動します...")
-    # プロファイルを保存するフォルダ（wakarunda_utils.pyと一致させる）
     user_data_dir = r"C:\chrome_wakurunda_profile"
+    
+    # 💡 変更点: 既に同じプロファイルで起動しているChromeがあれば狙い撃ちで強制終了する
+    print("[System] 既存の専用Chromeプロセスを確認・終了しています...")
+    # wmicコマンドを使用して、CommandLineに特定の文字列が含まれるChromeだけをキルする
+    kill_cmd = f'wmic process where "name=\'chrome.exe\' and CommandLine like \'%chrome_wakurunda_profile%\'" call terminate'
+    subprocess.run(kill_cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(2) # 完全に終了するまで少し待機
+
+    print("[System] 永続化Chromeをデバッグモードで新規起動します...")
     os.makedirs(user_data_dir, exist_ok=True)
     
     # Chromeの標準的なインストールパス

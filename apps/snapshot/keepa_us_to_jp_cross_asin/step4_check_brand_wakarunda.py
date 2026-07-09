@@ -20,7 +20,8 @@ import wakarunda_utils
 SQL_SELECT_TARGET = """
 SELECT asin, jp_brand, jp_category_id
 FROM trx.amazon_cross_market_asin WITH (NOLOCK)
-WHERE jp_brand IS NOT NULL
+WHERE step1_flag = 1
+  AND jp_brand IS NOT NULL
   AND (us_existence = 1 OR ca_existence = 1)
   AND (wakarunda IS NULL OR wakarunda = '' OR wakarunda = 'E')
 """

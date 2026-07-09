@@ -103,10 +103,11 @@ def process_batch(conn, region, batch, col_exist, col_price, col_updated, token)
 # Keepaで新たに発見されたASINも再確認対象に含める。
 def get_target_asins(conn, col_exist, col_updated):
     cursor = conn.cursor()
-    # 💡 変更点: wakarunda条件を外し、Step2(JPデータ)が取得済みのものを対象にする
+    
     sql_select = f"""
         SELECT asin FROM trx.amazon_cross_market_asin WITH (NOLOCK)
-        WHERE jp_price_updated_at IS NOT NULL
+        WHERE step1_flag = 1
+          AND jp_price_updated_at IS NOT NULL  -- Step2が完了している
           AND (
               ({col_exist} = 0 OR {col_exist} IS NULL)
               OR {col_updated} IS NULL
@@ -179,7 +180,7 @@ def main():
             # 現在の位置から最大10件を取り出してバッチ処理する
             batch = state["asins"][idx : idx + BATCH_SIZE]
 
-            print(f"[{region}] Checking batch {idx} - {idx + len(batch)}")
+            print(f"[{region}] Checking batch {idx} - {idx + len(batch)} / 対象総数: {state['total']}件")
 
             new_token, success = process_batch(
                 conn,

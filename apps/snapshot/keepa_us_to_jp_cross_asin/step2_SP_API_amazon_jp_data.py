@@ -37,9 +37,11 @@ BASE_WAIT_TIME = 2.0
 SQL_SELECT = """
     SELECT asin
     FROM trx.amazon_cross_market_asin WITH (NOLOCK)
-    WHERE (jp_title IS NULL OR jp_title = '')
-       OR jp_price_updated_at IS NULL
-       OR jp_price_updated_at < keepa_last_caught_at
+    WHERE step1_flag = 1
+      AND (
+          jp_price_updated_at IS NULL
+          OR jp_price_updated_at < keepa_last_caught_at
+      )
     ORDER BY last_seen_at DESC
 """
 
@@ -53,7 +55,7 @@ SET jp_title = ?,
     [width] = ?,
     [height] = ?,
     [actual_weight] = ?,
-    jp_price_updated_at = SYSDATETIME(),  -- ←追加
+    jp_price_updated_at = SYSDATETIME(),
     last_seen_at = SYSDATETIME()
 WHERE asin = ?
 """
@@ -177,6 +179,7 @@ def main():
             cursor.execute(SQL_SELECT)
             target_asins = [row[0] for row in cursor.fetchall()]
 
+            all_asins = len(target_asins)
             print(f"更新対象: {len(target_asins)}件")
             if not target_asins:
                 print("処理対象のASINがありませんでした。")
@@ -191,7 +194,7 @@ def main():
                 batch = target_asins[i : i + BATCH_SIZE]
 
                 try:
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Processing batch {i} - {i+len(batch)}")
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Processing batch {i} - {i+len(batch)} (all {all_asins})")
                     start_time = time.perf_counter()
 
                     # ① カタログ情報の取得 (寸法データもここに含まれます)
