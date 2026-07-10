@@ -65,9 +65,29 @@ def extract_price_jpy_from(main: BeautifulSoup) -> Optional[int]:
 # ================================
 
 
-def fetch_json_core(page, url, match_func):
+def apply_default_route_filter(page) -> None:
+    """
+    通常メルカリの商品ページ用の共通 route フィルタ。
+    - items/get は必ず通す（価格・状態判定に必須のため）
+    - 画像/動画/フォント/CSSは遮断（軽量化）
+    - それ以外はそのまま通す
+    新規ページ作成時（初回・リトライ後どちらも）に必ず呼び出すこと。
+    """
+    page.route("**/*", lambda route:
+        route.continue_() if "items/get" in route.request.url else
+        route.abort() if route.request.resource_type in ["image", "media", "font", "stylesheet"] else
+        route.continue_()
+    )
 
-    storage = {"json": None}
+
+def fetch_json_core(page, url, match_func, status_holder: Optional[dict] = None):
+    """
+    status_holder を渡すと、ページ遷移時のHTTPステータスを
+    status_holder["http_status"] に書き込む（呼び出し側の任意利用）。
+    戻り値は従来通り storage["json"] のみ（既存呼び出し元との互換性維持）。
+    """
+
+    storage = {"json": None, "http_status": None}
 
     # api きたら拾う
     def handle_response(response):
@@ -84,8 +104,11 @@ def fetch_json_core(page, url, match_func):
         print(f"[{datetime.now().strftime('%H:%M:%S')}] domcontentloaded")
         # page.goto(url, wait_until="networkidle", timeout=30000)
         # page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        page.goto(url, wait_until="domcontentloaded", timeout=10000)
-        print("goto end", datetime.now().strftime("%H:%M:%S"))
+        nav_response = page.goto(url, wait_until="domcontentloaded", timeout=10000)
+        storage["http_status"] = nav_response.status if nav_response else None
+        if status_holder is not None:
+            status_holder["http_status"] = storage["http_status"]
+        print("goto end", datetime.now().strftime("%H:%M:%S"), "http_status=", storage["http_status"])
 
         # --- ▼追加①：API発火を促すためにスクロール ---
         # （メルカリはスクロールでAPIが発火することがある）
@@ -102,44 +125,53 @@ def fetch_json_core(page, url, match_func):
         page.wait_for_timeout(1000)
 
         #  responseイベントでAPIが取得されるのを待機する（このループ自体は取得処理ではない）
+        # --- ▼修正：range(40)*200ms(=最大8秒)と elapsed>10秒 の閾値がズレており、
+        # 10秒判定に実質到達しないバグがあったため、経過時間ベースのwhileに統一 ---
         start = time.time()
-        for _ in range(40):  # 0.2秒ごとに × 40回のAPI待ち = 最大8秒 
-            if storage["json"] is not None:
+        while storage["json"] is None:
+            elapsed = time.time() - start
+            if elapsed > 10:  # 最大10秒
+                print(f"[TIMEOUT] items/get 応答なし（{elapsed:.1f}秒経過） url={url}")
                 break
-            # API待機が無限ループ化するのを防ぐため、
-            # 最大待機時間（ここでは10秒）を超えたら強制的に抜ける
-            if time.time() - start > 10:  # 最大10秒
-                #break  timeoutはerror処理すべき
-                raise TimeoutError("API来ない")
             page.wait_for_timeout(200)
 
-        print("json取得", datetime.now().strftime("%H:%M:%S"))
+        if storage["json"] is not None:
+            print("json取得", datetime.now().strftime("%H:%M:%S"))
+        else:
+            # ★ items/get が来ないのは「削除済み商品で404が返っている」ケースもあり得るため、
+            # ここではエラー扱い（SystemExit）にせず、呼び出し側（404/HTMLフォールバック判定）に委ねる
+            print(f"[WARN] items/get JSON未取得のまま終了 http_status={storage['http_status']}（呼び出し側でフォールバック判定へ）")
+
         # return storage["json"], page.content()   page.content()はHTML（ページの中身全部）　HTMLは不要 26/03/25
         return storage["json"]
     except Exception  as e:
-        # return None, ""  エラーとして処理すべき
+        # ここに来るのは page.goto 失敗など、items/get 未取得とは別の予期しない異常のみ
         print("[ERROR fetch]", e)
         raise SystemExit("fetch失敗 → worker終了")
     finally:
         page.remove_listener("response", handle_response)
 
 def fetch_mercari_api_data(page, url):
+    status_holder: dict = {}
     json_data = fetch_json_core(
         page,
         url,
         lambda r: "items/get?id=" in r.url
-                  and "application/json" in r.headers.get("content-type", "")
+                  and "application/json" in r.headers.get("content-type", ""),
+        status_holder=status_holder,
     )
-    return json_data, None
+    return json_data, status_holder.get("http_status")
 
 def fetch_shops_api_data(page, url):
+    status_holder: dict = {}
     json_data = fetch_json_core(
         page,
         url,
         lambda r: "api.mercari.jp/v1/marketplaces/shops/products" in r.url
-                  and "application/json" in r.headers.get("content-type", "")
+                  and "application/json" in r.headers.get("content-type", ""),
+        status_holder=status_holder,
     )
-    return json_data, None
+    return json_data, status_holder.get("http_status")
 
 
 def _parse_status_from_res(res) -> Tuple[str, Optional[int]]:
@@ -172,6 +204,40 @@ def _parse_status_from_res(res) -> Tuple[str, Optional[int]]:
         return "判定不可", None
 
     return "判定不可", None
+
+
+# 削除済み/存在しない商品ページで実際に画面表示される文言
+# ★ page.content() は Next.js のJSバンドル全体を含み、存在しないページ用の
+#   文言も常にバンドルに埋め込まれているため、販売中ページでも "404" 等が
+#   誤ヒットすることを実機検証で確認済み（false positiveでeBay削除が走る危険あり）。
+#   そのため page.get_by_text() で「実際に画面に描画されているテキストか」を見る。
+DELETED_PAGE_MARKERS = [
+    "ページが見つかりませんでした",
+    "お探しのページはURLが間違っているか",
+    "商品が存在しません",
+    "この商品は削除されました",
+]
+
+
+def _detect_deleted_from_html(page, item_id: str) -> bool:
+    """
+    items/get が取得できず、HTTPステータスからも確定できなかった場合の
+    最終フォールバック判定。画面に実際に描画されているテキストのみを見る。
+    """
+    for marker in DELETED_PAGE_MARKERS:
+        try:
+            count = page.get_by_text(marker).count()
+        except Exception as e:
+            print(f"[FALLBACK] item_id={item_id} get_by_text({marker!r}) 判定失敗: {e}")
+            continue
+
+        if count > 0:
+            print(f"[FALLBACK] item_id={item_id} 削除判定 marker='{marker}' (visible_count={count})")
+            return True
+
+    print(f"[FALLBACK] item_id={item_id} 削除マーカーなし（画面表示テキストで未検出）")
+    return False
+
 
 def check_rakuma_purchase_request(page):
 
@@ -223,16 +289,15 @@ def detect_status_from_rakuma(page, url):
 
 def detect_status_from_mercari(page, url: str) -> Tuple[str, Optional[int]]:
     max_retries = 2
-    
+    item_id = url.split("/")[-1]
+
     for attempt in range(max_retries):
-        res, html_content = fetch_mercari_api_data(page, url)
-        
+        res, http_status = fetch_mercari_api_data(page, url)
+
         # ===== DEBUG LOG START =====
         try:
-            item_id = url.split("/")[-1]
-
             if res is None:
-                print(f"[DEBUG] item_id={item_id} res=None")
+                print(f"[DEBUG] item_id={item_id} res=None http_status={http_status}")
             else:
                 result = res.get("result")
                 error_codes = [e.get("code") for e in res.get("errors", [])] if res.get("errors") else []
@@ -242,20 +307,38 @@ def detect_status_from_mercari(page, url: str) -> Tuple[str, Optional[int]]:
             print(f"[DEBUG ERROR] {e}")
         # ===== DEBUG LOG END =====
 
+        # ===== res=None のときは 404/削除フォールバック判定 =====
+        if res is None:
+            print(f"[FALLBACK] item_id={item_id} items/get 取得不可 → 削除判定フォールバック開始")
+
+            # 1. まずページ遷移時のHTTPステータスで確定判定（最も確実）
+            if http_status == 404:
+                print(f"[RESULT] item_id={item_id} status=削除 (HTTPステータス404)")
+                return "削除", None
+
+            # 2. HTTPステータスで確定できない場合は、画面表示テキストで確認
+            if _detect_deleted_from_html(page, item_id):
+                print(f"[RESULT] item_id={item_id} status=削除 (画面表示テキスト判定)")
+                return "削除", None
+
         status, price = _parse_status_from_res(res)
 
         if status != "判定不可":
+            print(f"[RESULT] item_id={item_id} status={status} price={price}")
             return status, price
 
         # --- リトライ ---
         if attempt < max_retries - 1:
-            print("retry")
+            print(f"[RETRY] item_id={item_id} attempt={attempt} → 再試行")
             time.sleep(1)
             page.close()
             page = page.context.new_page()
+            apply_default_route_filter(page)
+            print(f"[RETRY] item_id={item_id} route再設定完了")
             continue
         break
 
+    print(f"[RESULT] item_id={item_id} status=判定不可 (最終)")
     return "判定不可", None
 
 

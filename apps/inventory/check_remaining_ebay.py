@@ -72,6 +72,7 @@ if str(PROJECT_ROOT) not in sys.path:
 # ===== その後で apps を import =====
 from apps.adapters.mercari_item_status import (
     Status,
+    apply_default_route_filter,
     detect_status_from_mercari,
     detect_status_from_mercari_shops,
     handle_listing_delete,
@@ -119,9 +120,11 @@ RATE = {
 
 
 # ===================== ユーティリティ =====================
-def get_status(page, driver: webdriver.Chrome, url: str) -> tuple[Status, Optional[int]]:
+def get_status(page, driver: Optional[webdriver.Chrome], url: str) -> tuple[Status, Optional[int]]:
     """
-    page (Playwright) と driver (Selenium) 両方を受け取れるように拡張
+    page (Playwright) と driver (Selenium) 両方を受け取れるように拡張。
+    driver は Lazy Initialization のため、メルカリshops未遭遇の間は None のことがある
+    （通常メルカリの分岐では driver は参照されないため問題ない）。
     """
     host_path = re.sub(r"^https?://", "", url)
     
@@ -274,8 +277,9 @@ def run_remaining_worker(worker_name: str):
     driver = None
 
     try:
-        # Selenium (Shops用) と Playwright (通常用) 両方を準備
-        driver = build_driver()
+        # Playwright (通常用) を準備。
+        # Selenium (Shops用) は driver=None のまま開始し、
+        # メルカリshops商品が来た時だけ遅延生成する（Lazy Initialization）。
         pull_conn = get_sql_server_connection()
         work_conn = get_sql_server_connection()
 
@@ -310,11 +314,7 @@ def run_remaining_worker(worker_name: str):
                         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
                     )
                     page = context.new_page()
-
-                    page.route("**/*", lambda route: 
-                        route.abort() if route.request.resource_type in ["image", "media", "font", "stylesheet"] 
-                        else route.continue_()
-                    )
+                    apply_default_route_filter(page)
 
                 rows = pull_remaining_targets(pull_conn, worker_name, batch_size=1)
 
@@ -332,26 +332,14 @@ def run_remaining_worker(worker_name: str):
                     print(f"\n[INFO] batch processing {processed_count + 1}/{MAX_PER_RUN} ...")
                     # ★ここで毎回 new_page 26/3/26
                     page = context.new_page()
-                    # 画像等の通信を遮断-リクエストを制御して軽量化してる処理 →　必要な通信まで停める可能性あり　だからコメントアウト
-                    
-                    # page.route("**/*", lambda route: 
-                    #    route.abort() if route.request.resource_type in ["image", "media", "font", "stylesheet"] 
-                    #    else route.continue_()
-                    #)
+                    # items/get は通し、画像・動画・フォント・CSSは遮断（軽量化）。
+                    # detect_status_from_mercari のリトライ時にも同じフィルタが再適用される。
+                    apply_default_route_filter(page)
 
-                    # ↓　こちらに変更
-
-                    # --- ▼変更：軽量化しつつ、APIは止めないように修正 ---
-                    page.route("**/*", lambda route:
-                        # API（items/get）は必要なので必ず通す
-                        route.continue_() if "items/get" in route.request.url else
-
-                        # 画像・動画・フォント・CSSは不要なので遮断（軽量化）
-                        route.abort() if route.request.resource_type in ["image", "media", "font", "stylesheet"] else
-
-                        # それ以外はそのまま通す
-                        route.continue_()
-                    )
+                    # ===== Selenium driver の遅延生成（メルカリshopsの時だけ） =====
+                    if driver is None and row["vendor_name"] == "メルカリshops":
+                        driver = build_driver()
+                        print("[Selenium] build_driver() created for Mercari Shops")
 
                     process_status_and_sync(work_conn, page, driver, row, worker_name)
                     processed_count += 1
@@ -366,6 +354,8 @@ def run_remaining_worker(worker_name: str):
             sys.exit(1) # Shellスクリプトがこれを検知して pkill & 再起動する
 
     finally:
+        if driver is None:
+            print("[Selenium] build_driver() was not required in this batch")
         safe_quit(driver)
         if pull_conn: pull_conn.close()
         if work_conn: work_conn.close()
@@ -381,118 +371,127 @@ def process_status_and_sync(
     vendor_name = row["vendor_name"]
     sku = row["vendor_item_id"]
     url = build_mercari_url(vendor_name, sku)
-   
-    # =====================
-    # 1. Mercari 状態取得
-    # =====================
-    status, price_jpy = get_status(page, driver, url)
-    print(f"[STATUS] {url} -> {status} (price_jpy={price_jpy})")
-    
-    # =====================
-    # ★ 判定不可は即終了（確定しない）
-    # =====================
-    if status == "判定不可":
-        print(f"[INFO] 判定不可のためスキップ sku={sku}")
-        return  # remaining_check_at を入れない
 
-    # =====================
-    # 2. vendor_item 現在価格取得
-    # =====================
-    old_price = get_vendor_item_price(conn, vendor_name, sku)
+    try:
+        # =====================
+        # 1. Mercari 状態取得
+        # =====================
+        status, price_jpy = get_status(page, driver, url)
+        print(f"[STATUS] {url} -> {status} (price_jpy={price_jpy})")
 
-    # =====================
-    # 3. 販売中 & 価格取得成功
-    # =====================
-    if status == "販売中" and price_jpy is not None:
+        # =====================
+        # ★ 判定不可は即終了（確定しない）
+        # =====================
+        if status == "判定不可":
+            print(f"[INFO] 判定不可のためスキップ sku={sku}")
+            return  # remaining_check_at を入れない
 
-        # ---- 価格変更あり ----
-        if old_price is None or old_price != price_jpy:
-            new_price_usd = compute_start_price_usd(
+        # =====================
+        # 2. vendor_item 現在価格取得
+        # =====================
+        old_price = get_vendor_item_price(conn, vendor_name, sku)
+
+        # =====================
+        # 3. 販売中 & 価格取得成功
+        # =====================
+        if status == "販売中" and price_jpy is not None:
+
+            # ---- 価格変更あり ----
+            if old_price is None or old_price != price_jpy:
+                new_price_usd = compute_start_price_usd(
+                    price_jpy,
+                    row["mode"],
+                    row["low_usd_target"],
+                    row["high_usd_target"],
+                )
+
+                # =====================
+                # 3-A. レンジ外 → eBay削除
+                # =====================
+                if new_price_usd is None:
+                    print(
+                        f"[PRICE] {sku}: {old_price} -> {price_jpy} JPY / レンジ外 → eBay終了",
+                        flush=True,
+                    )
+
+                    print(">>> DELETE START レンジ外", sku)
+
+                    handle_listing_delete(
+                        conn,
+                        sku,
+                        vendor_name,
+                        "価格範囲外",
+                    )
+                    print(">>> DELETE END", sku)
+
+                # =====================
+                # 3-B. レンジ内 → eBay価格改定
+                # =====================
+                else:
+                    handle_listing_price_update(
+                        conn,
+                        sku,
+                        vendor_name,
+                        new_price_usd,
+                    )
+
+
+            # ---- vendor_item 更新（価格あり）----
+            update_vendor_item_price_and_status(
+                conn,
+                vendor_name,
+                sku,
                 price_jpy,
-                row["mode"],
-                row["low_usd_target"],
-                row["high_usd_target"],
+                status,
             )
 
-            # =====================
-            # 3-A. レンジ外 → eBay削除
-            # =====================
-            if new_price_usd is None:
-                print(
-                    f"[PRICE] {sku}: {old_price} -> {price_jpy} JPY / レンジ外 → eBay終了",
-                    flush=True,
-                )
-
-                print(">>> DELETE START レンジ外", sku)
-
-                handle_listing_delete(
-                    conn,
-                    sku,
-                    vendor_name,
-                    "価格範囲外",
-                )
-                print(">>> DELETE END", sku)
-
-            # =====================
-            # 3-B. レンジ内 → eBay価格改定
-            # =====================
-            else:
-                handle_listing_price_update(
-                    conn,
-                    sku,
-                    vendor_name,
-                    new_price_usd,
-                )
+        # =====================
+        # 4. 販売中でない
+        # =====================
+        else:
+            update_vendor_item_price_and_status(
+                conn,
+                vendor_name,
+                sku,
+                None,
+                status,
+            )
 
 
-        # ---- vendor_item 更新（価格あり）----
-        update_vendor_item_price_and_status(
-            conn,
-            vendor_name,
-            sku,
-            price_jpy,
-            status,
-        )
+        # =====================
+        # 5. 終了系ステータス → eBay削除
+        # =====================
+        if status in {"削除", "オークション", "売り切れ", "公開停止"}:
+            print(f"[FINAL_DELETE] sku={sku} status={status}", flush=True)
 
-    # =====================
-    # 4. 販売中でない
-    # =====================
-    else:
-        update_vendor_item_price_and_status(
-            conn,
-            vendor_name,
-            sku,
-            None,
-            status,
-        )
+            print(">>> DELETE START  終了系ステータス", sku)
+            handle_listing_delete(
+                conn,
+                sku,
+                vendor_name,
+                status,
+            )
+            print(">>> DELETE END", sku)
 
+        # =====================
+        # ★ 6. remaining 確定 (関数の最後に配置)
+        # =====================
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE trx.vendor_item
+                SET remaining_check_at = SYSDATETIME() -- ここで完了時刻を打つ
+                WHERE vendor_name = ? AND vendor_item_id = ?
+            """, (row["vendor_name"], row["vendor_item_id"]))
 
-    # =====================
-    # 5. 終了系ステータス → eBay削除
-    # =====================
-    if status in {"削除", "オークション", "売り切れ", "公開停止"}:
-        print(f"[FINAL_DELETE] sku={sku} status={status}", flush=True)
+        conn.commit()
 
-        print(">>> DELETE START  終了系ステータス", sku)
-        handle_listing_delete(
-            conn,
-            sku,
-            vendor_name,
-            status,
-        )
-        print(">>> DELETE END", sku)
-
-    # =====================
-    # ★ 6. remaining 確定 (関数の最後に配置)
-    # =====================
-    with conn.cursor() as cur:
-        cur.execute("""
-            UPDATE trx.vendor_item
-            SET remaining_check_at = SYSDATETIME() -- ここで完了時刻を打つ
-            WHERE vendor_name = ? AND vendor_item_id = ?
-        """, (row["vendor_name"], row["vendor_item_id"]))
-
-    conn.commit()
+    finally:
+        # ★ 成功・失敗・判定不可のいずれでも必ずページを閉じる（ページリーク防止）
+        try:
+            page.close()
+            print(f"[PAGE_CLOSE] sku={sku} page.close() 完了")
+        except Exception as e:
+            print(f"[PAGE_CLOSE_ERROR] sku={sku} page.close() 失敗: {e}")
 
 import socket
 
