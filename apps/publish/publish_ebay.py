@@ -2131,8 +2131,9 @@ def main():
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
 
-        driver = webdriver.Chrome(options=options)
-    
+        # ★ Lazy Initialization: driver はここでは生成しない。
+        # メルカリshops商品に遭遇した時だけ生成する（下の row ループ内）。
+
         with sync_playwright() as p:
 
             
@@ -2207,6 +2208,11 @@ def main():
                     )
 
                     print(f"[DEBUG] url={item_url}", datetime.now().strftime("%H:%M:%S"))
+
+                    # ===== Selenium driver の遅延生成（メルカリshopsの時だけ） =====
+                    if driver is None and vendor_name == "メルカリshops":
+                        driver = webdriver.Chrome(options=options)
+                        print("[Selenium] driver created for Mercari Shops")
 
                     browser = None
                     context = None
@@ -2320,8 +2326,10 @@ def main():
             release_pc_and_close_account(conn, current_pc)
         except:
             pass
-        if driver:  
-            driver.quit()        
+        if driver is None:
+            print("[Selenium] driver was not required in this run")
+        if driver:
+            driver.quit()
         conn.close()
 
 if __name__ == "__main__":
