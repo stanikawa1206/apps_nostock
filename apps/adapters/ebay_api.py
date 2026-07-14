@@ -88,7 +88,7 @@ TRADING_COMPAT_LEVEL = os.getenv("EBAY_TRADING_COMPAT_LEVEL", "1149")
 # ====== 例外 ======
 class ApiHandledError(Exception):
     def __init__(self, code: int, message: str):
-        super().__init__(message)
+        super().__init__(f"{code}: {message}")
         self.code = code
         self.message = message
 
@@ -181,11 +181,24 @@ def _extract_error(err: Dict[str, Any]) -> tuple[int, str]:
         code = -1
     return code, str(msg)
 
+_SELLING_LIMIT_PHRASES = (
+    "amount you can list",
+    "request to list more",
+    "you can list up to",
+)
+
 def _is_listing_limit(code: int, msg: str) -> bool:
     # eBay公式の出品上限(月間セリングリミット)エラーのみをリミット扱いにする。
-    # "limit"/"exceeded" 等の文字列一致は、25002(duplicate listing)等の
+    # "limit"/"exceeded" 等の単語一致は、25002(duplicate listing等)の
     # 無関係なエラーを誤ってリミット扱いにしてしまうため使用しない。
-    return code == 21916611
+    if code == 21916611:
+        return True
+    if code == 25002:
+        # 25002 は duplicate listing 等でも使われる汎用コードのため、
+        # 月間セリングリミット特有の複数フレーズが全て含まれる場合のみ判定する。
+        m = (msg or "").lower()
+        return all(phrase in m for phrase in _SELLING_LIMIT_PHRASES)
+    return False
 
 # ====== Inventory API（出品・更新・公開）======
 def register_inventory_item(row: Dict[str, Any], token: str) -> Dict[str, Any]:
@@ -333,13 +346,10 @@ def create_offer(row: Dict[str, Any], token: str, acct_policies: Dict[str, Any])
 
     if r.status_code == 201:
         return _safe_json(r).get("offerId") or ""
-    
-        # エラー時のログ追加
-        err = _safe_json(r)
-        print(f"DEBUG [Create Offer]: {err}")  # ★この行を追加
 
     if r.status_code == 400:
         err = _safe_json(r)
+        print(f"DEBUG [Create Offer]: {err}")
         try:
             first = (err.get("errors") or [{}])[0]
             if "Offer entity already exists" in (first.get("message") or ""):
@@ -355,6 +365,7 @@ def create_offer(row: Dict[str, Any], token: str, acct_policies: Dict[str, Any])
 
     if r.status_code >= 400:
         err = _safe_json(r)
+        print(f"DEBUG [Create Offer]: {err}")
         code, msg = _extract_error(err)
         if _is_listing_limit(code, msg):
             raise ListingLimitError(f"Listing limit (create): {code} {msg}")
@@ -377,6 +388,7 @@ def update_offer(offer_id: str, row: Dict[str, Any], token: str, acct_policies: 
     r = requests.put(url, headers=_ebay_json_headers(token), json=payload, timeout=45)
     if r.status_code >= 400:
         err = _safe_json(r)
+        print(f"DEBUG [Update Offer]: {err}")
         code, msg = _extract_error(err)
         if _is_listing_limit(code, msg):
             raise ListingLimitError(f"Listing limit (update): {code} {msg}")
