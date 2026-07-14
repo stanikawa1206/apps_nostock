@@ -254,6 +254,11 @@ def register_inventory_item(row: Dict[str, Any], token: str) -> Dict[str, Any]:
     material = row.get("C:Material")
     model_name = row.get("C:Model")
 
+    max_aperture = row.get("C:Maximum Aperture")
+    focal_length = row.get("C:Focal Length")
+    mount = row.get("C:Mount")
+    focus_type = row.get("C:Focus Type")
+
     aspects: Dict[str, list[str]] = {"Brand": [brand]}
     if department:
         aspects["Department"] = [department]
@@ -275,6 +280,14 @@ def register_inventory_item(row: Dict[str, Any], token: str) -> Dict[str, Any]:
         aspects["Material"] = material if isinstance(material, list) else [str(material)]
     if model_name:                            # ← 追加②（aspects変換）
         aspects["Model"] = [model_name]
+    if max_aperture:
+        aspects["Maximum Aperture"] = [max_aperture]
+    if focal_length:
+        aspects["Focal Length"] = [focal_length]
+    if mount:
+        aspects["Mount"] = [mount]
+    if focus_type:
+        aspects["Focus Type"] = [focus_type]
 
     payload = {
         "sku": sku,

@@ -8,8 +8,7 @@ from apps.adapters.ebay_api import delete_items_from_ebay_batch
 
 # ===== 設定 =====
 DELETE_CONFIG = {
-    "BUZZ②": 101,
-    "谷川④": 6,
+    "BUZZ②": 18,
 }
 
 

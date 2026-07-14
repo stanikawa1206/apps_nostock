@@ -1393,6 +1393,31 @@ def heavy_check_detail(
             print(f"# US MODEL  : {_mus}")
             print("######################################################################")
 
+    # レンズ（ズーム）カテゴリ専用: eBay Item Specifics(AI)取得＋不足時Skip
+    # category_id_ebay == "3323"(ズーム)のみ対象。単焦点(3223)は対象外。
+    lens_specifics = None
+    if category_id_ebay == "3323":
+        lens_specifics = extract_lens_item_specifics(
+            rec.get("title_jp") or "",
+            rec.get("description") or "",
+            default_brand_en or "",
+        )
+        missing_keys = [
+            k for k in ("Maximum Aperture", "Focal Length", "Mount")
+            if not lens_specifics.get(k)
+        ]
+        if missing_keys:
+            print(f"🚫 レンズItem Specifics不足のためSkip: SKU={sku} missing={missing_keys}")
+            rec["listing_head"] = "NG(レンズ情報不足)"
+            rec["listing_detail"] = f"missing={','.join(missing_keys)}"
+            upsert_vendor_item(conn, rec)
+            writes_since_commit += 1
+            writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
+            return None, debug_unavailable_dump, writes_since_commit, 1, 0
+
+        # Focus TypeはAIを使わずMountからルールベースで決定
+        lens_specifics["Focus Type"] = determine_lens_focus_type(lens_specifics.get("Mount"))
+
     _model_jp_desc = (camera_models or {}).get("model_jp", "")
     _model_us_desc = (camera_models or {}).get("model_us", "")
 
@@ -1430,6 +1455,7 @@ def heavy_check_detail(
         "type_ebay": type_ebay,
         "category_group": category_group,
         "camera_models": camera_models,
+        "lens_specifics": lens_specifics,
     }
 
     return heavy, debug_unavailable_dump, writes_since_commit, 0, 0
@@ -1538,6 +1564,102 @@ JSON形式で回答:
         print(f"extract_camera_model failed: {e}")
         return {"model_jp": "", "model_us": ""}
 
+LENS_ITEM_SPECIFICS_KEYS = [
+    "Maximum Aperture",
+    "Focal Length",
+    "Mount",
+    "Focus Type",
+]
+
+def extract_lens_item_specifics(title: str, description: str, brand: str) -> dict:
+    """
+    【レンズカテゴリ専用】title/description/brand から eBay Item Specifics候補をAIで推測する。
+    - XML生成へは未接続（呼び出し元は別途実装する）。
+    - キー名は将来そのままXMLへ渡せるよう eBay Item Specifics の名称に合わせている。
+    """
+    try:
+        import json as _json
+        client = get_openai_client()
+
+        prompt = f"""
+あなたは中古カメラレンズの専門家です。
+
+以下の商品タイトル・商品説明・ブランド名から、eBay Item Specifics の値を推測してください。
+
+出力は必ず次のJSON形式のみで返してください（説明文・コードブロック不要）:
+{{"Maximum Aperture": "", "Focal Length": "", "Mount": "", "Focus Type": ""}}
+
+各項目の意味と回答形式:
+
+- Maximum Aperture（開放F値）
+  例: f/1.4, f/2.8, f/3.5-5.6
+
+- Focal Length（焦点距離）
+  例: 50mm, 24-70mm
+
+- Mount（マウント規格）
+  例: Canon EF, Canon RF, Nikon F, Nikon Z, Sony E, Sony A, Micro Four Thirds, Leica M
+
+- Focus Type（フォーカス方式。以下のいずれかのみを返す）
+  Auto
+  Manual
+  Auto & Manual
+
+判定ルール:
+- 商品タイトルの情報を最優先で使うこと
+- 商品説明はタイトルの情報を補完する目的でのみ使うこと
+- ブランドや型番から一般的に明らかな仕様（例: 型番から判明するマウントや開放F値）のみ推測してよい
+- 曖昧な推測や憶測はせず、判断できない項目は null を返すこと
+- JSON以外は一切出力しないこと
+
+商品タイトル:
+{title}
+
+商品説明:
+{description}
+
+ブランド:
+{brand}
+"""
+
+        response = client.responses.create(
+            model="gpt-4o-mini",
+            input=prompt,
+            temperature=0
+        )
+
+        raw = (response.output_text or "").strip()
+        raw = re.sub(r"^```json\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+        data = _json.loads(raw)
+
+        return {key: (data.get(key) or None) for key in LENS_ITEM_SPECIFICS_KEYS}
+
+    except Exception as e:
+        print(f"extract_lens_item_specifics failed: {e}")
+        return {key: None for key in LENS_ITEM_SPECIFICS_KEYS}
+
+# レガシーな完全マニュアルフォーカス専用マウント（AF機構が存在しない）
+_MANUAL_FOCUS_MOUNT_KEYWORDS = (
+    "fd",            # Canon FD / New FD
+    "leica m",       # Leica M（レンジファインダー）
+    "m42",           # M42スクリューマウント
+    "exakta",
+    "t-mount", "t mount",
+    "bronica",       # Zenza Bronica（中判）
+    "contax/yashica", "c/y mount",
+)
+
+def determine_lens_focus_type(mount: str) -> str:
+    """
+    Mount名からFocus TypeをAIを使わずルールベースで決定する。
+    レガシーな完全マニュアルマウントのみ"Manual"、それ以外は"Auto"とする。
+    """
+    m = (mount or "").lower()
+    if any(kw in m for kw in _MANUAL_FOCUS_MOUNT_KEYWORDS):
+        return "Manual"
+    return "Auto"
+
 def post_to_ebay(
     *,
     conn,
@@ -1561,7 +1683,8 @@ def post_to_ebay(
     r2_public_base: str,
     cdn_cache: dict,
     now_dt: datetime,
-    preset
+    preset,
+    is_collectibles=None,
 ):
     """
     - PicURLはここで組み立てる（NORMAL/CDNの分岐は main state に従う）
@@ -1582,6 +1705,7 @@ def post_to_ebay(
     fail_other_delta = 0
 
     _camera_models = heavy.get("camera_models")
+    _lens_specifics = heavy.get("lens_specifics")
 
     def _attempt_post(use_mode: str, model_name: str = None) -> str:
         pic_urls = build_pic_urls(
@@ -1620,6 +1744,12 @@ def post_to_ebay(
         if category_group in ("デジカメ", "ビデオカメラ","レンズ") and model_name:
             payload["C:Model"] = model_name
 
+        if category_id_ebay == "3323" and _lens_specifics:
+            payload["C:Maximum Aperture"] = _lens_specifics["Maximum Aperture"]
+            payload["C:Focal Length"] = _lens_specifics["Focal Length"]
+            payload["C:Mount"] = _lens_specifics["Mount"]
+            payload["C:Focus Type"] = _lens_specifics["Focus Type"]
+
         if category_group in ("トレカ", "遊戯王カード"):
             condition_id, condition_descriptors = build_card_condition_fields(rec.get("item_attributes"))
             payload["*ConditionID"] = condition_id
@@ -1646,11 +1776,18 @@ def post_to_ebay(
             record_ebay_listing(item_id_ebay, acct, sku, vendor_name, start_price_usd)
 
             with conn.cursor() as cursor:
-                cursor.execute("""
-                    UPDATE mst.ebay_accounts
-                    SET listing_left = listing_left - 1
-                    WHERE account = ?
-                """, acct)
+                if is_collectibles:
+                    cursor.execute("""
+                        UPDATE mst.ebay_accounts
+                        SET additional_listing_left = additional_listing_left - 1
+                        WHERE account = ?
+                    """, acct)
+                else:
+                    cursor.execute("""
+                        UPDATE mst.ebay_accounts
+                        SET listing_left = listing_left - 1
+                        WHERE account = ?
+                    """, acct)
 
             conn.commit()
 
@@ -1732,11 +1869,18 @@ def post_to_ebay(
                     print(f"✅ 出品成功(model_us retry): acct={acct} SKU={sku} listing_id={item_id_ebay}")
                     record_ebay_listing(item_id_ebay, acct, sku, vendor_name, start_price_usd)
                     with conn.cursor() as cursor:
-                        cursor.execute("""
-                            UPDATE mst.ebay_accounts
-                            SET listing_left = listing_left - 1
-                            WHERE account = ?
-                        """, acct)
+                        if is_collectibles:
+                            cursor.execute("""
+                                UPDATE mst.ebay_accounts
+                                SET additional_listing_left = additional_listing_left - 1
+                                WHERE account = ?
+                            """, acct)
+                        else:
+                            cursor.execute("""
+                                UPDATE mst.ebay_accounts
+                                SET listing_left = listing_left - 1
+                                WHERE account = ?
+                            """, acct)
                     conn.commit()
                     rec["processing_by"] = None
                     rec["processing_at"] = None
@@ -2037,7 +2181,8 @@ def take_one_vendor_item(conn, preset_group, processing_by, account_name):
             c.low_jpy_target,
             c.high_jpy_target,
             inserted.item_condition_id,
-            c.is_ok_logic
+            c.is_ok_logic,
+            c.is_collectibles
         FROM trx.vendor_item v WITH (UPDLOCK, READPAST, ROWLOCK)
         INNER JOIN dbo.fn_take_one_candidates(?) c
             ON c.vendor_name    = v.vendor_name
@@ -2274,7 +2419,8 @@ def main():
                                 BATCH_COMMIT=BATCH_COMMIT, image_mode=image_mode,
                                 image_error_count=image_error_count, cdn_mode_until=cdn_mode_until,
                                 r2=r2, r2_bucket=r2_bucket_name, r2_public_base=r2_public_base,
-                                cdn_cache=cdn_cache, now_dt=datetime.now(),preset=row["preset"]
+                                cdn_cache=cdn_cache, now_dt=datetime.now(),preset=row["preset"],
+                                is_collectibles=row.get("is_collectibles"),
                             )
                             if stop_all:
                                 break
