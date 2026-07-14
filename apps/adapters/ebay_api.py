@@ -182,8 +182,10 @@ def _extract_error(err: Dict[str, Any]) -> tuple[int, str]:
     return code, str(msg)
 
 def _is_listing_limit(code: int, msg: str) -> bool:
-    m = (msg or "").lower()
-    return code in (21916611,) or any(kw in m for kw in ["limit", "selling limit", "sell limit", "exceeded"])
+    # eBay公式の出品上限(月間セリングリミット)エラーのみをリミット扱いにする。
+    # "limit"/"exceeded" 等の文字列一致は、25002(duplicate listing)等の
+    # 無関係なエラーを誤ってリミット扱いにしてしまうため使用しない。
+    return code == 21916611
 
 # ====== Inventory API（出品・更新・公開）======
 def register_inventory_item(row: Dict[str, Any], token: str) -> Dict[str, Any]:
