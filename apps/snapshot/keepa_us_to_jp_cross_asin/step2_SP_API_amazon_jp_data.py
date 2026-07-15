@@ -123,7 +123,7 @@ def process_items(cursor, items, price_map):
         attr = item.get("attributes", {})
 
         # 1. タイトル、ブランド、価格の取得
-        title = summary.get("itemName")
+        title = (summary.get("itemName") or "")[:255]
         brand = summary.get("brand") or attr.get("brand", [{}])[0].get("value")
         if brand: brand = str(brand).strip()
         price = price_map.get(asin)

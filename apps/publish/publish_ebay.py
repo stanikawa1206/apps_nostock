@@ -1704,6 +1704,11 @@ def post_to_ebay(
 
     fail_other_delta = 0
 
+    # acct_targets とは役割を分離する専用フラグ。
+    # 「eBayのListingLimitErrorが実際に発生したか」だけを表す。
+    # acct_targets は残り投稿件数のカウントダウン専用とし、LIMIT判定には使わない。
+    listing_limit_hit = False
+
     _camera_models = heavy.get("camera_models")
     _lens_specifics = heavy.get("lens_specifics")
 
@@ -1806,10 +1811,14 @@ def post_to_ebay(
 
             total_listings += 1
             if total_listings >= MAX_LISTINGS:
+                # [publish_ebay 全体の終了①] 全アカウント合計の出品数が上限(MAX_LISTINGS)に到達。
+                # stop_all=True は内側・外側どちらの while ループも同時に止める
+                # ＝このアカウントだけでなくプロセス全体を終了させる合図。
+                # 現状 MAX_LISTINGS = 10**9 のため、実運用では事実上到達しない。
                 stop_all = True
 
             return (acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
-                    fail_other_delta, image_mode, image_error_count, cdn_mode_until)
+                    fail_other_delta, image_mode, image_error_count, cdn_mode_until, listing_limit_hit)
 
         # listing_id未返却
         rec["listing_head"] = "出品失敗"
@@ -1820,7 +1829,7 @@ def post_to_ebay(
         fail_other_delta += 1
 
         return (acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
-                fail_other_delta, image_mode, image_error_count, cdn_mode_until)
+                fail_other_delta, image_mode, image_error_count, cdn_mode_until, listing_limit_hit)
 
     except ListingLimitError as e:
         print(f"🚫 出品停止(ListingLimit): acct={acct} SKU={sku} reason={e}")
@@ -1837,7 +1846,11 @@ def post_to_ebay(
         writes_since_commit = _maybe_commit(conn, writes_since_commit, 1)
 
         fail_other_delta += 1
-        acct_targets[acct] = 0
+
+        # eBay APIが実際にListingLimitErrorを返した唯一の箇所。
+        # ここでだけ listing_limit_hit=True にする（acct_targetsはもう触らない）。
+        # acct_targets は「残り投稿件数」の表示専用として、実際の値のまま残す。
+        listing_limit_hit = True
 
         return (
             acct_targets,
@@ -1848,7 +1861,8 @@ def post_to_ebay(
             fail_other_delta,
             image_mode,
             image_error_count,
-            cdn_mode_until
+            cdn_mode_until,
+            listing_limit_hit,
         )
 
     except ApiHandledError as e:
@@ -1896,7 +1910,7 @@ def post_to_ebay(
                     if total_listings >= MAX_LISTINGS:
                         stop_all = True
                     return (acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
-                            fail_other_delta, image_mode, image_error_count, cdn_mode_until)
+                            fail_other_delta, image_mode, image_error_count, cdn_mode_until, listing_limit_hit)
                 rec["listing_head"] = "出品失敗"
                 rec["listing_detail"] = "model_us retry: listing_id未返却"
                 upsert_vendor_item(conn, rec)
@@ -1904,7 +1918,7 @@ def post_to_ebay(
                 writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
                 fail_other_delta += 1
                 return (acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
-                        fail_other_delta, image_mode, image_error_count, cdn_mode_until)
+                        fail_other_delta, image_mode, image_error_count, cdn_mode_until, listing_limit_hit)
             except ApiHandledError as e2:
                 print(f"[25604 retry] 失敗: errorId={e2.code} {e2.message}")
                 rec["listing_head"] = "出品失敗"
@@ -1914,7 +1928,7 @@ def post_to_ebay(
                 writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
                 fail_other_delta += 1
                 return (acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
-                        fail_other_delta, image_mode, image_error_count, cdn_mode_until)
+                        fail_other_delta, image_mode, image_error_count, cdn_mode_until, listing_limit_hit)
             except Exception as e2:
                 print(f"[25604 retry] 例外: {e2}")
                 rec["listing_head"] = "出品失敗"
@@ -1924,7 +1938,7 @@ def post_to_ebay(
                 writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
                 fail_other_delta += 1
                 return (acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
-                        fail_other_delta, image_mode, image_error_count, cdn_mode_until)
+                        fail_other_delta, image_mode, image_error_count, cdn_mode_until, listing_limit_hit)
 
         # ★ 画像エラーを数える（NORMAL時のみ）
         switched_now = False
@@ -1965,7 +1979,7 @@ def post_to_ebay(
                         stop_all = True
 
                     return (acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
-                            fail_other_delta, image_mode, image_error_count, cdn_mode_until)
+                            fail_other_delta, image_mode, image_error_count, cdn_mode_until, listing_limit_hit)
 
                 # retryでもlisting_id未返却
                 rec["listing_head"] = "出品失敗"
@@ -1976,7 +1990,7 @@ def post_to_ebay(
                 fail_other_delta += 1
 
                 return (acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
-                        fail_other_delta, image_mode, image_error_count, cdn_mode_until)
+                        fail_other_delta, image_mode, image_error_count, cdn_mode_until, listing_limit_hit)
 
             except Exception as e2:
                 print(f"[IMG_ERR] CDN retry failed: {e2}")
@@ -1988,7 +2002,7 @@ def post_to_ebay(
                 fail_other_delta += 1
 
                 return (acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
-                        fail_other_delta, image_mode, image_error_count, cdn_mode_until)
+                        fail_other_delta, image_mode, image_error_count, cdn_mode_until, listing_limit_hit)
 
         # ★ 通常のAPI失敗確定
         policy = classify_ebay_error(err_msg)
@@ -2006,7 +2020,7 @@ def post_to_ebay(
         fail_other_delta += 1
 
         return (acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
-                fail_other_delta, image_mode, image_error_count, cdn_mode_until)
+                fail_other_delta, image_mode, image_error_count, cdn_mode_until, listing_limit_hit)
 
     except Exception as e:
         print(f"❌ 出品失敗(未分類): acct={acct} SKU={sku} reason={e}")
@@ -2018,7 +2032,7 @@ def post_to_ebay(
         fail_other_delta += 1
 
         return (acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
-                fail_other_delta, image_mode, image_error_count, cdn_mode_until)
+                fail_other_delta, image_mode, image_error_count, cdn_mode_until, listing_limit_hit)
 
 
 def get_processing_by():
@@ -2131,12 +2145,36 @@ def release_pc_and_close_account(conn, current_pc, account_name=None, close_reas
         
         # 2. PCの占有解除 (account を NULL に戻す)
         cur.execute("""
-            UPDATE mst.execute_pcs 
-            SET account = NULL 
+            UPDATE mst.execute_pcs
+            SET account = NULL
             WHERE execute_pc = ?
         """, (current_pc,))
-        
+
         conn.commit()
+
+
+SQL_SELECT_HAS_LIMIT_ACCOUNT = """
+SELECT TOP 1 account
+FROM mst.ebay_accounts
+WHERE close_reason = 'LIMIT'
+"""
+
+
+def has_limit_accounts(conn):
+    """
+    close_reason='LIMIT' のアカウントが1件でも残っているか確認する。
+
+    LIMITは「終了」ではなく「一時停止」。publish_manager.py が出品枠を確保して
+    close_reason をクリアすれば再び取得できるようになるため、
+    今すぐ処理できるアカウントが無くても、LIMIT中のアカウントが残っている間は
+    publish_ebay を終了せず待機する（呼び出し側で判定に使う）。
+    """
+
+    with conn.cursor() as cur:
+        cur.execute(SQL_SELECT_HAS_LIMIT_ACCOUNT)
+        row = cur.fetchone()
+
+    return row is not None
 
 
 @dataclass
@@ -2219,6 +2257,16 @@ def take_one_vendor_item(conn, preset_group, processing_by, account_name):
 
          
 def main():
+    # publish_ebay 全体のエントリポイント。
+    # アカウントの終了理由は DONE（目標達成）/ EMPTY（在庫枯渇）/ LIMIT（eBay側の出品制限）の3種類。
+    # DONE・EMPTYは当日の処理が本当に終わったことを意味するが、LIMITは「一時停止」であり、
+    # publish_manager.py が出品枠を確保してclose_reasonをクリアすれば再開できる。
+    # そのため「全アカウントの処理が終わった」と判断するのは、下の外側 while ループ内で
+    # fetch_next_account_and_lock() が処理可能なアカウントを1件も返さず、かつ
+    # LIMIT中（一時停止中）のアカウントも1件も残っていない時だけ。
+    # LIMIT中のアカウントが残っている間は、プロセスを終了せず待機しながら再確認を続ける。
+    # それまでは、1アカウントが終わるたびに次のアカウントを取得して処理を続ける
+    # （＝1回のプロセス実行で複数アカウントを順番に処理し得る）。
     # --- 修正ポイント1: .env の場所を絶対パスで指定 ---
     from pathlib import Path
     _PROJECT_ROOT = Path("/opt/apps_nostock") 
@@ -2264,6 +2312,10 @@ def main():
     total_listings = 0
     MAX_LISTINGS = 10**9
     stop_all = False
+    # LIMIT中のアカウントが残っている間、次の確認までどれくらい待つか（秒）。
+    # publish_manager.py が出品枠を確保して close_reason をクリアするまでの
+    # 待ち時間なので、数秒〜数十秒程度で十分（短すぎるとDBへの問い合わせが無駄に増える）。
+    LIMIT_WAIT_SECONDS = 10
     conn = get_sql_server_connection()
     summary_success = {}
     driver = None
@@ -2283,10 +2335,43 @@ def main():
 
             
 
+            # ===== 外側ループ: publish_ebay 全体の終了を決めるループ =====
+            # アカウントの状態は DONE / EMPTY / LIMIT の3つ。
+            #   DONE  : 当日の目標件数を達成 → 今日はもう処理しない（終了）
+            #   EMPTY : 出品候補が無くなった → 今日はもう処理しない（終了）
+            #   LIMIT : eBay側の出品制限 → 「一時停止」であり終了ではない。
+            #           publish_manager.py が古い出品を削除して出品枠を確保し、
+            #           close_reason をクリアすれば、そのアカウントは再び取得できる。
+            # そのため「今すぐ処理できるアカウントが無い」だけでは終了と判断せず、
+            # LIMIT中（一時停止中）のアカウントが残っていないかも合わせて確認する。
+            #
+            # ここを抜ける = publish_ebay プロセス全体の終了。抜ける条件は2つだけ:
+            #   ① fetch_next_account_and_lock() が None を返し、かつ
+            #      LIMIT中のアカウントも1件も無い（下のif not acct内のelse）
+            #   ② stop_all = True （MAX_LISTINGS到達。現状 10**9 なので実運用では事実上起こらない）
             while not stop_all:
+                # ===== アカウント取得 =====
+                # is_closed_today=0 かつ sent_count<post_target のアカウントを1件確保する。
+                # DONE/EMPTY/LIMITいずれも is_closed_today=1 になるため、
+                # ここで None が返るのは「今すぐ処理できるアカウントが無い」状態。
                 acct = fetch_next_account_and_lock(conn, current_pc)
+
                 if not acct:
-                    print("[INFO] 実行可能なアカウントがありません。終了します。")
+                    # ===== LIMIT待機 =====
+                    # 今すぐ処理できるアカウントは無いが、LIMIT（一時停止）中のアカウントが
+                    # 残っているなら、publish_managerの対応で近いうちに復帰する可能性がある。
+                    # ここで終了してしまうとLIMIT解除後に誰も出品を再開できなくなるため、
+                    # 少し待ってからもう一度アカウント取得を試みる（プロセスは終了しない）。
+                    if has_limit_accounts(conn):
+                        print(f"[INFO] 今すぐ処理できるアカウントはありませんが、LIMIT中のアカウントが残っています。{LIMIT_WAIT_SECONDS}秒待って再確認します。")
+                        time.sleep(LIMIT_WAIT_SECONDS)
+                        continue
+
+                    # ===== 終了判定 =====
+                    # 処理できるアカウントが無く、かつLIMIT中のアカウントも1件も無い。
+                    # これでようやく「全アカウントの処理が終わった」と言えるため、
+                    # ここで初めてプロセス全体を終了させる。
+                    print("[INFO] 実行可能なアカウントがなく、LIMIT中のアカウントもありません。終了します。")
                     break
 
                 print(f"🚀 アカウント開始: {acct.account} (Target: {acct.post_target})")
@@ -2314,6 +2399,12 @@ def main():
                 acct_targets = {acct.account: acct.post_target}
                 close_reason = None
 
+                # ===== 内側ループ: 1アカウント分の処理ループ =====
+                # ここを抜けても外側ループは終わらない（次のアカウントへ進むだけ）。
+                # 抜ける理由は close_reason で区別する:
+                #   "DONE"  : 目標達成（今日は終了）
+                #   "EMPTY" : 出品候補が無い（今日は終了）
+                #   "LIMIT" : eBay側の出品制限（一時停止。publish_managerが解除すれば再開）
                 while not stop_all:
                     with conn.cursor() as cur:
                         cur.execute("""
@@ -2326,7 +2417,11 @@ def main():
                         
                         sent_now = cur.fetchone()[0]
 
+                    # [アカウント終了①: DONE] 当日の post_target に到達済み（DB上の実件数で判定）
+                    # → close_reason="DONE"。is_closed_todayが立ち、今日はもう処理しない
+                    #   （LIMITと違って一時停止ではなく、当日分の目標達成による正式な終了）。
                     if sent_now >= acct.post_target:
+                        close_reason = "DONE"
                         print(f"✅ {acct.account} 当日目標数に達しました。")
                         break
 
@@ -2339,6 +2434,10 @@ def main():
                     row = take_one_vendor_item(conn, acct.preset_group, processing_by, acct.account)
                     if row:
                         print(f"[DEBUG] picked SKU={row['vendor_item_id']} price={row['price']} shipping_days={row['shipping_days']} 出品状況={row.get('出品状況')}", datetime.now().strftime("%H:%M:%S"))
+                    # [アカウント終了②] このアカウントの担当レンジ(preset_group)に
+                    # 出品candidate が無くなった（在庫枯渇）
+                    # → close_reason="EMPTY"。is_closed_today=1 になり、
+                    #   当日はこのアカウントは再取得されなくなる。
                     if not row:
                         print(f"[INFO] {acct.account} 在庫枯渇")
                         close_reason = "EMPTY"
@@ -2409,7 +2508,7 @@ def main():
                         if heavy:
                             (
                                 acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
-                                _, image_mode, image_error_count, cdn_mode_until,
+                                _, image_mode, image_error_count, cdn_mode_until, listing_limit_hit,
                             ) = post_to_ebay(
                                 conn=conn, p=None, acct=acct.account, heavy=heavy,
                                 acct_targets=acct_targets, acct_success=acct_success,
@@ -2423,9 +2522,19 @@ def main():
                                 is_collectibles=row.get("is_collectibles"),
                             )
                             if stop_all:
+                                # [publish_ebay 全体の終了①つづき] MAX_LISTINGS到達を検知。
+                                # このアカウントの内側ループだけでなく、外側の
+                                # `while not stop_all` も条件を満たさなくなるため
+                                # プロセス全体がこのあと終了する。
                                 break
 
-                            if acct_targets.get(acct.account) == 0:
+                            # [アカウント終了③] eBayのListingLimitErrorが実際に発生した場合だけ
+                            # close_reason="LIMIT" にする。
+                            # acct_targets（残り投稿件数のカウントダウン）とLIMIT判定は完全に分離した。
+                            # 目標件数ちょうどまで投稿できた場合はacct_targetsが0になるだけで
+                            # listing_limit_hitはFalseのままなので、ここには来ない
+                            # （その場合は次のループ先頭のsent_now>=post_targetチェックで正常終了する）。
+                            if listing_limit_hit:
                                 print(f"🚫 {acct.account} APIリミットを検知しました。")
                                 close_reason = "LIMIT"
                                 break
@@ -2434,6 +2543,9 @@ def main():
                             conn.commit()
 
                     except FatalRendererError:
+                        # [publish_ebay 全体の終了③] ブラウザ(renderer)側の致命的クラッシュ。
+                        # 個別アカウント終了ではなく、プロセスそのものを即座に異常終了させる
+                        # （sys.exit(1)。sys.exit(10)の正常終了とは区別されるコード）。
                         print("[FATAL] Renderer crash → exit 1")
                         sys.exit(1)
 
@@ -2459,15 +2571,29 @@ def main():
                         except:
                             pass
 
+                # このアカウントの処理はここで終わり（close_reason: DONE/EMPTY/LIMITのいずれか）。
+                # release_pc_and_close_account が is_closed_today=1 と close_reason を書き込む。
+                # DONE/EMPTYは今日はもう再取得されない。LIMITも同様にis_closed_today=1になるが、
+                # 「終了」ではなく「一時停止」であり、publish_manager.py が出品枠を確保して
+                # close_reason をクリアすれば、このアカウントは再び取得できるようになる。
+                # 外側 while はここでは終わらず、次のアカウントを取りに戻る。
                 release_pc_and_close_account(conn, current_pc, acct.account, close_reason)
                 summary_success[acct.account] = summary_success.get(acct.account, 0) + acct_success.get(acct.account, 0)
-                print(f"🏁 アカウント終了: {acct.account} (Reason: {close_reason or 'DONE'})")
+                print(f"🏁 アカウント終了: {acct.account} (Reason: {close_reason})")
 
 
+        # [publish_ebay 全体の終了②] 外側 while を抜けた＝
+        #   ・処理可能なアカウントが無く、かつLIMIT中のアカウントも1件も無い（通常はこちら）
+        #   ・または stop_all=True（MAX_LISTINGS到達）
+        # のどちらか。LIMIT中のアカウントが残っている間はここに来ない
+        # （while内でsleepして待機し続ける）。ここに来て初めて
+        # 「全アカウントの処理が終わった」ことになり、プロセス自体が終了する（sys.exit(10)）。
         print(f"[EXIT] 処理完了（合計出品数: {total_listings}）")
         sys.exit(10)
 
     finally:
+        # 正常終了(sys.exit(10))・異常終了(sys.exit(1)含む例外)いずれの経路でも、
+        # このプロセスが握っていたPCスロット(mst.execute_pcs)は必ず解放する後片付け。
         try:
             release_pc_and_close_account(conn, current_pc)
         except:
