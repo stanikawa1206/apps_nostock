@@ -171,15 +171,15 @@ def run_vps():
 # ======================
 def run_get_active_listings_local():
     """
-    ローカルで get_active_listings.py を実行し、完了するまで待つ。
+    ローカルで get_active_listings.py を起動する（Popenで起動のみ、完了待ちは呼び出し元で行う）。
 
-    ※SQL Serverチューニング調査のため、一時的に同期実行にしている
-    （本来は起動のみで待たない。is_active_listings_fetch_done() 側で完了確認する運用）。
+    起動した Popen オブジェクトを返す。完了確認は is_active_listings_fetch_done() ではなく、
+    呼び出し元(main)がこの Popen を wait() することで行う。
     """
 
     print("🟢 LOCAL get_active_listings 開始")
 
-    subprocess.run(
+    proc = subprocess.Popen(
         [
             PYTHON,
             "-m",
@@ -189,23 +189,29 @@ def run_get_active_listings_local():
         env={**os.environ, "PYTHONIOENCODING": "utf-8"},
     )
 
-    print("🚀 LOCAL get_active_listings 完了")
+    print("🚀 LOCAL get_active_listings 起動完了")
+
+    return proc
 
 
 def run_get_active_listings_vps():
     """
-    VPS版 get_active_listings を1台ずつ順番に実行し、各VPSの完了を待ってから次へ進む。
+    VPS版 get_active_listings を全台同時に起動する（Popenで起動のみ、完了待ちは呼び出し元で行う）。
 
-    ※SQL Serverチューニング調査のため、一時的に同期実行にしている
-    （本来は全台同時起動・待たない。is_active_listings_fetch_done() 側で完了確認する運用）。
+    各VPSは ssh を直接起動し(start/cmd.exeは経由しない)、CREATE_NEW_CONSOLE で
+    個別のコンソールウィンドウにログをリアルタイム表示する。start経由にしないのは、
+    startは起動直後に detach してしまい、返る Popen が実際の ssh プロセスと
+    一致しなくなる（= proc.wait() で本当の完了を待てなくなる）ため。
+    起動した Popen オブジェクトのリストを返し、完了確認は呼び出し元(main)が
+    これらを wait() することで行う（is_active_listings_fetch_done() は使用しない）。
     """
 
     print("🟢 VPS get_active_listings 開始")
 
-    for ip in VPS_LIST:
-        print(f"===== VPS {ip} START =====")
+    processes = []
 
-        result = subprocess.run(
+    for ip in VPS_LIST:
+        proc = subprocess.Popen(
             [
                 "ssh",
                 f"root@{ip}",
@@ -215,15 +221,13 @@ def run_get_active_listings_vps():
                     "python3 -u -m apps.publish.get_active_listings"
                 ),
             ],
-            check=False,
+            creationflags=subprocess.CREATE_NEW_CONSOLE,
         )
+        processes.append(proc)
 
-        print(f"===== VPS {ip} END: returncode={result.returncode} =====")
+    print("🚀 VPS全台で get_active_listings 起動完了")
 
-        if result.returncode != 0:
-            print(f"❌ VPS {ip} は異常終了しました: returncode={result.returncode}")
-
-    print("🚀 VPS全台で get_active_listings 完了")
+    return processes
 
 
 SQL_SELECT_HAS_PENDING_LISTING_FETCH = """
@@ -534,12 +538,15 @@ def main():
     # 前日のLIMIT情報をクリアする
     reset_close_status()
 
-    # 最新のActive Listingを取得する（VPS→LOCALの順に、完了を待ちながら同期実行する）
-    # ※SQL Serverチューニング調査のため、一時的に is_active_listings_fetch_done() による
-    #   完了待ち(wait_for_active_listings_completion)は使用せず、プロセスの正常終了をもって
-    #   完了とみなしている。
-    run_get_active_listings_vps()
-    run_get_active_listings_local()
+    # 最新のActive Listingを取得する（VPS7台・LOCAL1台を同時に起動する）
+    # 完了確認は is_active_listings_fetch_done() を使わず、起動した全Popenを
+    # wait() することでプロセスの正常終了をもって完了とみなす。
+    processes = []
+    processes.extend(run_get_active_listings_vps())
+    processes.append(run_get_active_listings_local())
+
+    for proc in processes:
+        proc.wait()
 
     # 出品処理を開始する（VPS・ローカルとも常駐して出品を続ける）
     run_vps()
