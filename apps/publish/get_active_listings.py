@@ -111,6 +111,7 @@ def get_active_listings(account: str):
         page += 1
 
     print(f"  ✔ 合計: {len(all_items)}")
+    print("A", flush=True)
     return all_items
 
 
@@ -230,12 +231,17 @@ def fetch_and_store_active_listings_for_account(conn, account, fetched_at):
     """
 
     items = get_active_listings(account)
+    print("B", flush=True)
 
     with conn.cursor() as cur:
         cur.execute("DELETE FROM ext.ebay_active_download WHERE account = ?", account)
+        print("C", flush=True)
         insert_items(cur, account, items, fetched_at)
+        print("D", flush=True)
     conn.commit()
+    print("E", flush=True)
 
+    print("F", flush=True)
     return len(items)
 
 
@@ -266,13 +272,16 @@ def run_for_this_pc():
 
             if not account:
                 print("[INFO] 取得対象アカウントがありません。終了します。")
+                print("K0", flush=True)
                 break
 
             print(f"▶ 開始: {account}")
 
             try:
                 count = fetch_and_store_active_listings_for_account(conn, account, fetched_at)
+                print("G", flush=True)
                 print(f"  件数: {count}")
+                print("H", flush=True)
             except Exception as e:
                 # 1アカウントの取得失敗で全体を止めない。
                 # このPCの already_processed には加えるため、このPC自身は
@@ -282,12 +291,18 @@ def run_for_this_pc():
                 print(f"❌ {account} のActive Listing取得に失敗しました: error={e}")
             finally:
                 already_processed.add(account)
+                print("I", flush=True)
                 release_listing_fetch_pc(conn, current_pc)
+                print("J", flush=True)
 
+        print("K", flush=True)
         print("✅ 完了")
+        print("L", flush=True)
 
     finally:
+        print("M", flush=True)
         conn.close()
+        print("N", flush=True)
 
 
 if __name__ == "__main__":

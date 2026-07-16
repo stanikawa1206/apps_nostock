@@ -4,7 +4,8 @@ import sys
 import subprocess
 import time
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
+from datetime import time as clock_time
 import os
 import re
 
@@ -35,17 +36,33 @@ BASE_DIR = Path(__file__).resolve().parents[2]  # ← apps_nostock 直下
 
 APPS_INV = BASE_DIR / "apps" / "inventory"
 APPS_PUB = BASE_DIR / "apps" / "publish"
-APPS_DEL = BASE_DIR / "apps" / "publish" / "delete_ebay_daily.py"
 
 FETCH_ACTIVE = APPS_INV / "fetch_active_ebay.py"
 FETCH_SOLD       = APPS_INV / "fetch_sold_ebay.py"
 CHECK_REMAINING  = APPS_INV / "check_remaining_ebay.py"
 
-# 在庫チェック後、削除 → 出品 の順で実行
-DELETE_SCRIPT = APPS_DEL
-PUBLISH_SCRIPT = APPS_PUB / "daily_check_publish.py"
+# 出品関連（Active Listing取得・LIMIT監視・出品）は publish_manager.py に一本化。
+# daily_check は「1日の流れ全体」を管理するオーケストレーターとして、
+# publish_manager を呼び出すだけにする。
+PUBLISH_MANAGER_SCRIPT = APPS_PUB / "publish_manager.py"
 
 WAIT_SECONDS = 3
+
+# ======================
+# 運用方針: 「在庫管理 → 出品」を1サイクルとし、これを複数回実行できるようにする
+# ======================
+
+# 1日に回すサイクル数。
+# 通常運用は 1。長期不在時などは 2 や 7 のように変更するだけでよい。
+TOTAL_CYCLES = 1
+
+# 出品開始予定時刻（時刻のみ）。
+# ★ 実際の運用時刻に合わせて必ず設定してください（下記は仮の値）。
+PUBLISH_START_US = clock_time(21, 0)
+
+# 在庫管理1回に見込む所要時間。
+# ★ 実績に応じて調整してください（下記は仮の値）。
+INVENTORY_DURATION = timedelta(hours=2)
 
 # ======================
 # 共通関数
@@ -265,15 +282,15 @@ def wait_until_remaining_exhausted(conn):
     cur.execute("""
         SELECT COUNT(*)
         FROM trx.vendor_item AS v
-        INNER JOIN trx.listings AS l 
+        INNER JOIN trx.listings AS l
             ON v.vendor_name = l.vendor_name
            AND v.vendor_item_id = l.vendor_item_id
         WHERE l.is_deleted = 0
           AND v.vendor_name IN (N'メルカリ', N'メルカリshops')
-          AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')                               
+          AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')
           AND v.remaining_check_at IS NULL
           AND (
-                v.remaining_check_lock IS NULL 
+                v.remaining_check_lock IS NULL
              OR v.remaining_check_lock < DATEADD(MINUTE, -15, SYSDATETIME())
           )
     """)
@@ -283,15 +300,15 @@ def wait_until_remaining_exhausted(conn):
         cur.execute("""
             SELECT COUNT(*)
             FROM trx.vendor_item AS v
-            INNER JOIN trx.listings AS l 
+            INNER JOIN trx.listings AS l
                 ON v.vendor_name = l.vendor_name
                AND v.vendor_item_id = l.vendor_item_id
             WHERE l.is_deleted = 0
               AND v.vendor_name IN (N'メルカリ', N'メルカリshops')
-              AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')                               
+              AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')
               AND v.remaining_check_at IS NULL
               AND (
-                    v.remaining_check_lock IS NULL 
+                    v.remaining_check_lock IS NULL
                  OR v.remaining_check_lock < DATEADD(MINUTE, -15, SYSDATETIME())
               )
         """)
@@ -512,6 +529,287 @@ def refresh_presets_lookup(conn):
     count = cur.fetchone()[0]
     print(f"presets_lookup count: {count:,}")
 
+
+# ======================
+# 在庫管理（1回分）
+# ======================
+def run_inventory_management_round(conn, cycle_no, round_no):
+    """
+    在庫管理を1回分実行する（事前sold → フル在庫チェック → sold → remaining）。
+
+    いずれかの工程でジョブ投入自体に失敗した場合は、その工程以降を打ち切って
+    この1回分の在庫管理を終える（プロセス全体は落とさない）。
+    """
+
+    # ------------------------------------------------
+    # ① 事前 sold チェック（分散版）
+    # ------------------------------------------------
+    print("\n=== ⭐ 事前 sold チェック（分散版）開始 ===")
+
+    pre_sold_start = datetime.now()
+    pre_sold_code, _ = run_script(FETCH_SOLD)  # job投入
+
+    if pre_sold_code != 0:
+        pre_sold_end = datetime.now()
+        send_script_mail(
+            FETCH_SOLD,
+            pre_sold_start,
+            pre_sold_end,
+            pre_sold_code,
+            round_no=round_no,
+            conn=conn,
+        )
+        print("[STOP] 事前 fetch_sold job投入失敗")
+        return
+
+    # worker完了待ち
+    wait_until_no_pending(conn, phase_name="pre_sold")
+
+    pre_sold_end = datetime.now()
+
+    send_script_mail(
+        FETCH_SOLD,
+        pre_sold_start,
+        pre_sold_end,
+        0,
+        round_no=round_no,
+        conn=conn,
+    )
+
+    # ------------------------------------------------
+    # ② フル在庫チェック（fetch_active だけ分散）
+    # ------------------------------------------------
+    print("\n=== 📦 フル在庫チェック（分散版）開始 ===")
+
+    # ②-1 job投入
+    active_start = datetime.now()
+    active_code, _ = run_script(FETCH_ACTIVE)
+
+    if active_code != 0:
+        active_end = datetime.now()
+        send_script_mail(
+            FETCH_ACTIVE,
+            active_start,
+            active_end,
+            active_code,
+            round_no=round_no,
+            conn=conn,
+        )
+        print("[STOP] fetch_active job投入失敗")
+        return
+
+    # ②-2 worker 完了待ち（ここが本体）
+    wait_until_no_pending(conn, phase_name="active")
+
+    # ★ ここで active フェーズ完了
+    active_end = datetime.now()
+    send_script_mail(
+        FETCH_ACTIVE,
+        active_start,
+        active_end,
+        0,
+        round_no=round_no,
+        conn=conn,
+    )
+
+    # ------------------------------------------------
+    # ②-3 sold（分散版：job投入 → worker完了待ち）
+    # ------------------------------------------------
+    print("\n=== 🧾 sold チェック（分散版）開始 ===")
+
+    # ②-3-1 job投入
+    sold_start = datetime.now()
+    sold_code, _ = run_script(FETCH_SOLD)
+
+    if sold_code != 0:
+        sold_end = datetime.now()
+        send_script_mail(
+            FETCH_SOLD,
+            sold_start,
+            sold_end,
+            sold_code,
+            round_no=round_no,
+            conn=conn,
+        )
+        print("[STOP] fetch_sold job投入失敗")
+        return
+
+    # ②-3-2 worker 完了待ち（ここが本体）
+    wait_until_no_pending(conn, phase_name="sold")
+
+    # ★ ここで sold フェーズ完了
+    sold_end = datetime.now()
+    send_script_mail(
+        FETCH_SOLD,
+        sold_start,
+        sold_end,
+        0,
+        round_no=round_no,
+        conn=conn,
+    )
+
+    time.sleep(WAIT_SECONDS)
+
+    # ------------------------------------------------
+    # ②-4 remaining（ローカル＋VPS分散版）
+    # ------------------------------------------------
+    print("\n=== 🔄 remaining チェック開始 ===")
+
+    rem_start = datetime.now()
+
+    # ★ 1. フラグ初期化
+    reset_remaining_flags(conn)
+
+    # ★ 2. worker起動
+    launch_remaining_workers()
+
+    # ★ 3. remaining対象が枯渇するまで待つ
+    processed_count = wait_until_remaining_exhausted(conn)
+
+    rem_end = datetime.now()
+
+    extra = f"remaining 処理件数: {processed_count} 件"
+
+    send_script_mail(
+        CHECK_REMAINING,
+        rem_start,
+        rem_end,
+        0,
+        round_no=round_no,
+        conn=conn,
+        extra_body=extra,
+    )
+
+    print(f"=== ✅ Cycle{cycle_no} 在庫管理{round_no}回目: 完了 ===")
+    time.sleep(WAIT_SECONDS)
+
+
+# ======================
+# 出品開始タイミング判定
+# ======================
+def get_next_publish_start_datetime(now: datetime) -> datetime:
+    """
+    PUBLISH_START_US（時刻のみ）を、nowから見て次に到来する日時に変換する。
+    今日のPUBLISH_START_USをまだ過ぎていなければ今日、既に過ぎていれば翌日とする
+    （在庫管理が日をまたぐ場合を考慮）。
+    """
+    candidate = datetime.combine(now.date(), PUBLISH_START_US)
+    if candidate <= now:
+        candidate += timedelta(days=1)
+    return candidate
+
+
+def can_start_another_inventory_round(now: datetime) -> bool:
+    """
+    「今から在庫管理をもう1回開始した場合の終了予定時刻」が
+    「出品開始予定時刻 - INVENTORY_DURATION」を超えないかどうかを判定する。
+
+    超えない  → まだ余裕がある  → 在庫管理をもう1回実行してよい
+    超える    → 余裕がない      → 在庫管理は開始せず、publish_manager を実行する
+    """
+    publish_start = get_next_publish_start_datetime(now)
+    deadline = publish_start - INVENTORY_DURATION
+    projected_finish = now + INVENTORY_DURATION
+
+    return projected_finish <= deadline
+
+
+# ======================
+# 出品処理（publish_manager 呼び出し）
+# ======================
+def run_publish_manager(conn):
+    """
+    publish_manager.py を起動し、終了するまで待つ。
+
+    publish_manager は Active Listing取得・LIMIT監視・出品といった
+    「出品関連」だけを担当する（daily_check側では中身に立ち入らない）。
+    """
+
+    print("🚀 publish_manager開始")
+
+    # publish直前に、前回までの処理ロックをクリアしておく
+    refresh_presets_and_clear_locks(conn)
+
+    pub_start = datetime.now()
+    pub_code, _ = run_script(PUBLISH_MANAGER_SCRIPT)
+    pub_end = datetime.now()
+
+    subject = (
+        f"❌ publish_manager.py エラー"
+        if pub_code != 0
+        else f"✅ publish_manager.py 正常終了"
+    )
+
+    body = (
+        f"スクリプト: {PUBLISH_MANAGER_SCRIPT.name}\n"
+        f"開始時刻: {pub_start}\n"
+        f"終了時刻: {pub_end}\n"
+        f"処理時間: {pub_end - pub_start}\n"
+        f"returncode: {pub_code}\n"
+    )
+
+    send_mail(subject, body)
+
+    print("🚀 publish_manager終了")
+
+    return pub_code
+
+
+def post_publish_check():
+    """
+    出品後チェック。
+
+    # TODO 出品後チェック
+    将来的には以下をここへ追加する:
+      ・出品件数確認
+      ・LIMIT確認
+      ・異常確認
+    """
+    print("📋 出品後チェック（TODO: 未実装）")
+
+
+# ======================
+# 1サイクル
+# ======================
+def run_one_cycle(cycle_no: int, conn):
+    """
+    「在庫管理 → 出品」を1サイクルとして実行する。
+
+    在庫管理は、次の1回を開始しても出品開始予定時刻に間に合う間は
+    繰り返し実行し、間に合わなくなった時点で打ち切って publish_manager へ進む。
+    """
+
+    print("\n=========================")
+    print(f"Cycle {cycle_no} / {TOTAL_CYCLES}")
+    print("=========================")
+
+    round_no = 1
+    while True:
+        # 在庫管理開始
+        print(f"\n📦 在庫管理開始（Cycle {cycle_no} - {round_no}回目）")
+        run_inventory_management_round(conn, cycle_no, round_no)
+        print(f"📦 在庫管理終了（Cycle {cycle_no} - {round_no}回目）")
+
+        now = datetime.now()
+
+        # 次の在庫管理を開始しても、出品開始予定時刻に間に合うか判定する
+        if can_start_another_inventory_round(now):
+            print("⏱ まだ余裕があるため、在庫管理をもう1回実行します")
+            round_no += 1
+            continue
+
+        print("⏱ 次の在庫管理は出品開始予定時刻に間に合わないため、出品処理へ進みます")
+        break
+
+    # 出品処理を開始する（publish_managerが終了するまで待つ）
+    run_publish_manager(conn)
+
+    # 出品後チェック
+    post_publish_check()
+
+    print(f"\n✅ Cycle {cycle_no} / {TOTAL_CYCLES} 終了")
+
+
 # ======================
 # メイン処理
 # ======================
@@ -521,240 +819,14 @@ def main():
 
     # presets一覧を準備
     refresh_presets_lookup(conn)
-    
+
     try:
-        SET_N = 1
-        print(f"=== 🧭 inventory_ebay_manager.py 開始（4工程×{SET_N}回転） ===")
+        print(f"=== 🧭 daily_check.py 開始（{TOTAL_CYCLES}サイクル） ===")
 
-        for set_no in range(1, SET_N + 1):
-            print("\n\n==============================")
-            print(f"🔁 セット {set_no} / {SET_N} 開始")
-            print("   事前sold → フル在庫チェック → delete → publish")
-            print("==============================")
+        for cycle_no in range(1, TOTAL_CYCLES + 1):
+            run_one_cycle(cycle_no, conn)
 
-
-            # ------------------------------------------------
-            # ① 事前 sold チェック（分散版）
-            # ------------------------------------------------
-            print("\n=== ⭐ 事前 sold チェック（分散版）開始 ===")
-
-            pre_sold_start = datetime.now()
-            pre_sold_code, _ = run_script(FETCH_SOLD)  # job投入
-
-            if pre_sold_code != 0:
-                pre_sold_end = datetime.now()
-                send_script_mail(
-                    FETCH_SOLD,
-                    pre_sold_start,
-                    pre_sold_end,
-                    pre_sold_code,
-                    round_no=set_no,
-                    conn=conn,
-                )
-                print("[STOP] 事前 fetch_sold job投入失敗")
-                continue
-
-            # worker完了待ち
-            wait_until_no_pending(conn, phase_name="pre_sold")
-
-            pre_sold_end = datetime.now()
-
-            send_script_mail(
-                FETCH_SOLD,
-                pre_sold_start,
-                pre_sold_end,
-                0,
-                round_no=set_no,
-                conn=conn,
-            )
-
-            # ------------------------------------------------
-            # ② フル在庫チェック（fetch_active だけ分散）
-            # ------------------------------------------------
-            print("\n=== 📦 フル在庫チェック（分散版）開始 ===")
-
-            # ②-1 job投入
-            active_start = datetime.now()
-            active_code, _ = run_script(FETCH_ACTIVE)
-
-            if active_code != 0:
-                active_end = datetime.now()
-                send_script_mail(
-                    FETCH_ACTIVE,
-                    active_start,
-                    active_end,
-                    active_code,
-                    round_no=set_no,
-                    conn=conn,
-                )
-                print("[STOP] fetch_active job投入失敗")
-                continue
-
-            # ②-2 worker 完了待ち（ここが本体）
-            wait_until_no_pending(conn, phase_name="active")
-
-            # ★ ここで active フェーズ完了
-            active_end = datetime.now()
-            send_script_mail(
-                FETCH_ACTIVE,
-                active_start,
-                active_end,
-                0,
-                round_no=set_no,
-                conn=conn,
-            )
-
-            # ------------------------------------------------
-            # ②-3 sold（分散版：job投入 → worker完了待ち）
-            # ------------------------------------------------
-            print("\n=== 🧾 sold チェック（分散版）開始 ===")
-
-            # ②-3-1 job投入
-            sold_start = datetime.now()
-            sold_code, _ = run_script(FETCH_SOLD)
-
-            if sold_code != 0:
-                sold_end = datetime.now()
-                send_script_mail(
-                    FETCH_SOLD,
-                    sold_start,
-                    sold_end,
-                    sold_code,
-                    round_no=set_no,
-                    conn=conn,
-                )
-                print("[STOP] fetch_sold job投入失敗")
-                continue
-
-            # ②-3-2 worker 完了待ち（ここが本体）
-            wait_until_no_pending(conn, phase_name="sold")
-
-            # ★ ここで sold フェーズ完了
-            sold_end = datetime.now()
-            send_script_mail(
-                FETCH_SOLD,
-                sold_start,
-                sold_end,
-                0,
-                round_no=set_no,
-                conn=conn,
-            )
-
-
-            time.sleep(WAIT_SECONDS)
-
-            # ------------------------------------------------
-            # ②-4 remaining（ローカル＋VPS分散版）
-            # ------------------------------------------------
-            print("\n=== 🔄 remaining チェック開始 ===")
-
-            rem_start = datetime.now()
-
-            # ★ 1. フラグ初期化
-            reset_remaining_flags(conn)
-
-            # ★ 2. worker起動
-            launch_remaining_workers()
-
-            # ★ 3. remaining対象が枯渇するまで待つ
-            processed_count = wait_until_remaining_exhausted(conn)
-
-            rem_end = datetime.now()
-
-            extra = f"remaining 処理件数: {processed_count} 件"
-
-            send_script_mail(
-                CHECK_REMAINING,
-                rem_start,
-                rem_end,
-                0,
-                round_no=set_no,
-                conn=conn,
-                extra_body=extra,
-            )
-
-            print(f"=== ✅ セット{set_no}: フル在庫チェック完了 ===")
-            time.sleep(WAIT_SECONDS)
-
-
-        # ================================
-        # ★ ここで1回だけ実行
-        # ================================
-
-        print("\n=== 🗑 delete_ebay_daily.py 実行（ループ外） ===")
-        del_start = datetime.now()
-        del_code, del_stdout = run_script(DELETE_SCRIPT)
-        del_end = datetime.now()
-
-        subject = (
-            f"❌ delete_ebay_daily.py エラー"
-            if del_code != 0
-            else f"✅ delete_ebay_daily.py 正常終了"
-        )
-
-        body = (
-            f"スクリプト: {DELETE_SCRIPT.name}\n"
-            f"開始時刻: {del_start}\n"
-            f"終了時刻: {del_end}\n"
-            f"処理時間: {del_end - del_start}\n"
-            f"returncode: {del_code}\n\n"
-            + format_trx_listings_count_by_account(conn)
-        )
-
-        send_mail(subject, body)
-        time.sleep(WAIT_SECONDS)
-
-
-        print("\n=== 🚀 daily_check_publish.py 実行（ループ外） ===")
-
-        refresh_presets_and_clear_locks(conn)
-
-        pub_start = datetime.now()
-        pub_code, _ = run_script(PUBLISH_SCRIPT)   # ←中身だけ差し替え済み前提
-        pub_end = datetime.now()
-
-        subject = (
-            f"❌ daily_check_publish.py エラー"
-            if pub_code != 0
-            else f"✅ daily_check_publish.py 正常終了"
-        )
-
-        body = (
-            f"スクリプト: {PUBLISH_SCRIPT.name}\n"
-            f"開始時刻: {pub_start}\n"
-            f"終了時刻: {pub_end}\n"
-            f"処理時間: {pub_end - pub_start}\n"
-            f"returncode: {pub_code}\n\n"
-            + format_trx_listings_count_by_account(conn)
-        )
-
-        send_mail(subject, body)
-
-        print("\n=== 📥 get_active_listings.py 実行（ループ外） ===")
-
-        get_start = datetime.now()
-        get_code, _ = run_script(APPS_PUB / "get_active_listings.py")
-        get_end = datetime.now()
-
-        subject = (
-            f"❌ get_active_listings.py エラー"
-            if get_code != 0
-            else f"✅ get_active_listings.py 正常終了"
-        )
-
-        body = (
-            f"スクリプト: get_active_listings.py\n"
-            f"開始時刻: {get_start}\n"
-            f"終了時刻: {get_end}\n"
-            f"処理時間: {get_end - get_start}\n"
-            f"returncode: {get_code}\n\n"
-            + format_trx_listings_count_by_account(conn)
-        )
-
-        send_mail(subject, body)
-
-
-        print(f"\n=== 🎉 全セット完了（4工程×{SET_N}回転） ===")
+        print(f"\n=== 🎉 全サイクル完了（{TOTAL_CYCLES}サイクル） ===")
 
     finally:
         try:
