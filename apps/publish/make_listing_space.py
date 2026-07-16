@@ -100,11 +100,11 @@ def secure_listing_space_for_account(account, item_ids):
                                AND ISNULL(is_deleted, 0) = 0
                         """, ("定期削除(watch0)", account, iid))
 
-                    cur.execute("""
-                        DELETE FROM ext.ebay_active_download
-                        WHERE account = ?
-                        AND listing_id = ?
-                    """, (account, iid))
+                        cur.execute("""
+                            DELETE FROM ext.ebay_active_download
+                            WHERE account = ?
+                            AND listing_id = ?
+                        """, (account, iid))
 
 
                 conn.commit()

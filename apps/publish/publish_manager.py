@@ -7,13 +7,18 @@ eBay出品全体を管理する司令塔(Orchestrator)。
 publish (publish_ebay.py) はVPS・ローカルそれぞれで常駐し、出品を継続する。
 publish_manager.py は publish を繰り返し起動するのではなく、
 
-    1. 起動時に一度だけ、前日のLIMIT状態をクリアしてVPS・ローカルのpublishを起動する
-    2. その後はLIMITになったアカウントを監視し、必要なら出品枠を確保する
+    1. 起動時に一度だけ、前日のLIMIT状態をクリアする
+    2. 最新のActive Listingを取得する（get_active_listings.py、全VPS・ローカルへ分散実行）
+    3. 全VPS・ローカルの取得完了を待つ
+    4. VPS・ローカルのpublishを起動する
+    5. その後はLIMITになったアカウントを監視し、必要なら出品枠を確保する
 
-という「起動」と「LIMIT監視」だけを担当する。publish の完了を待つ必要はない。
+という「前処理」「起動」「LIMIT監視」を担当する。publish の完了を待つ必要はない。
 
+get_active_listings.py は「古い出品を削除するための前提データ取得」を行い、
 publish_ebay.py は「出品だけ」を行い、
 make_listing_space.py は「出品枠を確保するだけ」を行う。
+いずれもpublish_manager.pyが全体の流れを制御する。
 """
 
 import subprocess
@@ -43,6 +48,7 @@ BASE_DIR = PROJECT_ROOT
 PYTHON = sys.executable
 
 PUBLISH_SCRIPT = BASE_DIR / "apps" / "publish" / "publish_ebay.py"
+GET_ACTIVE_LISTINGS_SCRIPT = BASE_DIR / "apps" / "publish" / "get_active_listings.py"
 
 # ======================
 # VPS一覧
@@ -60,6 +66,9 @@ VPS_LIST = [
 # LIMIT監視の間隔（秒）
 LIMIT_CHECK_INTERVAL_SECONDS = 5
 
+# get_active_listings の完了待ちポーリング間隔（秒）
+ACTIVE_LISTINGS_WAIT_SECONDS = 5
+
 
 # ======================
 # 前日状態のリセット
@@ -67,11 +76,9 @@ LIMIT_CHECK_INTERVAL_SECONDS = 5
 SQL_RESET_CLOSE_STATUS = """
 UPDATE mst.ebay_accounts
 SET
-    is_closed_today = 0,
     close_reason = NULL
 WHERE
-    is_closed_today = 1
-    OR close_reason IS NOT NULL
+    close_reason IS NOT NULL
 """
 
 
@@ -94,8 +101,7 @@ def reset_close_status():
 SQL_CLEAR_CLOSE_STATUS_FOR_ACCOUNT = """
 UPDATE mst.ebay_accounts
 SET
-    close_reason = NULL,
-    is_closed_today = 0
+    close_reason = NULL
 WHERE
     account = ?
 """
@@ -161,14 +167,133 @@ def run_vps():
 
 
 # ======================
+# get_active_listings 起動・完了待ち
+# ======================
+def run_get_active_listings_local():
+    """
+    ローカルで get_active_listings.py を起動する（起動のみ、完了は待たない）。
+
+    publish同様、常駐ではなく担当アカウントを取得し終えたら自然に終了する
+    一度きりの処理。完了確認は is_active_listings_fetch_done() 側で行う。
+    """
+
+    print("🟢 LOCAL get_active_listings 開始")
+
+    subprocess.Popen(
+        [
+            PYTHON,
+            "-m",
+            "apps.publish.get_active_listings",
+        ],
+        cwd=str(BASE_DIR),
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+    )
+
+    print("🚀 LOCAL get_active_listings 起動完了")
+
+
+def run_get_active_listings_vps():
+    """VPS版 get_active_listings を全台起動する（起動のみ、完了は待たない）。"""
+
+    print("🟢 VPS get_active_listings 開始")
+
+    for ip in VPS_LIST:
+        cmd = (
+            f'start "{ip}" '
+            f'ssh -tt root@{ip} '
+            '"cd /opt/apps_nostock && '
+            'git pull && '
+            'cd /opt/apps_nostock && '
+            'python3 -m apps.publish.get_active_listings"'
+        )
+
+        subprocess.Popen(cmd, shell=True)
+
+    print("🚀 VPS全台で get_active_listings 起動完了")
+
+
+SQL_SELECT_HAS_PENDING_LISTING_FETCH = """
+SELECT TOP 1 A.account
+FROM mst.ebay_accounts A
+WHERE ISNULL(A.is_excluded, 0) = 0
+  AND NOT EXISTS (
+      SELECT 1
+      FROM ext.ebay_active_download D
+      WHERE D.account = A.account
+        AND CAST(D.fetched_at AS DATE) = CAST(GETDATE() AS DATE)
+  )
+"""
+
+SQL_SELECT_HAS_ACTIVE_LISTING_FETCH_WORKER = """
+SELECT TOP 1 execute_pc
+FROM mst.execute_pcs
+WHERE account IS NOT NULL
+"""
+
+
+def is_active_listings_fetch_done():
+    """
+    全VPS・ローカルの get_active_listings が完了したかどうかを判定する。
+
+    get_active_listings.py は publish_ebay.py と同じ mst.execute_pcs を使って
+    アカウントを分散取得するため、判定も同じ考え方を流用する。
+    以下の両方を満たしたときだけ「完了」とみなす:
+      1. is_excluded=0（削除対象外でない）アカウントのうち、
+         本日分のActive Listingが未取得のものが1件も無い
+      2. mst.execute_pcs 上で、現在アカウントを処理中(account IS NOT NULL)の
+         PCが1件も無い
+    1.だけだと「取得済み件数はゼロだが、まだどのPCも取得を始めていない」
+    瞬間を誤って「完了」と判定しかねないため、2.と組み合わせて判定する。
+    """
+
+    conn = get_sql_server_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(SQL_SELECT_HAS_PENDING_LISTING_FETCH)
+            pending = cur.fetchone()
+
+            cur.execute(SQL_SELECT_HAS_ACTIVE_LISTING_FETCH_WORKER)
+            working = cur.fetchone()
+
+        return pending is None and working is None
+
+    finally:
+        conn.close()
+
+
+def wait_for_active_listings_completion():
+    """
+    全VPS・ローカルの get_active_listings が終わるまで待つ。
+
+    get_active_listings は常駐プロセスではないため、publish のように
+    「起動したら待たない」のではなく、ここでは意図的に完了を待つ。
+    削除処理（make_listing_space.py）や出品処理はこのデータが揃っている
+    前提のため、is_active_listings_fetch_done() が真になるまでポーリングする。
+    """
+
+    while not is_active_listings_fetch_done():
+        print("🕒 get_active_listings の完了を待機しています…")
+        time.sleep(ACTIVE_LISTINGS_WAIT_SECONDS)
+
+    print("✅ 全VPS・ローカルの get_active_listings が完了しました")
+
+
+# ======================
 # LIMIT監視
 # ======================
 SQL_SELECT_LIMIT_ACCOUNTS = """
 SELECT
-    account,
-    post_target
-FROM mst.ebay_accounts
-WHERE close_reason = 'LIMIT'
+    A.account,
+    A.post_target,
+    ISNULL(W.active_workers, 0) AS active_workers
+FROM mst.ebay_accounts A
+LEFT JOIN (
+    SELECT account, COUNT(*) AS active_workers
+    FROM mst.execute_pcs
+    WHERE account IS NOT NULL
+    GROUP BY account
+) W ON A.account = W.account
+WHERE A.close_reason = 'LIMIT'
 """
 
 
@@ -180,11 +305,18 @@ def get_limit_accounts():
     publish_manager.py 側に post_target の固定値は持たせない
     （値の調整は mst.ebay_accounts を直接更新して行う運用のため）。
 
+    active_workers は mst.execute_pcs（publish_ebay.py の fetch_next_account_and_lock()
+    が使っているのと同じテーブル）を集計し、そのアカウントを現在何台のworker
+    (VPS/ローカル)が処理中かを表す。複数workerが同一アカウントを並行処理している場合、
+    全workerがLIMITで止まりきる前に出品枠確保を始めると二重削除になり得るため、
+    呼び出し側(handle_limit_account)で active_workers==0 を待ってから処理する。
+
     戻り値の構造:
         [
             {
                 "account": "BUZZ②",
                 "post_target": 320,
+                "active_workers": 0,
             },
             ...
         ]
@@ -197,7 +329,7 @@ def get_limit_accounts():
             rows = cur.fetchall()
 
         limit_accounts = [
-            {"account": row[0], "post_target": row[1]}
+            {"account": row[0], "post_target": row[1], "active_workers": row[2]}
             for row in rows
         ]
 
@@ -277,7 +409,11 @@ def handle_limit_account(account_info):
     LIMITになった1アカウント分の対応を行う。
 
     流れ:
-      1. LIMITになったアカウントについて、今日あと何件出品したいか計算する
+      0. まず active_workers（このアカウントを今処理中のworker数）を確認する。
+         1台以上残っている場合は、まだ他のVPS/ローカルがこのアカウントを処理中で
+         あり、これからLIMITで止まる可能性があるため、ここでは何もせず
+         次回の監視サイクルに委ねる（二重削除防止。詳細は下記コメント参照）。
+      1. active_workers == 0 になって初めて、今日あと何件出品したいか計算する
       2. remaining <= 0 なら、削除はせずLIMIT状態だけ解除する
          （単に目標達成後の状態が残っているだけの可能性があるため）
       3. remaining > 0 なら、必要な件数分だけ古い出品を削除して空きを作る
@@ -291,6 +427,21 @@ def handle_limit_account(account_info):
     """
 
     account = account_info["account"]
+    active_workers = account_info["active_workers"]
+
+    # ===== 二重削除防止: 全workerが終了するまで待つ =====
+    # 同一アカウントは複数VPS(最大MAX_PARALLEL_PC台)が並行して処理し得る。
+    # ある1台がLIMITでclose_reason='LIMIT'を書いた直後は、まだ他のVPSが
+    # そのアカウントを処理中で、少し遅れて同じくLIMITになることがある。
+    # ここでactive_workers>0のまま出品枠確保を始めてしまうと、
+    # 「1台目のLIMITで確保→2台目が遅れてLIMITを検知して再度確保」という
+    # 二重削除が起こり得るため、全workerがこのアカウントの処理を終えて
+    # active_workers==0になるまでは何もせず待つ。
+    if active_workers > 0:
+        print(f"🕒 {account} はまだ{active_workers}台が処理中のため、出品枠確保を待機します")
+        return
+
+    print(f"🟢 {account} の全worker終了を確認しました。出品枠確保を開始します")
 
     try:
         remaining = calculate_remaining_count(account_info)
@@ -345,6 +496,15 @@ def monitor_limit_accounts():
     publish_manager はここで publish の完了を待つ必要はない。
     LIMITになったアカウントを見つけ次第、都度その場で対応する
     （他アカウントの publish が終わるのを待つ必要もない）。
+
+    ただし「LIMITを検知したらすぐ削除処理を始める」わけではない。
+    同一アカウントは複数のworker(VPS/ローカル)が並行して処理していることがあり、
+    1台がLIMITになった直後は、他のworkerがまだ同じアカウントを処理中で、
+    少し遅れて同様にLIMITになる可能性がある。そこですぐ出品枠確保を実行すると、
+    「1台目の分で確保→2台目が遅れて検知してまた確保」という二重削除が起こり得る。
+    そのため handle_limit_account 側で active_workers（そのアカウントを処理中の
+    worker数）を確認し、全workerの処理が終わって active_workers == 0 になって
+    初めて出品枠確保を行う。active_workers > 0 の間は何もせず、次のこの監視サイクルに委ねる。
     """
 
     while True:
@@ -366,11 +526,19 @@ def main():
     # 前日のLIMIT情報をクリアする
     reset_close_status()
 
-    # 出品プログラムを起動する（VPS・ローカルとも常駐して出品を続ける）
+    # 最新のActive Listingを取得する（全VPS・ローカルへ分散実行、起動のみ）
+    run_get_active_listings_vps()
+    run_get_active_listings_local()
+
+    # 全VPSの取得完了を待つ
+    # （古い出品の削除・出品処理は、このデータが揃っている前提のため）
+    wait_for_active_listings_completion()
+
+    # 出品処理を開始する（VPS・ローカルとも常駐して出品を続ける）
     run_vps()
     run_local()
 
-    # ここから先はLIMIT監視だけを行う（publish を再度起動することはない）。
+    # LIMITを監視する（publish を再度起動することはない）。
     # LIMIT検知 → 必要件数の計算 → 出品枠確保 → LIMIT状態解除、という一連の対応を
     # monitor_limit_accounts() が繰り返し行う。publish_ebay側は待機しているだけなので、
     # LIMIT状態を解除すれば自動的に出品を再開する。

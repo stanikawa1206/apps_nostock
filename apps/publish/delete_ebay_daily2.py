@@ -8,8 +8,9 @@ from apps.adapters.ebay_api import delete_items_from_ebay_batch
 
 # ===== 設定 =====
 DELETE_CONFIG = {
-    "BUZZ②": 12,
+    "谷川②": 3,
 }
+
 
 
 MAX_WORKERS = 2
@@ -91,12 +92,12 @@ def delete_for_account(account, item_ids):
                                AND ISNULL(is_deleted, 0) = 0
                         """, ("定期削除(watch0)", account, iid))
 
-                    # ★ ここ追加
-                    cur.execute("""
-                        DELETE FROM ext.ebay_active_download
-                        WHERE account = ?
-                        AND listing_id = ?
-                    """, (account, iid))
+                        # ★ ここ追加
+                        cur.execute("""
+                            DELETE FROM ext.ebay_active_download
+                            WHERE account = ?
+                            AND listing_id = ?
+                        """, (account, iid))
 
 
                 conn.commit()

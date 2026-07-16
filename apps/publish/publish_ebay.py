@@ -2113,7 +2113,7 @@ def fetch_next_account_and_lock(conn, current_pc):
               AND is_deleted = 0
         ) T
         WHERE A.is_excluded = 0
-          AND A.is_closed_today = 0
+          AND A.close_reason IS NULL
           AND T.sent_count < A.post_target
           AND ISNULL(W.active_workers, 0) < ?  -- MAX_PARALLEL_PC
         ORDER BY 
@@ -2138,8 +2138,8 @@ def release_pc_and_close_account(conn, current_pc, account_name=None, close_reas
         # 1. アカウント自体の終了フラグ更新 (Limit検知や在庫切れ時)
         if account_name and close_reason:
             cur.execute("""
-                UPDATE mst.ebay_accounts 
-                SET is_closed_today = 1, close_reason = ? 
+                UPDATE mst.ebay_accounts
+                SET close_reason = ?
                 WHERE account = ?
             """, (close_reason, account_name))
         
@@ -2351,8 +2351,8 @@ def main():
             #   ② stop_all = True （MAX_LISTINGS到達。現状 10**9 なので実運用では事実上起こらない）
             while not stop_all:
                 # ===== アカウント取得 =====
-                # is_closed_today=0 かつ sent_count<post_target のアカウントを1件確保する。
-                # DONE/EMPTY/LIMITいずれも is_closed_today=1 になるため、
+                # close_reason IS NULL かつ sent_count<post_target のアカウントを1件確保する。
+                # DONE/EMPTY/LIMITいずれも close_reason が非NULLになるため、
                 # ここで None が返るのは「今すぐ処理できるアカウントが無い」状態。
                 acct = fetch_next_account_and_lock(conn, current_pc)
 
@@ -2418,7 +2418,7 @@ def main():
                         sent_now = cur.fetchone()[0]
 
                     # [アカウント終了①: DONE] 当日の post_target に到達済み（DB上の実件数で判定）
-                    # → close_reason="DONE"。is_closed_todayが立ち、今日はもう処理しない
+                    # → close_reason="DONE"。今日はもう処理しない
                     #   （LIMITと違って一時停止ではなく、当日分の目標達成による正式な終了）。
                     if sent_now >= acct.post_target:
                         close_reason = "DONE"
@@ -2436,7 +2436,7 @@ def main():
                         print(f"[DEBUG] picked SKU={row['vendor_item_id']} price={row['price']} shipping_days={row['shipping_days']} 出品状況={row.get('出品状況')}", datetime.now().strftime("%H:%M:%S"))
                     # [アカウント終了②] このアカウントの担当レンジ(preset_group)に
                     # 出品candidate が無くなった（在庫枯渇）
-                    # → close_reason="EMPTY"。is_closed_today=1 になり、
+                    # → close_reason="EMPTY"。
                     #   当日はこのアカウントは再取得されなくなる。
                     if not row:
                         print(f"[INFO] {acct.account} 在庫枯渇")
@@ -2572,8 +2572,8 @@ def main():
                             pass
 
                 # このアカウントの処理はここで終わり（close_reason: DONE/EMPTY/LIMITのいずれか）。
-                # release_pc_and_close_account が is_closed_today=1 と close_reason を書き込む。
-                # DONE/EMPTYは今日はもう再取得されない。LIMITも同様にis_closed_today=1になるが、
+                # release_pc_and_close_account が close_reason を書き込む。
+                # DONE/EMPTYは今日はもう再取得されない。LIMITも同様にclose_reasonが立つが、
                 # 「終了」ではなく「一時停止」であり、publish_manager.py が出品枠を確保して
                 # close_reason をクリアすれば、このアカウントは再び取得できるようになる。
                 # 外側 while はここでは終わらず、次のアカウントを取りに戻る。

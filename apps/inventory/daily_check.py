@@ -523,7 +523,7 @@ def main():
     refresh_presets_lookup(conn)
     
     try:
-        SET_N = 3
+        SET_N = 1
         print(f"=== 🧭 inventory_ebay_manager.py 開始（4工程×{SET_N}回転） ===")
 
         for set_no in range(1, SET_N + 1):
@@ -733,7 +733,7 @@ def main():
         print("\n=== 📥 get_active_listings.py 実行（ループ外） ===")
 
         get_start = datetime.now()
-        get_code, _ = run_script(APPS_INV / "get_active_listings.py")
+        get_code, _ = run_script(APPS_PUB / "get_active_listings.py")
         get_end = datetime.now()
 
         subject = (
