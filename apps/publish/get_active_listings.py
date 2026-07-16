@@ -148,48 +148,61 @@ def insert_items(cursor, account, items, fetched_at):
 # =========================
 # execute_pcs を使った分散取得
 # =========================
-# is_excluded=0（削除対象外でない）アカウントのうち、本日まだ取得していないものを
-# 1件だけ、このPC(execute_pc)に割り当てる。
+# is_excluded=0（削除対象外でない）アカウントを1件だけ、このPC(execute_pc)に割り当てる。
+# 「本日既に取得済みかどうか」は一切見ない。get_active_listings は1日1回しか
+# 起動しない運用を前提にしないため、手動再実行や障害復旧でも毎回全アカウントを
+# 取得し直せるようにしている。
 # NOT EXISTS (mst.execute_pcs側) により、他のPCが既に処理中のアカウントは
 # 対象から外れる（同じアカウントを複数PCが同時に取得することはない）。
-SQL_FETCH_NEXT_ACCOUNT_FOR_LISTING_FETCH = """
-UPDATE TOP (1) mst.execute_pcs
-SET account = Target.account
-OUTPUT inserted.account
-FROM mst.execute_pcs AS P
-CROSS APPLY (
-    SELECT TOP 1 A.account
-    FROM mst.ebay_accounts A
-    WHERE ISNULL(A.is_excluded, 0) = 0
-      AND NOT EXISTS (
-          SELECT 1
-          FROM ext.ebay_active_download D
-          WHERE D.account = A.account
-            AND CAST(D.fetched_at AS DATE) = CAST(GETDATE() AS DATE)
-      )
-      AND NOT EXISTS (
-          SELECT 1
-          FROM mst.execute_pcs E2
-          WHERE E2.account = A.account
-      )
-    ORDER BY A.account ASC
-) AS Target
-WHERE P.execute_pc = ? AND P.is_active = 1 AND P.account IS NULL
-"""
-
-
-def fetch_next_account_for_listing_fetch(conn, current_pc):
+def fetch_next_account_for_listing_fetch(conn, current_pc, already_processed):
     """
     このPCが次に取得すべきアカウントを1件確保する。
 
     publish_ebay.py の fetch_next_account_and_lock() と同じ
     「mst.execute_pcs.account をUPDATEして自分に割り当てる」方式。
     対象は is_excluded=0 のアカウントのみで、DONE/EMPTY/LIMIT(close_reason)は問わない。
+    取得済みかどうかの判定にDB側の値（fetched_at等）は一切使用しない。
+
+    already_processed: このPCが今回のrunの中で既に処理し終えたaccountの集合。
+    これが無いと、解放した直後の同じアカウントを毎回また選んでしまい、
+    このPCの取得ループが終わらなくなるため、run単位・プロセス内メモリだけで
+    重複取得を防ぐために使う（DBへの永続化は行わない）。
+
     取得すべきアカウントが無ければ None を返す。
     """
 
+    exclude_clause = ""
+    params = []
+
+    if already_processed:
+        placeholders = ", ".join("?" for _ in already_processed)
+        exclude_clause = f"AND A.account NOT IN ({placeholders})"
+        params.extend(already_processed)
+
+    sql = f"""
+    UPDATE TOP (1) mst.execute_pcs
+    SET account = Target.account
+    OUTPUT inserted.account
+    FROM mst.execute_pcs AS P
+    CROSS APPLY (
+        SELECT TOP 1 A.account
+        FROM mst.ebay_accounts A
+        WHERE ISNULL(A.is_excluded, 0) = 0
+          {exclude_clause}
+          AND NOT EXISTS (
+              SELECT 1
+              FROM mst.execute_pcs E2
+              WHERE E2.account = A.account
+          )
+        ORDER BY A.account ASC
+    ) AS Target
+    WHERE P.execute_pc = ? AND P.is_active = 1 AND P.account IS NULL
+    """
+
+    params.append(current_pc)
+
     with conn.cursor() as cur:
-        cur.execute(SQL_FETCH_NEXT_ACCOUNT_FOR_LISTING_FETCH, current_pc)
+        cur.execute(sql, params)
         row = cur.fetchone()
         conn.commit()
 
@@ -242,9 +255,14 @@ def run_for_this_pc():
 
     fetched_at = datetime.datetime.now()
 
+    # このPCが今回のrunで既に処理したaccountの集合（DBには保存しない、プロセス内メモリのみ）。
+    # これが無いと、release_listing_fetch_pc()で解放した直後の同じアカウントを
+    # fetch_next_account_for_listing_fetch()が毎回また返してしまい、ループが終わらない。
+    already_processed = set()
+
     try:
         while True:
-            account = fetch_next_account_for_listing_fetch(conn, current_pc)
+            account = fetch_next_account_for_listing_fetch(conn, current_pc, already_processed)
 
             if not account:
                 print("[INFO] 取得対象アカウントがありません。終了します。")
@@ -257,10 +275,13 @@ def run_for_this_pc():
                 print(f"  件数: {count}")
             except Exception as e:
                 # 1アカウントの取得失敗で全体を止めない。
-                # このアカウントは本日分が未取得のまま残るため、
-                # 次に空いたPCが改めて取得を試みる。
+                # このPCの already_processed には加えるため、このPC自身は
+                # 同じアカウントを無限に再試行しない。ただし他のPCの
+                # already_processed には影響しないため、空いたPCがあれば
+                # そちらで改めて取得を試みることはできる。
                 print(f"❌ {account} のActive Listing取得に失敗しました: error={e}")
             finally:
+                already_processed.add(account)
                 release_listing_fetch_pc(conn, current_pc)
 
         print("✅ 完了")
