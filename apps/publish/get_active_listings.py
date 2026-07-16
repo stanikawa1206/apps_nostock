@@ -233,16 +233,16 @@ def fetch_and_store_active_listings_for_account(conn, account, fetched_at):
     """
     1アカウント分のActive Listingを取得し、ext.ebay_active_download へ保存する。
 
-    先にeBay側から取得してから、DBの削除・挿入を行う。
-    取得に失敗した場合はDBを一切変更しない（古いデータを誤って消さないため）。
+    ext.ebay_active_download の全件削除は publish_manager.py 側が
+    get_active_listings起動前に1回だけ行う（TRUNCATE TABLE）。
+    LOCAL・VPSが同時にアカウント単位でDELETEするとロック競合するため、
+    ここではDELETEを行わずINSERTのみ行う。
     """
 
     items = get_active_listings(account)
     print("B", flush=True)
 
     with conn.cursor() as cur:
-        cur.execute("DELETE FROM ext.ebay_active_download WHERE account = ?", account)
-        print("C", flush=True)
         insert_items(cur, account, items, fetched_at)
         print("D", flush=True)
     conn.commit()

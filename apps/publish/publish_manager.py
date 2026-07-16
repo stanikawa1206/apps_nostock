@@ -230,6 +230,29 @@ def run_get_active_listings_vps():
     return processes
 
 
+SQL_TRUNCATE_ACTIVE_LISTINGS = "TRUNCATE TABLE ext.ebay_active_download"
+
+
+def truncate_active_listings():
+    """
+    ext.ebay_active_download を1回だけ全件削除する。
+
+    LOCAL・VPS7台が同時にアカウント単位でDELETEするとロック競合するため、
+    get_active_listings起動前にここで1回だけ全件削除する
+    （get_active_listings側はDELETEを行わず、INSERTのみ行う）。
+    FK・インデックス付きビュー・レプリケーション/CDC・トリガーが無いことを確認済みのため
+    TRUNCATE TABLEを使用する。
+    """
+
+    conn = get_sql_server_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(SQL_TRUNCATE_ACTIVE_LISTINGS)
+        conn.commit()
+    finally:
+        conn.close()
+
+
 SQL_SELECT_HAS_PENDING_LISTING_FETCH = """
 SELECT TOP 1 A.account
 FROM mst.ebay_accounts A
@@ -537,6 +560,10 @@ def monitor_limit_accounts():
 def main():
     # 前日のLIMIT情報をクリアする
     reset_close_status()
+
+    # get_active_listings起動前に、対象テーブルを1回だけ全件削除する
+    # （各プロセスがアカウント単位でDELETEするとロック競合するため、ここで一括削除する）
+    truncate_active_listings()
 
     # 最新のActive Listingを取得する（VPS7台・LOCAL1台を同時に起動する）
     # 完了確認は is_active_listings_fetch_done() を使わず、起動した全Popenを
