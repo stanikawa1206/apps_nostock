@@ -120,21 +120,11 @@ def get_active_listings(account: str):
 # =========================
 def insert_items(cursor, account, items, fetched_at):
 
-    for item in items:
-        cursor.execute("""
-            INSERT INTO ext.ebay_active_download
-            (
-                account,
-                vendor_item_id,
-                listing_id,
-                title_en,
-                watchers,
-                [Start price],
-                start_time,
-                fetched_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
+    if not items:
+        return
+
+    params = [
+        (
             account,
             item["sku"],
             item["item_id"],
@@ -144,6 +134,24 @@ def insert_items(cursor, account, items, fetched_at):
             item["start_time"],
             fetched_at
         )
+        for item in items
+    ]
+
+    cursor.fast_executemany = True
+    cursor.executemany("""
+        INSERT INTO ext.ebay_active_download
+        (
+            account,
+            vendor_item_id,
+            listing_id,
+            title_en,
+            watchers,
+            [Start price],
+            start_time,
+            fetched_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, params)
 
 
 # =========================

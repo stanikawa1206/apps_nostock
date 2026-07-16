@@ -200,7 +200,7 @@ def run_get_active_listings_vps():
     for ip in VPS_LIST:
         cmd = (
             f'start "{ip}" '
-            f'ssh -tt root@{ip} '
+            f'ssh root@{ip} '
             '"cd /opt/apps_nostock && '
             'git pull && '
             'cd /opt/apps_nostock && '
