@@ -171,15 +171,15 @@ def run_vps():
 # ======================
 def run_get_active_listings_local():
     """
-    ローカルで get_active_listings.py を起動する（起動のみ、完了は待たない）。
+    ローカルで get_active_listings.py を実行し、完了するまで待つ。
 
-    publish同様、常駐ではなく担当アカウントを取得し終えたら自然に終了する
-    一度きりの処理。完了確認は is_active_listings_fetch_done() 側で行う。
+    ※SQL Serverチューニング調査のため、一時的に同期実行にしている
+    （本来は起動のみで待たない。is_active_listings_fetch_done() 側で完了確認する運用）。
     """
 
     print("🟢 LOCAL get_active_listings 開始")
 
-    subprocess.Popen(
+    subprocess.run(
         [
             PYTHON,
             "-m",
@@ -189,27 +189,35 @@ def run_get_active_listings_local():
         env={**os.environ, "PYTHONIOENCODING": "utf-8"},
     )
 
-    print("🚀 LOCAL get_active_listings 起動完了")
+    print("🚀 LOCAL get_active_listings 完了")
 
 
 def run_get_active_listings_vps():
-    """VPS版 get_active_listings を全台起動する（起動のみ、完了は待たない）。"""
+    """
+    VPS版 get_active_listings を1台ずつ順番に実行し、各VPSの完了を待ってから次へ進む。
+
+    ※SQL Serverチューニング調査のため、一時的に同期実行にしている
+    （本来は全台同時起動・待たない。is_active_listings_fetch_done() 側で完了確認する運用）。
+    """
 
     print("🟢 VPS get_active_listings 開始")
 
     for ip in VPS_LIST:
+        print(f"🕒 {ip} の get_active_listings 完了を待機します")
+
         cmd = (
-            f'start "{ip}" '
             f'ssh root@{ip} '
             '"cd /opt/apps_nostock && '
             'git pull && '
             'cd /opt/apps_nostock && '
-            'python3 -m apps.publish.get_active_listings"'
+            'python3 -u -m apps.publish.get_active_listings"'
         )
 
-        subprocess.Popen(cmd, shell=True)
+        subprocess.run(cmd, shell=True)
 
-    print("🚀 VPS全台で get_active_listings 起動完了")
+        print(f"✅ {ip} の get_active_listings が完了しました")
+
+    print("🚀 VPS全台で get_active_listings 完了")
 
 
 SQL_SELECT_HAS_PENDING_LISTING_FETCH = """
@@ -520,13 +528,12 @@ def main():
     # 前日のLIMIT情報をクリアする
     reset_close_status()
 
-    # 最新のActive Listingを取得する（全VPS・ローカルへ分散実行、起動のみ）
+    # 最新のActive Listingを取得する（VPS→LOCALの順に、完了を待ちながら同期実行する）
+    # ※SQL Serverチューニング調査のため、一時的に is_active_listings_fetch_done() による
+    #   完了待ち(wait_for_active_listings_completion)は使用せず、プロセスの正常終了をもって
+    #   完了とみなしている。
     run_get_active_listings_vps()
     run_get_active_listings_local()
-
-    # 全VPSの取得完了を待つ
-    # （古い出品の削除・出品処理は、このデータが揃っている前提のため）
-    wait_for_active_listings_completion()
 
     # 出品処理を開始する（VPS・ローカルとも常駐して出品を続ける）
     run_vps()
