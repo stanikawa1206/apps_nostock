@@ -203,19 +203,25 @@ def run_get_active_listings_vps():
     print("🟢 VPS get_active_listings 開始")
 
     for ip in VPS_LIST:
-        print(f"🕒 {ip} の get_active_listings 完了を待機します")
+        print(f"===== VPS {ip} START =====")
 
-        cmd = (
-            f'ssh root@{ip} '
-            '"cd /opt/apps_nostock && '
-            'git pull && '
-            'cd /opt/apps_nostock && '
-            'python3 -u -m apps.publish.get_active_listings"'
+        result = subprocess.run(
+            [
+                "ssh",
+                f"root@{ip}",
+                (
+                    "cd /opt/apps_nostock && "
+                    "git pull && "
+                    "python3 -u -m apps.publish.get_active_listings"
+                ),
+            ],
+            check=False,
         )
 
-        subprocess.run(cmd, shell=True)
+        print(f"===== VPS {ip} END: returncode={result.returncode} =====")
 
-        print(f"✅ {ip} の get_active_listings が完了しました")
+        if result.returncode != 0:
+            print(f"❌ VPS {ip} は異常終了しました: returncode={result.returncode}")
 
     print("🚀 VPS全台で get_active_listings 完了")
 
