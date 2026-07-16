@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from datetime import datetime, timedelta
 from datetime import time as clock_time
+from zoneinfo import ZoneInfo
 import os
 import re
 
@@ -41,6 +42,11 @@ FETCH_ACTIVE = APPS_INV / "fetch_active_ebay.py"
 FETCH_SOLD       = APPS_INV / "fetch_sold_ebay.py"
 CHECK_REMAINING  = APPS_INV / "check_remaining_ebay.py"
 
+# 30日以上経過した古い出品を削除する処理。
+# LIMIT時に出品枠を確保する make_listing_space.py とは役割が異なり、
+# 「日次の定期清掃」として毎サイクル1回だけ実行する。
+DELETE_SCRIPT = APPS_PUB / "delete_ebay_daily.py"
+
 # 出品関連（Active Listing取得・LIMIT監視・出品）は publish_manager.py に一本化。
 # daily_check は「1日の流れ全体」を管理するオーケストレーターとして、
 # publish_manager を呼び出すだけにする。
@@ -49,20 +55,34 @@ PUBLISH_MANAGER_SCRIPT = APPS_PUB / "publish_manager.py"
 WAIT_SECONDS = 3
 
 # ======================
-# 運用方針: 「在庫管理 → 出品」を1サイクルとし、これを複数回実行できるようにする
+# 運用方針: 「在庫管理 → delete_ebay_daily → 出品」を1サイクルとし、これを複数回実行できるようにする
 # ======================
 
 # 1日に回すサイクル数。
 # 通常運用は 1。長期不在時などは 2 や 7 のように変更するだけでよい。
 TOTAL_CYCLES = 1
 
-# 出品開始予定時刻（時刻のみ）。
-# ★ 実際の運用時刻に合わせて必ず設定してください（下記は仮の値）。
-PUBLISH_START_US = clock_time(21, 0)
+# daily_check.py が動くサーバー（このマシン）のタイムゾーン。
+# datetime.now() はこのタイムゾーンのnaive（tzinfo無し）な値を返す前提で扱う。
+SERVER_TZ = ZoneInfo("Asia/Tokyo")
+
+# 出品時間の基準となる米国のタイムゾーン（夏時間・冬時間はZoneInfoが自動で考慮する）。
+US_TARGET_TZ = ZoneInfo("America/New_York")
+
+# 出品を開始する時刻（米国東部時間）。判定の基準はこの「開始時刻」であり、
+# 出品の終了時刻・完了目標時刻ではない。
+# ★ 実際の運用時刻に合わせて調整してください（下記は仮の値）。
+PUBLISH_START_TIME_US = clock_time(15, 0)
 
 # 在庫管理1回に見込む所要時間。
 # ★ 実績に応じて調整してください（下記は仮の値）。
-INVENTORY_DURATION = timedelta(hours=2)
+INVENTORY_DURATION = timedelta(hours=5)
+
+# 出品処理（publish_manager.py）の想定所要時間。
+# 在庫管理の開始締切判定（PUBLISH_START_TIME_US - INVENTORY_DURATION）には使用しない。
+# 将来的な用途（出品後チェック等）のために保持する。
+# ★ 仮値。将来3時間に変更される可能性がある。
+PUBLISH_DURATION = timedelta(hours=4)
 
 # ======================
 # 共通関数
@@ -689,29 +709,87 @@ def run_inventory_management_round(conn, cycle_no, round_no):
 # ======================
 def get_next_publish_start_datetime(now: datetime) -> datetime:
     """
-    PUBLISH_START_US（時刻のみ）を、nowから見て次に到来する日時に変換する。
-    今日のPUBLISH_START_USをまだ過ぎていなければ今日、既に過ぎていれば翌日とする
-    （在庫管理が日をまたぐ場合を考慮）。
+    PUBLISH_START_TIME_US（米国東部時間の時刻）を、nowから見て次に到来する
+    出品開始日時に変換する。判定の基準は出品の「開始時刻」であり、
+    終了時刻・完了目標時刻ではない。
+
+    戻り値はサーバーのローカル時刻(SERVER_TZ)のnaive datetime。
+    now もサーバーのローカル時刻(SERVER_TZ)のnaive datetimeという前提。
     """
-    candidate = datetime.combine(now.date(), PUBLISH_START_US)
-    if candidate <= now:
-        candidate += timedelta(days=1)
-    return candidate
+    now_server = now.replace(tzinfo=SERVER_TZ)
+    now_us = now_server.astimezone(US_TARGET_TZ)
+
+    # その日（米国東部時間基準）の出品開始予定日時
+    start_us = datetime.combine(now_us.date(), PUBLISH_START_TIME_US, tzinfo=US_TARGET_TZ)
+
+    # 今日の開始予定時刻を既に過ぎていれば、翌日の開始予定時刻を基準にする
+    if start_us <= now_us:
+        start_us += timedelta(days=1)
+
+    start_server = start_us.astimezone(SERVER_TZ)
+    return start_server.replace(tzinfo=None)
+
+
+def get_inventory_start_deadline(now: datetime) -> datetime:
+    """
+    在庫管理開始締切時刻を計算する。
+
+    在庫管理開始締切時刻 = 出品開始時刻(PUBLISH_START_TIME_US) - INVENTORY_DURATION
+    """
+    publish_start = get_next_publish_start_datetime(now)
+    return publish_start - INVENTORY_DURATION
 
 
 def can_start_another_inventory_round(now: datetime) -> bool:
     """
-    「今から在庫管理をもう1回開始した場合の終了予定時刻」が
-    「出品開始予定時刻 - INVENTORY_DURATION」を超えないかどうかを判定する。
+    在庫管理をもう1回開始しても、出品開始時刻に間に合うか判定する。
 
-    超えない  → まだ余裕がある  → 在庫管理をもう1回実行してよい
-    超える    → 余裕がない      → 在庫管理は開始せず、publish_manager を実行する
+    現在時刻が「在庫管理開始締切時刻」(= 出品開始時刻 - INVENTORY_DURATION)
+    以前であれば、もう1回開始してよい。過ぎていれば開始せず、
+    delete_ebay_daily → publish_manager へ進む。
     """
-    publish_start = get_next_publish_start_datetime(now)
-    deadline = publish_start - INVENTORY_DURATION
-    projected_finish = now + INVENTORY_DURATION
+    deadline = get_inventory_start_deadline(now)
 
-    return projected_finish <= deadline
+    return now <= deadline
+
+
+# ======================
+# 古い出品の削除（delete_ebay_daily 呼び出し）
+# ======================
+def run_delete_ebay_daily(conn):
+    """
+    30日以上経過した古い出品を削除する（delete_ebay_daily.py）。
+
+    LIMIT時に出品枠を確保する make_listing_space.py とは役割が全く異なり、
+    こちらは「日次の定期清掃」。在庫管理が終わった後、毎サイクル1回だけ実行する。
+    """
+
+    print("\n🗑 古い出品を削除します（delete_ebay_daily.py）")
+
+    del_start = datetime.now()
+    del_code, _ = run_script(DELETE_SCRIPT)
+    del_end = datetime.now()
+
+    subject = (
+        f"❌ delete_ebay_daily.py エラー"
+        if del_code != 0
+        else f"✅ delete_ebay_daily.py 正常終了"
+    )
+
+    body = (
+        f"スクリプト: {DELETE_SCRIPT.name}\n"
+        f"開始時刻: {del_start}\n"
+        f"終了時刻: {del_end}\n"
+        f"処理時間: {del_end - del_start}\n"
+        f"returncode: {del_code}\n\n"
+        + format_trx_listings_count_by_account(conn)
+    )
+
+    send_mail(subject, body)
+
+    print("🗑 古い出品の削除が終わりました")
+
+    return del_code
 
 
 # ======================
@@ -773,10 +851,11 @@ def post_publish_check():
 # ======================
 def run_one_cycle(cycle_no: int, conn):
     """
-    「在庫管理 → 出品」を1サイクルとして実行する。
+    「在庫管理 → 古い出品削除 → 出品」を1サイクルとして実行する。
 
     在庫管理は、次の1回を開始しても出品開始予定時刻に間に合う間は
-    繰り返し実行し、間に合わなくなった時点で打ち切って publish_manager へ進む。
+    繰り返し実行し、間に合わなくなった時点で打ち切る。
+    その後、古い出品を削除してから publish_manager（出品）へ進む。
     """
 
     print("\n=========================")
@@ -785,7 +864,7 @@ def run_one_cycle(cycle_no: int, conn):
 
     round_no = 1
     while True:
-        # 在庫管理開始
+        # 在庫管理を実行
         print(f"\n📦 在庫管理開始（Cycle {cycle_no} - {round_no}回目）")
         run_inventory_management_round(conn, cycle_no, round_no)
         print(f"📦 在庫管理終了（Cycle {cycle_no} - {round_no}回目）")
@@ -798,10 +877,14 @@ def run_one_cycle(cycle_no: int, conn):
             round_no += 1
             continue
 
-        print("⏱ 次の在庫管理は出品開始予定時刻に間に合わないため、出品処理へ進みます")
+        print("⏱ 次の在庫管理は出品開始予定時刻に間に合わないため、次の工程へ進みます")
         break
 
-    # 出品処理を開始する（publish_managerが終了するまで待つ）
+    # 古い出品を削除（30日以上経過したものを毎サイクル1回だけ削除する）
+    run_delete_ebay_daily(conn)
+
+    # 最新のActive Listingを取得して出品開始
+    # （Active Listing取得自体は publish_manager.py の先頭で実行される）
     run_publish_manager(conn)
 
     # 出品後チェック

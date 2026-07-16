@@ -137,7 +137,6 @@ def insert_items(cursor, account, items, fetched_at):
         for item in items
     ]
 
-    cursor.fast_executemany = True
     cursor.executemany("""
         INSERT INTO ext.ebay_active_download
         (
