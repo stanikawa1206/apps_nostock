@@ -216,12 +216,6 @@ SQL_SELECT_HAS_PENDING_LISTING_FETCH = """
 SELECT TOP 1 A.account
 FROM mst.ebay_accounts A
 WHERE ISNULL(A.is_excluded, 0) = 0
-  AND NOT EXISTS (
-      SELECT 1
-      FROM ext.ebay_active_download D
-      WHERE D.account = A.account
-        AND CAST(D.fetched_at AS DATE) = CAST(GETDATE() AS DATE)
-  )
 """
 
 SQL_SELECT_HAS_ACTIVE_LISTING_FETCH_WORKER = """
