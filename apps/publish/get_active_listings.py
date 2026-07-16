@@ -254,13 +254,10 @@ def fetch_and_store_active_listings_for_account(conn, account, fetched_at):
 
 def run_for_this_pc():
     """
-    このPC(execute_pc)に割り当てられた分のアカウントについて、
-    Active Listingを取得し終えるまで繰り返す。
+    このPC(execute_pc)に割り当てられた1アカウントだけ、Active Listingを取得する。
 
-    publish_ebay.py のメインループと同じ「1件確保→処理→解放」を、
-    担当できるアカウントが無くなるまで繰り返す構成。
-    VPS・ローカルそれぞれでこの関数を実行することで、
-    全アカウント分の取得が自然に分散される。
+    execute_pcs は担当アカウントを1件決定するためだけに使用し、
+    1プロセス=1アカウントの処理で終了する（処理後に次のアカウントは取得しない）。
     """
 
     current_pc = socket.gethostname().strip()
@@ -268,39 +265,27 @@ def run_for_this_pc():
 
     fetched_at = datetime.datetime.now()
 
-    # このPCが今回のrunで既に処理したaccountの集合（DBには保存しない、プロセス内メモリのみ）。
-    # これが無いと、release_listing_fetch_pc()で解放した直後の同じアカウントを
-    # fetch_next_account_for_listing_fetch()が毎回また返してしまい、ループが終わらない。
-    already_processed = set()
-
     try:
-        while True:
-            account = fetch_next_account_for_listing_fetch(conn, current_pc, already_processed)
+        account = fetch_next_account_for_listing_fetch(conn, current_pc, set())
 
-            if not account:
-                print("[INFO] 取得対象アカウントがありません。終了します。")
-                print("K0", flush=True)
-                break
+        if not account:
+            print("[INFO] 取得対象アカウントがありません。終了します。")
+            print("K0", flush=True)
+            return
 
-            print(f"▶ 開始: {account}")
+        print(f"▶ 開始: {account}")
 
-            try:
-                count = fetch_and_store_active_listings_for_account(conn, account, fetched_at)
-                print("G", flush=True)
-                print(f"  件数: {count}")
-                print("H", flush=True)
-            except Exception as e:
-                # 1アカウントの取得失敗で全体を止めない。
-                # このPCの already_processed には加えるため、このPC自身は
-                # 同じアカウントを無限に再試行しない。ただし他のPCの
-                # already_processed には影響しないため、空いたPCがあれば
-                # そちらで改めて取得を試みることはできる。
-                print(f"❌ {account} のActive Listing取得に失敗しました: error={e}")
-            finally:
-                already_processed.add(account)
-                print("I", flush=True)
-                release_listing_fetch_pc(conn, current_pc)
-                print("J", flush=True)
+        try:
+            count = fetch_and_store_active_listings_for_account(conn, account, fetched_at)
+            print("G", flush=True)
+            print(f"  件数: {count}")
+            print("H", flush=True)
+        except Exception as e:
+            print(f"❌ {account} のActive Listing取得に失敗しました: error={e}")
+        finally:
+            print("I", flush=True)
+            release_listing_fetch_pc(conn, current_pc)
+            print("J", flush=True)
 
         print("K", flush=True)
         print("✅ 完了")
