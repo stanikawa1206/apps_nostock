@@ -14,10 +14,27 @@ apps/inventory ではなく apps/publish 配下に置き、publish_manager.py �
 close_reasonがLIMIT中のアカウントであっても、古い出品の削除対象にはなり得るため、
 Active Listingは取得しておく必要がある。
 
-publish_ebay.py の fetch_next_account_and_lock() と同じ考え方で、
-mst.execute_pcs を使って「1PCにつき1アカウントずつ確保して処理する」方式を取り、
-VPS・ローカルで分散して取得できるようにしている。
+現在の運用（安定運用優先）:
+    ローカル1プロセスが、is_excluded=0 の全アカウントを1件ずつ順番に処理する
+    （run_serial_local()）。VPSへの分散は行わない。
+
+旧方式（VPS/ローカルへの分散取得、mst.execute_pcs使用）は、一部アカウントだけ
+取得できないケースが発生したため現在は使用していないが、原因調査後に
+再度必要になる可能性があるため、関連関数(fetch_next_account_for_listing_fetch /
+release_listing_fetch_pc / run_for_this_pc)は削除せずそのまま残してある。
 """
+
+import sys
+
+# print内の絵文字等がWindowsの既定コンソールエンコーディング(cp932)で
+# UnicodeEncodeErrorになり、そのアカウントの処理全体が異常終了する事象が
+# 確認されたため、他の本番スクリプト（publish_manager.py等）と同様に
+# stdout/stderrをUTF-8へ固定する。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 import datetime
 import socket
@@ -111,7 +128,6 @@ def get_active_listings(account: str):
         page += 1
 
     print(f"  ✔ 合計: {len(all_items)}")
-    print("A", flush=True)
     return all_items
 
 
@@ -233,29 +249,77 @@ def fetch_and_store_active_listings_for_account(conn, account, fetched_at):
     """
     1アカウント分のActive Listingを取得し、ext.ebay_active_download へ保存する。
 
-    ext.ebay_active_download の全件削除は publish_manager.py 側が
-    get_active_listings起動前に1回だけ行う（TRUNCATE TABLE）。
-    LOCAL・VPSが同時にアカウント単位でDELETEするとロック競合するため、
-    ここではDELETEを行わずINSERTのみ行う。
+    流れ: トークン取得 → eBay API全ページ取得 → 取得成功確認
+          → DELETE → INSERT → COMMIT。
+
+    トークン取得失敗・API取得失敗・0件取得の場合は、DELETE・INSERTのどちらも
+    行わずFalseを返す（既存データを誤って消さないため）。
+    成功時はTrueを返す。例外はこの関数の中で吸収し、呼び出し元へは伝播させない。
     """
 
-    items = get_active_listings(account)
-    print("B", flush=True)
+    print(f"[START] account={account}")
 
+    # --- トークン取得 ---
+    try:
+        token = get_access_token_new(account)
+    except Exception as e:
+        print(f"[ERROR] account={account} トークン取得中に例外が発生しました: {e}")
+        return False
+
+    if not token:
+        print(f"[ERROR] account={account} トークン取得に失敗したためDB更新を中止")
+        return False
+
+    print(f"[TOKEN] account={account} success")
+
+    # --- eBay APIから全ページ取得 ---
+    try:
+        items = get_active_listings(account)
+    except Exception as e:
+        print(f"[ERROR] account={account} Active Listing取得中に例外が発生しました: {e}")
+        return False
+
+    total_count = len(items)
+    print(f"[FETCH] account={account} total_count={total_count}")
+
+    # --- 0件は異常として扱い、DELETE/INSERTは行わない ---
+    if total_count == 0:
+        print(f"[ERROR] account={account} Active Listing取得結果が0件のためDB更新を中止")
+        return False
+
+    # --- DELETE → INSERT → COMMIT ---
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM ext.ebay_active_download WHERE account = ?", account)
+            insert_items(cur, account, items, fetched_at)
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"[ERROR] account={account} DB保存中に例外が発生しました: {e}")
+        return False
+
+    print(f"[SAVE] account={account} insert_count={total_count}")
+
+    # --- 保存後の確認 ---
     with conn.cursor() as cur:
-        insert_items(cur, account, items, fetched_at)
-        print("D", flush=True)
-    conn.commit()
-    print("E", flush=True)
+        cur.execute("""
+            SELECT COUNT(*) AS row_count, MAX(fetched_at) AS latest_fetched_at
+            FROM ext.ebay_active_download
+            WHERE account = ?
+        """, account)
+        row = cur.fetchone()
 
-    print("F", flush=True)
-    return len(items)
+    print(f"[VERIFY] account={account} db_count={row[0]} latest_fetched_at={row[1]}")
+    print(f"[END] account={account} success")
+
+    return True
 
 
 def run_for_this_pc():
     """
-    このPC(execute_pc)に割り当てられた1アカウントだけ、Active Listingを取得する。
+    【現在は未使用・将来のVPS分散再開用に保持】
 
+    このPC(execute_pc)に割り当てられた1アカウントだけ、Active Listingを取得する。
     execute_pcs は担当アカウントを1件決定するためだけに使用し、
     1プロセス=1アカウントの処理で終了する（処理後に次のアカウントは取得しない）。
     """
@@ -270,32 +334,78 @@ def run_for_this_pc():
 
         if not account:
             print("[INFO] 取得対象アカウントがありません。終了します。")
-            print("K0", flush=True)
             return
 
-        print(f"▶ 開始: {account}")
-
         try:
-            count = fetch_and_store_active_listings_for_account(conn, account, fetched_at)
-            print("G", flush=True)
-            print(f"  件数: {count}")
-            print("H", flush=True)
-        except Exception as e:
-            print(f"❌ {account} のActive Listing取得に失敗しました: error={e}")
+            fetch_and_store_active_listings_for_account(conn, account, fetched_at)
         finally:
-            print("I", flush=True)
             release_listing_fetch_pc(conn, current_pc)
-            print("J", flush=True)
-
-        print("K", flush=True)
-        print("✅ 完了")
-        print("L", flush=True)
 
     finally:
-        print("M", flush=True)
         conn.close()
-        print("N", flush=True)
+
+
+# =========================
+# ローカル1プロセスによる直列実行（現在の標準実行経路）
+# =========================
+SQL_SELECT_ALL_TARGET_ACCOUNTS = """
+SELECT account
+FROM mst.ebay_accounts
+WHERE ISNULL(is_excluded, 0) = 0
+ORDER BY account
+"""
+
+
+def get_target_accounts():
+    """is_excluded=0（削除対象外でない）の全アカウントを account 昇順で取得する。"""
+
+    conn = get_sql_server_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(SQL_SELECT_ALL_TARGET_ACCOUNTS)
+            rows = cur.fetchall()
+        return [row[0].strip() for row in rows]
+    finally:
+        conn.close()
+
+
+def run_serial_local():
+    """
+    ローカル1プロセスで、is_excluded=0 の全アカウントを1件ずつ順番に処理する。
+
+    VPSへの分散・execute_pcsによるアカウント割当は行わない。
+    1アカウントの失敗（トークン取得失敗・API取得失敗・0件取得）は、
+    そのアカウントのDB更新をスキップするだけで、残りのアカウントの処理は継続する。
+    """
+
+    start_time = datetime.datetime.now()
+
+    accounts = get_target_accounts()
+    fetched_at = datetime.datetime.now()
+
+    conn = get_sql_server_connection()
+
+    results = {}
+
+    try:
+        for account in accounts:
+            try:
+                results[account] = fetch_and_store_active_listings_for_account(conn, account, fetched_at)
+            except Exception as e:
+                # 1アカウントで想定外の例外が起きても、残りのアカウントの処理は続ける
+                print(f"[ERROR] account={account} 想定外の例外が発生しました: {e}")
+                results[account] = False
+    finally:
+        conn.close()
+
+    elapsed = datetime.datetime.now() - start_time
+
+    print("\n=== 結果サマリ ===")
+    for account, ok in results.items():
+        print(f"account={account}: {'success' if ok else 'failed'}")
+
+    print(f"Total elapsed: {elapsed}")
 
 
 if __name__ == "__main__":
-    run_for_this_pc()
+    run_serial_local()

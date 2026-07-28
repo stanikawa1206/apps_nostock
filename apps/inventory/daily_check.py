@@ -69,20 +69,47 @@ SERVER_TZ = ZoneInfo("Asia/Tokyo")
 # 出品時間の基準となる米国のタイムゾーン（夏時間・冬時間はZoneInfoが自動で考慮する）。
 US_TARGET_TZ = ZoneInfo("America/New_York")
 
-# 出品を開始する時刻（米国東部時間）。判定の基準はこの「開始時刻」であり、
-# 出品の終了時刻・完了目標時刻ではない。
+# 出品を開始してよい最速時刻（米国東部時間）。
+# 「これより早くは出品を開始しない」という制約であり、
+# 「この時刻を過ぎたら在庫管理を打ち切って出品へ切り替える」という
+# 意味ではない点に注意（在庫管理ループの終了条件には使わない）。
+# 夏時間・冬時間はUS_TARGET_TZ経由でZoneInfoが自動で吸収するため、
+# ここには「米国現地時計で何時か」だけを設定すればよい。
 # ★ 実際の運用時刻に合わせて調整してください（下記は仮の値）。
-PUBLISH_START_TIME_US = clock_time(15, 0)
+PUBLISH_START_MIN_TIME_US = clock_time(11, 0)
+
+# 出品を終了させる最遅時刻（米国東部時間）。在庫管理ループを終了する
+# 唯一の条件は「もう1回在庫管理を挟むと、この時刻までに出品が
+# 終わらなくなること」（can_start_another_inventory_round参照）。
+# ★ 実際の運用時刻に合わせて調整してください（下記は仮の値）。
+PUBLISH_END_MAX_TIME_US = clock_time(19, 0)
 
 # 在庫管理1回に見込む所要時間。
 # ★ 実績に応じて調整してください（下記は仮の値）。
 INVENTORY_DURATION = timedelta(hours=5)
 
 # 出品処理（publish_manager.py）の想定所要時間。
-# 在庫管理の開始締切判定（PUBLISH_START_TIME_US - INVENTORY_DURATION）には使用しない。
-# 将来的な用途（出品後チェック等）のために保持する。
-# ★ 仮値。将来3時間に変更される可能性がある。
-PUBLISH_DURATION = timedelta(hours=4)
+# ★ 仮値。
+PUBLISH_DURATION = timedelta(hours=3)
+
+############################################
+# DEBUG TEMPORARY
+############################################
+# 在庫管理サイクル判定の動作確認用フラグ。
+# True の間は、run_one_cycle() が在庫管理を1回実行した直後に
+# 判定結果をメール送信し、そのままプログラムを終了する
+# （2サイクル目にもpublish_managerにも進まない）。
+#
+# 確認が終わったら、このファイル内の
+# 「DEBUG TEMPORARY」〜「END DEBUG TEMPORARY」ブロックを
+# 両方まとめて削除すれば、通常運用に戻る。
+import io
+import contextlib
+
+DEBUG_STOP_AFTER_FIRST_INVENTORY = False
+############################################
+# END DEBUG TEMPORARY
+############################################
 
 # ======================
 # 共通関数
@@ -138,6 +165,74 @@ def format_trx_listings_count_by_account(conn) -> str:
         return "\n".join(lines) + "\n"
     except Exception as e:
         return f"【trx.listings 件数（account別）】取得失敗: {e}\n"
+
+
+def format_duration_mmss(elapsed: timedelta) -> str:
+    """timedeltaを「○分○秒」の形式に整形する（メール本文向け）。"""
+    total_seconds = int(elapsed.total_seconds())
+    minutes, seconds = divmod(total_seconds, 60)
+    return f"{minutes}分{seconds}秒"
+
+
+def build_publish_manager_account_summary(conn) -> str:
+    """
+    publish_manager完了メール用に、各アカウントのclose_reason・当日出品件数・
+    本日LIMIT対応が発生した件数をまとめた文字列を作る。
+
+    「LIMITになった回数」は正確な履歴カウンタがどこにも存在しないため、
+    本日 delete_reason='定期削除(watch0)'（make_listing_space.pyによる削除）が
+    発生したアカウント数を、LIMIT対応が発生した回数の代替指標として使う
+    （1アカウントが同日中に複数回LIMITになった場合も1件として数える点に注意）。
+    """
+    try:
+        cur = conn.cursor()
+
+        cur.execute("""
+            SELECT account, close_reason, post_target
+            FROM mst.ebay_accounts
+            WHERE ISNULL(is_excluded, 0) = 0
+            ORDER BY account
+        """)
+        accounts = cur.fetchall()
+
+        cur.execute("""
+            SELECT account, COUNT(*) AS today_posted
+            FROM trx.listings
+            WHERE CAST(start_time AS DATE) = CAST(GETDATE() AS DATE)
+              AND is_deleted = 0
+            GROUP BY account
+        """)
+        today_posted_map = {r[0]: r[1] for r in cur.fetchall()}
+
+        cur.execute("""
+            SELECT COUNT(DISTINCT account)
+            FROM trx.listings
+            WHERE is_deleted = 1
+              AND delete_reason = N'定期削除(watch0)'
+              AND CAST(deleted_at AS DATE) = CAST(GETDATE() AS DATE)
+        """)
+        limit_handled_accounts = cur.fetchone()[0]
+
+        limit_now_count = sum(1 for _, close_reason, _ in accounts if close_reason == "LIMIT")
+
+        lines = ["【アカウント別状況】"]
+        for account, close_reason, post_target in accounts:
+            posted = today_posted_map.get(account, 0)
+            lines.append(
+                f"- {account}: close_reason={close_reason or 'NULL'} "
+                f"/ 本日出品={posted}件 / post_target={post_target}"
+            )
+
+        lines.append("")
+        lines.append(
+            f"本日LIMIT対応(出品枠確保)が発生したアカウント数: {limit_handled_accounts}"
+            "（同日に複数回LIMITになったアカウントも1件として数える簡易指標）"
+        )
+        lines.append(f"現在LIMIT中のアカウント数（正常終了なら0のはず）: {limit_now_count}")
+
+        return "\n".join(lines) + "\n"
+    except Exception as e:
+        return f"【アカウント別状況】取得失敗: {e}\n"
 
 
 def send_script_mail(
@@ -707,50 +802,119 @@ def run_inventory_management_round(conn, cycle_no, round_no):
 # ======================
 # 出品開始タイミング判定
 # ======================
-def get_next_publish_start_datetime(now: datetime) -> datetime:
+def _today_us_time(now: datetime, time_of_day) -> datetime:
     """
-    PUBLISH_START_TIME_US（米国東部時間の時刻）を、nowから見て次に到来する
-    出品開始日時に変換する。判定の基準は出品の「開始時刻」であり、
-    終了時刻・完了目標時刻ではない。
+    nowから見て次に到来する（now以降で最も早い）米国東部時間の time_of_day を、
+    サーバーのローカル時刻(SERVER_TZ)のnaive datetimeとして返す。
 
-    戻り値はサーバーのローカル時刻(SERVER_TZ)のnaive datetime。
+    SERVER_TZ(JST)はUS_TARGET_TZ(EDT/EST)より大きく進んでいるため、
+    「nowと同じUS暦日のtime_of_day」をそのままサーバー時刻へ変換すると、
+    結果がnowより過去になることがある（＝今日すでに終わったウィンドウを
+    指してしまう）。そのため、まずnowと同じUS暦日で候補を作り、
+    それがnowより過去であればUS暦日を+1日して再計算する。
     now もサーバーのローカル時刻(SERVER_TZ)のnaive datetimeという前提。
     """
     now_server = now.replace(tzinfo=SERVER_TZ)
-    now_us = now_server.astimezone(US_TARGET_TZ)
+    now_us_date = now_server.astimezone(US_TARGET_TZ).date()
 
-    # その日（米国東部時間基準）の出品開始予定日時
-    start_us = datetime.combine(now_us.date(), PUBLISH_START_TIME_US, tzinfo=US_TARGET_TZ)
+    candidate_us = datetime.combine(now_us_date, time_of_day, tzinfo=US_TARGET_TZ)
+    candidate_server = candidate_us.astimezone(SERVER_TZ).replace(tzinfo=None)
 
-    # 今日の開始予定時刻を既に過ぎていれば、翌日の開始予定時刻を基準にする
-    if start_us <= now_us:
-        start_us += timedelta(days=1)
+    if candidate_server < now:
+        candidate_us = datetime.combine(now_us_date + timedelta(days=1), time_of_day, tzinfo=US_TARGET_TZ)
+        candidate_server = candidate_us.astimezone(SERVER_TZ).replace(tzinfo=None)
 
-    start_server = start_us.astimezone(SERVER_TZ)
-    return start_server.replace(tzinfo=None)
-
-
-def get_inventory_start_deadline(now: datetime) -> datetime:
-    """
-    在庫管理開始締切時刻を計算する。
-
-    在庫管理開始締切時刻 = 出品開始時刻(PUBLISH_START_TIME_US) - INVENTORY_DURATION
-    """
-    publish_start = get_next_publish_start_datetime(now)
-    return publish_start - INVENTORY_DURATION
+    return candidate_server
 
 
 def can_start_another_inventory_round(now: datetime) -> bool:
     """
-    在庫管理をもう1回開始しても、出品開始時刻に間に合うか判定する。
+    在庫管理をもう1回開始してよいか判定する。
 
-    現在時刻が「在庫管理開始締切時刻」(= 出品開始時刻 - INVENTORY_DURATION)
-    以前であれば、もう1回開始してよい。過ぎていれば開始せず、
-    delete_ebay_daily → publish_manager へ進む。
+    守るべき制約は次の2つだけ:
+      ① 出品開始はPUBLISH_START_MIN_TIME_US（例: 11:00 EDT）以降であること
+      ② 出品終了はPUBLISH_END_MAX_TIME_US（例: 19:00 EDT）以前であること
+    在庫管理はこの2つを満たす限り何回繰り返してもよく、
+    PUBLISH_START_MIN_TIME_USは「在庫管理を打ち切る基準」ではない
+    （①は在庫管理を何回繰り返しても出品開始時刻が繰り下がるだけで
+    自然に満たされるため、ここではチェックしない）。
+
+    したがって在庫管理ループの唯一の終了条件は、
+    「もう1回在庫管理を挟むと、その後の出品がPUBLISH_END_MAX_TIME_USまでに
+    終わらなくなること」。
     """
-    deadline = get_inventory_start_deadline(now)
+    publish_end_max = _today_us_time(now, PUBLISH_END_MAX_TIME_US)
+    next_round_would_overshoot = (now + INVENTORY_DURATION + PUBLISH_DURATION) > publish_end_max
 
-    return now <= deadline
+    return not next_round_would_overshoot
+
+
+def _format_short_time(dt: datetime, reference_date) -> str:
+    """
+    時刻を「HH:MM」で表示する。reference_date（通常は現在時刻の日付）と
+    日付が異なる場合だけ「MM/DD HH:MM」で日付も表示する。
+    """
+    if dt.date() == reference_date:
+        return dt.strftime("%H:%M")
+    return dt.strftime("%m/%d %H:%M")
+
+
+def log_inventory_round_decision(now: datetime) -> bool:
+    """
+    在庫管理サイクル判定の結果を、運用担当者が5秒で判断できる簡潔な形で
+    ログへ出力する。「次の在庫管理を実行するか、しないか」を一番目立つ位置に置く。
+
+    判定ロジック自体は can_start_another_inventory_round() と同じ条件式を
+    そのまま使い、ここで新たな判定条件を追加することはしない（表示専用）。
+    出品開始最速時刻（PUBLISH_START_MIN_TIME_US）は判定には使わず、
+    参考情報として表示するのみ。
+    """
+
+    publish_start_min = _today_us_time(now, PUBLISH_START_MIN_TIME_US)
+    publish_end_max = _today_us_time(now, PUBLISH_END_MAX_TIME_US)
+    projected_finish = now + INVENTORY_DURATION
+    projected_publish_end = projected_finish + PUBLISH_DURATION
+
+    next_round_would_overshoot = projected_publish_end > publish_end_max
+    can_start = not next_round_would_overshoot
+
+    today = now.date()
+    now_str = _format_short_time(now, today)
+    finish_str = _format_short_time(projected_finish, today)
+    publish_end_str = _format_short_time(projected_publish_end, today)
+    publish_start_min_str = _format_short_time(publish_start_min, today)
+    publish_end_max_str = _format_short_time(publish_end_max, today)
+
+    print("=" * 40)
+    print("在庫管理サイクル判定")
+    print("=" * 40)
+    print()
+    print(f"現在時刻　　　　　　　{now_str}")
+    print(f"次回終了予定　　　　　{finish_str}")
+    print(f"出品開始最速時刻(参考) {publish_start_min_str}")
+    print(f"出品終了最遅時刻　　　{publish_end_max_str}")
+    print(f"もう1回挟んだ場合の出品終了予定　{publish_end_str}")
+    print()
+    print("判定")
+
+    if can_start:
+        print("○ 次の在庫管理を実行します")
+        print()
+        print("理由")
+        print(f"もう1回挟んでも出品終了最遅時刻（{publish_end_max_str}）までに")
+        print("出品を終えられるためです。")
+    else:
+        print("× 次の在庫管理は実行しません")
+        print()
+        print("理由")
+        print("もう1回在庫管理を挟むと、")
+        print(f"出品終了最遅時刻（{publish_end_max_str}）までに")
+        print("出品が終わらなくなるためです。")
+
+    print()
+    print("=" * 40)
+
+    return can_start
 
 
 # ======================
@@ -763,8 +927,6 @@ def run_delete_ebay_daily(conn):
     LIMIT時に出品枠を確保する make_listing_space.py とは役割が全く異なり、
     こちらは「日次の定期清掃」。在庫管理が終わった後、毎サイクル1回だけ実行する。
     """
-
-    print("\n🗑 古い出品を削除します（delete_ebay_daily.py）")
 
     del_start = datetime.now()
     del_code, _ = run_script(DELETE_SCRIPT)
@@ -785,9 +947,10 @@ def run_delete_ebay_daily(conn):
         + format_trx_listings_count_by_account(conn)
     )
 
+    print("=" * 40)
+    print("📧 メール送信開始")
+    print("=" * 40)
     send_mail(subject, body)
-
-    print("🗑 古い出品の削除が終わりました")
 
     return del_code
 
@@ -801,34 +964,45 @@ def run_publish_manager(conn):
 
     publish_manager は Active Listing取得・LIMIT監視・出品といった
     「出品関連」だけを担当する（daily_check側では中身に立ち入らない）。
-    """
 
-    print("🚀 publish_manager開始")
+    開始時刻は起動直前、終了時刻はrun_script()（＝publish_manager.py本体）から
+    戻った直後を基準とし、完了通知メールを1通送信する。
+    """
 
     # publish直前に、前回までの処理ロックをクリアしておく
     refresh_presets_and_clear_locks(conn)
 
+    # 開始時刻: publish_manager起動直前
     pub_start = datetime.now()
     pub_code, _ = run_script(PUBLISH_MANAGER_SCRIPT)
+    # 終了時刻: run_script()（publish_manager.py本体）から戻った直後
     pub_end = datetime.now()
 
+    is_success = (pub_code == 0)
+
     subject = (
-        f"❌ publish_manager.py エラー"
-        if pub_code != 0
-        else f"✅ publish_manager.py 正常終了"
+        "✅ publish_manager完了通知"
+        if is_success
+        else "❌ publish_manager完了通知（異常終了）"
     )
 
     body = (
-        f"スクリプト: {PUBLISH_MANAGER_SCRIPT.name}\n"
+        f"publish_manager.py 完了通知\n\n"
+        f"結果: {'正常終了' if is_success else '異常終了'}\n"
         f"開始時刻: {pub_start}\n"
         f"終了時刻: {pub_end}\n"
-        f"処理時間: {pub_end - pub_start}\n"
-        f"returncode: {pub_code}\n"
+        f"処理時間: {format_duration_mmss(pub_end - pub_start)}\n"
+        f"returncode: {pub_code}\n\n"
+        + build_publish_manager_account_summary(conn)
     )
 
-    send_mail(subject, body)
-
-    print("🚀 publish_manager終了")
+    print("=" * 40)
+    print("📧 メール送信開始")
+    print("=" * 40)
+    if send_mail(subject, body):
+        print("📧 publish_manager完了メール送信成功")
+    else:
+        print("❌ publish_manager完了メール送信失敗")
 
     return pub_code
 
@@ -843,7 +1017,10 @@ def post_publish_check():
       ・LIMIT確認
       ・異常確認
     """
-    print("📋 出品後チェック（TODO: 未実装）")
+    print("=" * 40)
+    print("📋 出品後チェック開始")
+    print("=" * 40)
+    print("（TODO: 未実装）")
 
 
 # ======================
@@ -865,27 +1042,113 @@ def run_one_cycle(cycle_no: int, conn):
     round_no = 1
     while True:
         # 在庫管理を実行
-        print(f"\n📦 在庫管理開始（Cycle {cycle_no} - {round_no}回目）")
+        print("=" * 40)
+        print("📦 在庫管理開始")
+        print("=" * 40)
+        print(f"（Cycle {cycle_no} - {round_no}回目）")
         run_inventory_management_round(conn, cycle_no, round_no)
         print(f"📦 在庫管理終了（Cycle {cycle_no} - {round_no}回目）")
 
         now = datetime.now()
 
+        ############################################
+        # DEBUG TEMPORARY
+        ############################################
+        # 在庫管理サイクル判定の動作確認用。
+        # DEBUG_STOP_AFTER_FIRST_INVENTORY の True/False に関わらず、
+        # 在庫管理1回実行後に必ず判定結果を【DEBUG】メールで送信する
+        # （判定内容自体は log_inventory_round_decision() を1回呼ぶだけで、
+        # 　True/False間で計算がぶれたり、メールが二重送信されたりしない）。
+        #
+        # ここで違うのは以下の1点だけ:
+        #   True  : メール送信後、プログラムを終了する（publish_managerへは進まない）
+        #   False : メール送信後、通常どおり can_start の結果に従って
+        #           次ラウンドへ進む/打ち切るを判定する
+        #
+        # log_inventory_round_decision()自体が例外を出しても、
+        # ここで吸収してメール送信まで必ずたどり着けるようにする
+        # （判定True/Falseどちらでも【DEBUG】メールを必ず送るための対策）。
+        try:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                can_start = log_inventory_round_decision(now)
+            decision_text = buf.getvalue()
+        except Exception as e:
+            decision_text = f"[ERROR] log_inventory_round_decision()で例外が発生しました: {e}\n"
+            can_start = False  # 例外時は安全側に倒し、次ラウンドへは進めない
+
+        print(decision_text, end="")
+
+        if DEBUG_STOP_AFTER_FIRST_INVENTORY:
+            debug_banner = (
+                "========================================\n"
+                "DEBUG MODE\n"
+                "\n"
+                "Stopping after first inventory round.\n"
+                "\n"
+                "publish_manager is skipped.\n"
+                "\n"
+                "Remove DEBUG_STOP_AFTER_FIRST_INVENTORY\n"
+                "to restore normal behavior.\n"
+                "========================================"
+            )
+        else:
+            debug_banner = (
+                "========================================\n"
+                "DEBUG MODE\n"
+                "\n"
+                "Continuing normal processing\n"
+                "(round_no increment / next-round check).\n"
+                "========================================"
+            )
+        print(debug_banner)
+
+        # send_mail()は例外を投げずTrue/Falseを返す設計になっているため、
+        # ここで結果を必ず確認し、失敗した場合もログに残す。
+        if send_mail(
+            "【DEBUG】在庫管理サイクル判定結果",
+            decision_text + "\n" + debug_banner,
+        ):
+            print("📧 【DEBUG】メール送信成功")
+        else:
+            print("❌ 【DEBUG】メール送信失敗")
+
+        if DEBUG_STOP_AFTER_FIRST_INVENTORY:
+            # TOTAL_CYCLES の値に関わらず、ここでプログラム自体を終了する
+            # （return では TOTAL_CYCLES>1 の場合に次サイクルへ進んでしまうため）
+            sys.exit(0)
+        ############################################
+        # END DEBUG TEMPORARY
+        ############################################
+
         # 次の在庫管理を開始しても、出品開始予定時刻に間に合うか判定する
-        if can_start_another_inventory_round(now):
-            print("⏱ まだ余裕があるため、在庫管理をもう1回実行します")
+        # （判定結果は上の can_start / decision_text をそのまま使う。
+        # 　ここで log_inventory_round_decision() を再度呼ばないのは、
+        # 　同じ判定を二重に実行・二重にメール送信しないため）
+        print("=" * 40)
+        print("🔁 次サイクル判定開始")
+        print("=" * 40)
+        if can_start:
             round_no += 1
             continue
 
-        print("⏱ 次の在庫管理は出品開始予定時刻に間に合わないため、次の工程へ進みます")
         break
 
     # 古い出品を削除（30日以上経過したものを毎サイクル1回だけ削除する）
+    print("=" * 40)
+    print("🗑 古い出品削除開始")
+    print("=" * 40)
     run_delete_ebay_daily(conn)
 
     # 最新のActive Listingを取得して出品開始
     # （Active Listing取得自体は publish_manager.py の先頭で実行される）
+    print("=" * 40)
+    print("🚀 publish_manager開始")
+    print("=" * 40)
     run_publish_manager(conn)
+    print("=" * 40)
+    print("✅ publish_manager終了")
+    print("=" * 40)
 
     # 出品後チェック
     post_publish_check()

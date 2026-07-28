@@ -1794,6 +1794,23 @@ def post_to_ebay(
                         WHERE account = ?
                     """, acct)
 
+                # 投稿成功直後、その場で当日COUNTを再取得しtarget到達済みならDONEを確定する。
+                # close_reasonがLIMIT中でも上書き対象に含めるのは、このworkerの投稿が
+                # 確定する前に別workerが実際のeBay制限でLIMITを書いていた場合でも、
+                # target到達という事実が判明した時点で必ずDONEへ昇格させるため。
+                cursor.execute("""
+                    UPDATE mst.ebay_accounts
+                    SET close_reason = 'DONE'
+                    WHERE account = ?
+                      AND (close_reason IS NULL OR close_reason = 'LIMIT')
+                      AND (
+                          SELECT COUNT(*) FROM trx.listings
+                          WHERE account = ?
+                            AND CAST(start_time AS DATE) = CAST(GETDATE() AS DATE)
+                            AND is_deleted = 0
+                      ) >= (SELECT post_target FROM mst.ebay_accounts WHERE account = ?)
+                """, (acct, acct, acct))
+
             conn.commit()
 
             rec["processing_by"] = None
@@ -2137,12 +2154,33 @@ def release_pc_and_close_account(conn, current_pc, account_name=None, close_reas
     with conn.cursor() as cur:
         # 1. アカウント自体の終了フラグ更新 (Limit検知や在庫切れ時)
         if account_name and close_reason:
-            cur.execute("""
-                UPDATE mst.ebay_accounts
-                SET close_reason = ?
-                WHERE account = ?
-            """, (close_reason, account_name))
-        
+            if close_reason == "LIMIT":
+                # LIMITを書き込む瞬間に、当日COUNTを再確認してから決める。
+                # target到達済みならLIMITではなくDONEを確定する
+                # （Python側でclose_reason="LIMIT"と判断した時点と、
+                # 実際にDBへ書き込む時点との間に他workerの投稿が確定する
+                # 可能性があるため、書き込み文自身で最新のCOUNTを見て判定する）。
+                cur.execute("""
+                    UPDATE mst.ebay_accounts
+                    SET close_reason = CASE
+                            WHEN (
+                                SELECT COUNT(*) FROM trx.listings
+                                WHERE account = ?
+                                  AND CAST(start_time AS DATE) = CAST(GETDATE() AS DATE)
+                                  AND is_deleted = 0
+                            ) >= post_target
+                            THEN 'DONE'
+                            ELSE 'LIMIT'
+                        END
+                    WHERE account = ?
+                """, (account_name, account_name))
+            else:
+                cur.execute("""
+                    UPDATE mst.ebay_accounts
+                    SET close_reason = ?
+                    WHERE account = ?
+                """, (close_reason, account_name))
+
         # 2. PCの占有解除 (account を NULL に戻す)
         cur.execute("""
             UPDATE mst.execute_pcs

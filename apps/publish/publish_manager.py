@@ -21,11 +21,15 @@ make_listing_space.py は「出品枠を確保するだけ」を行う。
 いずれもpublish_manager.pyが全体の流れを制御する。
 """
 
+import calendar
+import math
 import subprocess
 import sys
 import os
 import time
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 sys.stdout.reconfigure(encoding='utf-8')
 sys.stderr.reconfigure(encoding='utf-8')
@@ -120,6 +124,206 @@ def clear_close_status(account):
         with conn.cursor() as cur:
             cur.execute(SQL_CLEAR_CLOSE_STATUS_FOR_ACCOUNT, account)
         conn.commit()
+    finally:
+        conn.close()
+
+
+SQL_MARK_ACCOUNT_DONE = """
+UPDATE mst.ebay_accounts
+SET
+    close_reason = 'DONE'
+WHERE
+    account = ?
+"""
+
+
+def mark_account_done(account):
+    """
+    指定アカウントを、当日の目標件数に到達済みとしてDONE確定させる。
+
+    LIMIT中に複数worker(VPS/ローカル)が並行投稿した結果、post_targetを
+    超過した状態でeBay側の出品制限にも該当することがある
+    （目標超過とLIMIT検知がほぼ同時に起きるケース）。この場合、
+    publish_ebay.py側はループ先頭のsent_now>=post_targetチェックへ
+    戻る前にLIMITでbreakしてしまうため、DONEが一度も書き込まれない。
+
+    そのためこの関数は、呼び出し元(handle_limit_account)がすでに
+    「今日の投稿数 >= post_target」を確認済みの時点で、close_reasonを
+    NULLへ戻すのではなく直接DONEへ確定させる。以後どのworkerが
+    このアカウントを再取得するのを待つ必要もない。
+    """
+
+    conn = get_sql_server_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(SQL_MARK_ACCOUNT_DONE, account)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ======================
+# post_target自動計算
+# ======================
+# 月間目標件数・1日あたりのpost_target上限・基準タイムゾーン（米国東部時間）。
+MONTHLY_TARGET = 10000
+MAX_DAILY_POST_TARGET = 500
+US_EASTERN_TZ = ZoneInfo("America/New_York")
+
+SQL_SELECT_POST_TARGET_ACCOUNTS = """
+SELECT account, listing_left, post_target
+FROM mst.ebay_accounts
+WHERE ISNULL(is_excluded, 0) = 0
+"""
+
+SQL_UPDATE_POST_TARGET = """
+UPDATE mst.ebay_accounts
+SET post_target = ?
+WHERE account = ?
+"""
+
+
+def calculate_post_target(
+    listing_left,
+    us_date,
+    monthly_target=MONTHLY_TARGET,
+    max_daily_post_target=MAX_DAILY_POST_TARGET,
+):
+    """
+    月間目標(monthly_target)件に対し、us_date(米国東部の「本日」の日付)時点で
+    必要なpost_targetを計算する。
+
+    戻り値(dict):
+        days_in_month:         当月の日数
+        daily_quota:           1日あたりの出品ノルマ (monthly_target / days_in_month)
+        target_progress:       本日の目標進行数 (daily_quota * us_date.day)
+        actual_progress:       実際進行数 (monthly_target - listing_left)
+        required_count:        必要出品数 (target_progress - actual_progress)
+        calculated_post_target: 最終post_target
+        cap_applied:           500件上限（max_daily_post_target）が適用されたかどうか
+        is_last_day_of_month:  当月最終日として特別処理を適用したかどうか
+
+    通常日: calculated_post_target = max(0, min(max_daily_post_target, ceil(required_count)))
+
+    当月最終日(us_date.day == days_in_month)だけは特別処理とする。
+    毎日ceil()した端数が月末までに累積し、月間目標(10,000件)を超えてしまう
+    可能性があるため、最終日は通常計算(required_countのceil)を使わず、
+    その時点の残り出品可能数(listing_left)をそのまま採用する
+    （1日500件上限のみ維持する）:
+        calculated_post_target = min(max_daily_post_target, listing_left)
+
+    副作用は一切ない（DBアクセス・日時取得を行わない）純粋関数。
+    """
+
+    _, days_in_month = calendar.monthrange(us_date.year, us_date.month)
+
+    daily_quota = monthly_target / days_in_month
+    target_progress = daily_quota * us_date.day
+    actual_progress = monthly_target - listing_left
+    required_count = target_progress - actual_progress
+
+    is_last_day_of_month = (us_date.day == days_in_month)
+
+    if is_last_day_of_month:
+        # 最終日特別処理: ceil()の累積誤差で月間目標を超えないよう、
+        # 通常計算(required_countのceil)は使わず、残り出品可能数(listing_left)を
+        # そのまま採用する（1日500件上限のみ維持する）。
+        calculated_post_target = min(max_daily_post_target, listing_left)
+        cap_applied = listing_left > max_daily_post_target
+    else:
+        raw_post_target = math.ceil(required_count)
+        calculated_post_target = max(0, min(max_daily_post_target, raw_post_target))
+        cap_applied = raw_post_target > max_daily_post_target
+
+    return {
+        "days_in_month": days_in_month,
+        "daily_quota": daily_quota,
+        "target_progress": target_progress,
+        "actual_progress": actual_progress,
+        "required_count": required_count,
+        "calculated_post_target": calculated_post_target,
+        "cap_applied": cap_applied,
+        "is_last_day_of_month": is_last_day_of_month,
+    }
+
+
+def validate_listing_left(listing_left):
+    """
+    listing_left が計算可能な値かどうかを判定する。
+
+    戻り値: (ok: bool, error_message: str or None)
+    """
+
+    if listing_left is None:
+        return False, "listing_left が NULL のため計算できません"
+
+    if listing_left < 0:
+        return False, f"listing_left が異常値です（{listing_left} < 0）"
+
+    if listing_left > MONTHLY_TARGET:
+        return False, f"listing_left が異常値です（{listing_left} > {MONTHLY_TARGET}）"
+
+    return True, None
+
+
+def update_post_targets():
+    """
+    is_excluded=0 の全アカウントについて、米国東部時間の本日時点で必要な
+    post_targetを自動計算し、mst.ebay_accounts.post_target へ反映する。
+
+    publish_manager起動直後（reset_close_status()の後、get_active_listings
+    開始前）に一度だけ実行する。listing_leftが異常値(NULL・0未満・monthly_target超)
+    のアカウントはWARNINGを出してスキップし、post_targetは更新しない。
+    """
+
+    now_et = datetime.now(US_EASTERN_TZ)
+    us_date = now_et.date()
+
+    print("=" * 40)
+    print("post_target自動計算開始")
+    print("=" * 40)
+    print()
+
+    conn = get_sql_server_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(SQL_SELECT_POST_TARGET_ACCOUNTS)
+            rows = cur.fetchall()
+
+        accounts = [
+            {"account": row[0], "listing_left": row[1], "post_target": row[2]}
+            for row in rows
+        ]
+
+        updated_count = 0
+
+        for account_info in accounts:
+            account = account_info["account"]
+            listing_left = account_info["listing_left"]
+            current_post_target = account_info["post_target"]
+
+            ok, error_message = validate_listing_left(listing_left)
+            if not ok:
+                print(f"WARNING {account} : {error_message}のためスキップします")
+                continue
+
+            result = calculate_post_target(listing_left, us_date)
+            new_post_target = result["calculated_post_target"]
+
+            with conn.cursor() as cur:
+                cur.execute(SQL_UPDATE_POST_TARGET, new_post_target, account)
+            conn.commit()
+
+            updated_count += 1
+            print(f"{account:<10}: {current_post_target} → {new_post_target}")
+
+        print()
+        print("=" * 40)
+        print("post_target更新完了")
+        print(f"対象アカウント : {len(accounts)}")
+        print(f"更新件数       : {updated_count}")
+        print("=" * 40)
+
     finally:
         conn.close()
 
@@ -449,8 +653,11 @@ def handle_limit_account(account_info):
          あり、これからLIMITで止まる可能性があるため、ここでは何もせず
          次回の監視サイクルに委ねる（二重削除防止。詳細は下記コメント参照）。
       1. active_workers == 0 になって初めて、今日あと何件出品したいか計算する
-      2. remaining <= 0 なら、削除はせずLIMIT状態だけ解除する
-         （単に目標達成後の状態が残っているだけの可能性があるため）
+      2. remaining <= 0 なら、すでに目標達成済みなので削除はせずDONEに確定させる
+         （NULLに戻してworkerの再取得に委ねると、複数worker並行投稿による
+         target超過とLIMIT検知が重なった場合にLIMITのまま固まり得るため、
+         ここで直接DONEにする。万一ここを通らなくても
+         auto_fix_done_accounts() が同じ条件で補正する）
       3. remaining > 0 なら、必要な件数分だけ古い出品を削除して空きを作る
       4. 空きができた場合（1件以上確保できた場合）だけLIMIT状態を解除する
          （publish_ebayは待機中なので、解除後に自動で出品を再開する）
@@ -486,10 +693,15 @@ def handle_limit_account(account_info):
         print(f"   today_posted={account_info['post_target'] - remaining}")
         print(f"   remaining={remaining}")
 
-        # すでに当日の目標数に達しているだけなら、削除は不要。LIMIT状態だけ解除する。
+        # すでに当日の目標数に達している（remaining<=0）なら、削除は不要。
+        # ここでNULLに戻してworkerの再取得に委ねると、複数workerの並行投稿で
+        # post_targetを超過しつつeBay側の実制限にも同時にヒットした場合、
+        # workerがループ先頭のsent_now>=post_targetチェックへ戻れず
+        # LIMITのまま固まる恐れがある（再度LIMITでbreakする可能性があるため）。
+        # そのためworkerの再取得を待たず、ここで直接DONEに確定させる。
         if remaining <= 0:
-            clear_close_status(account)
-            print(f"🟢 {account} 目標達成済みのためLIMIT状態を解除しました")
+            mark_account_done(account)
+            print(f"🟢 {account} 目標達成済みのためDONEにしました")
             return
 
         # 必要な件数分だけ古い出品を削除して空きを作る
@@ -521,6 +733,89 @@ def handle_limit_accounts(limit_accounts):
 
 
 # ======================
+# DONE補正・終了判定
+# ======================
+SQL_AUTO_FIX_DONE_ACCOUNTS = """
+UPDATE A
+SET A.close_reason = 'DONE'
+OUTPUT inserted.account
+FROM mst.ebay_accounts A
+CROSS APPLY (
+    SELECT COUNT(*) AS today_posted
+    FROM trx.listings L
+    WHERE L.account = A.account
+      AND CAST(L.start_time AS DATE) = CAST(GETDATE() AS DATE)
+      AND L.is_deleted = 0
+) T
+WHERE ISNULL(A.is_excluded, 0) = 0
+  AND (A.close_reason IS NULL OR A.close_reason = 'LIMIT')
+  AND T.today_posted >= A.post_target
+"""
+
+
+def auto_fix_done_accounts():
+    """
+    目標件数(post_target)にすでに到達しているのに、DONEになっていない
+    アカウントを自己修復する。
+
+    is_excluded=0 の全アカウントについて、today_posted >= post_target なのに
+    close_reason が NULL または LIMIT のままのものを 'DONE' に補正する。
+    LIMITも対象に含めているのは、複数worker(VPS/ローカル)が同一アカウントを
+    並行投稿した際、post_targetを超過した投稿とeBay側の実際の出品制限検知が
+    ほぼ同時に起きると、publish_ebay.py側はループ先頭のsent_now>=post_target
+    チェックへ戻る前にLIMITでbreakしてしまい、DONEが一度も書き込まれないまま
+    LIMIT状態だけが残ることがあるため。この関数はactive_workersの状態に
+    関係なく「today_posted >= post_target」という事実だけで判定するため、
+    workerがこのアカウントをもう一周拾うのを待つ必要がない。
+    終了判定(is_all_accounts_finished)は close_reason だけを信用せず、
+    必ずこの補正を先に行ってから行う。
+    """
+
+    conn = get_sql_server_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(SQL_AUTO_FIX_DONE_ACCOUNTS)
+            fixed_accounts = [row[0] for row in cur.fetchall()]
+        conn.commit()
+    finally:
+        conn.close()
+
+    for account in fixed_accounts:
+        print("INFO")
+        print(f"Auto fixed DONE account: {account}")
+
+    return fixed_accounts
+
+
+SQL_SELECT_UNFINISHED_ACCOUNT = """
+SELECT TOP 1 account
+FROM mst.ebay_accounts
+WHERE ISNULL(is_excluded, 0) = 0
+  AND (close_reason IS NULL OR close_reason NOT IN ('DONE', 'EMPTY'))
+"""
+
+
+def is_all_accounts_finished():
+    """
+    is_excluded=0 の全アカウントについて、close_reason が DONE か EMPTY だけに
+    なっているかどうかを判定する。
+
+    close_reason が NULL（未処理）または LIMIT のアカウントが1件でも残っていれば
+    False。auto_fix_done_accounts() による補正の後に呼び出すことで、
+    close_reason だけを信用せず、今日の実績を反映した状態で判定する。
+    """
+
+    conn = get_sql_server_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(SQL_SELECT_UNFINISHED_ACCOUNT)
+            row = cur.fetchone()
+        return row is None
+    finally:
+        conn.close()
+
+
+# ======================
 # LIMIT監視ループ
 # ======================
 def monitor_limit_accounts():
@@ -540,12 +835,17 @@ def monitor_limit_accounts():
     そのため handle_limit_account 側で active_workers（そのアカウントを処理中の
     worker数）を確認し、全workerの処理が終わって active_workers == 0 になって
     初めて出品枠確保を行う。active_workers > 0 の間は何もせず、次のこの監視サイクルに委ねる。
+
+    このループには終了条件がある。DONE補正のあと、is_excluded=0の全アカウントの
+    close_reasonがDONE/EMPTYだけになっていれば（＝LIMIT・未処理が1件も残って
+    いなければ）、publish_managerの役目は終わったとみなしループを抜ける。
     """
 
     while True:
-        # LIMITになったアカウントがあるか確認する
+        # LIMITアカウント取得
         limit_accounts = get_limit_accounts()
 
+        # LIMIT処理
         if limit_accounts:
             # 対象アカウントごとに、必要なら出品枠を確保してLIMITを解除する。
             # publish_ebayは待機中なので、解除すれば自動で出品を再開する。
@@ -553,27 +853,46 @@ def monitor_limit_accounts():
             # （例外は handle_limit_account 側で処理済みで、ここには伝播してこない）。
             handle_limit_accounts(limit_accounts)
 
+        # DONE補正（publish_ebay側が書き込めなかったDONEを自己修復する）
+        auto_fix_done_accounts()
+
+        # 終了判定（close_reasonだけを信用せず、DONE補正の後に行う）
+        if is_all_accounts_finished():
+            print("INFO")
+            print("All publish accounts finished.")
+            print("publish_manager exiting.")
+            break
+
         # 少し待ってからもう一度確認する
         time.sleep(LIMIT_CHECK_INTERVAL_SECONDS)
 
 
 def main():
+    print("=" * 40)
+    print("=== publish_manager.py 実行開始 ===")
+    print("=" * 40)
+
     # 前日のLIMIT情報をクリアする
     reset_close_status()
 
-    # get_active_listings起動前に、対象テーブルを1回だけ全件削除する
-    # （各プロセスがアカウント単位でDELETEするとロック競合するため、ここで一括削除する）
-    truncate_active_listings()
+    # 各アカウントの本日時点のpost_targetを自動計算してmst.ebay_accountsへ反映する
+    update_post_targets()
 
-    # 最新のActive Listingを取得する（VPS7台・LOCAL1台を同時に起動する）
-    # 完了確認は is_active_listings_fetch_done() を使わず、起動した全Popenを
-    # wait() することでプロセスの正常終了をもって完了とみなす。
-    processes = []
-    processes.extend(run_get_active_listings_vps())
-    processes.append(run_get_active_listings_local())
+    # 最新のActive Listingを取得する（ローカル1プロセスのみ・直列実行）。
+    # VPSへの分散取得は、一部アカウントだけ取得失敗するケースが発生したため
+    # 現在は無効化している。原因調査後に必要であれば以下のコメントを外して復活させる。
+    #
+    # processes = run_get_active_listings_vps()
+    # for proc in processes:
+    #     proc.wait()
+    #
+    # get_active_listings.py 側が現在アカウントごとにDELETE→INSERTを行うため、
+    # ここでの全件事前TRUNCATEは行わない（途中で失敗した場合に他アカウントの
+    # 既存データまで消えてしまうことを避けるため）。
+    # truncate_active_listings()
 
-    for proc in processes:
-        proc.wait()
+    local_proc = run_get_active_listings_local()
+    local_proc.wait()
 
     # 出品処理を開始する（VPS・ローカルとも常駐して出品を続ける）
     run_vps()
@@ -585,6 +904,17 @@ def main():
     # LIMIT状態を解除すれば自動的に出品を再開する。
     monitor_limit_accounts()
 
+    print("=" * 40)
+    print("=== publish_manager.py 正常終了 ===")
+    print("=" * 40)
+
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        print("=" * 40)
+        print("=== publish_manager.py 異常終了 ===")
+        print(f"例外内容: {e}")
+        print("=" * 40)
+        raise

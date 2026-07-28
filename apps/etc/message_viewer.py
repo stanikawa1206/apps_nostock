@@ -838,9 +838,9 @@ def api_threads():
                 FROM trx.ebay_messages
             ) m
             LEFT JOIN (
-                SELECT account, listing_id, vendor_item_id
+                SELECT account, listing_id, vendor_item_id, vendor_name
                 FROM (
-                    SELECT account, listing_id, vendor_item_id,
+                    SELECT account, listing_id, vendor_item_id, vendor_name,
                            ROW_NUMBER() OVER (
                                PARTITION BY account, listing_id
                                ORDER BY is_deleted ASC, deleted_at DESC
@@ -851,6 +851,7 @@ def api_threads():
                AND l.listing_id = m.listing_id
             LEFT JOIN trx.vendor_item vi
                    ON vi.vendor_item_id = l.vendor_item_id
+                  AND vi.vendor_name    = l.vendor_name
             WHERE m.rn = 1
             ORDER BY m.received_at DESC
         """)
@@ -918,6 +919,7 @@ def api_thread(sender_id, listing_id):
              AND l.listing_id = em.listing_id
             LEFT JOIN trx.vendor_item vi
               ON vi.vendor_item_id = l.vendor_item_id
+             AND vi.vendor_name    = l.vendor_name
             WHERE em.sender_id = ? AND em.listing_id = ?
             ORDER BY l.is_deleted ASC, l.deleted_at DESC
         """, sender_id, listing_id)

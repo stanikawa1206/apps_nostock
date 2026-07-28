@@ -54,6 +54,8 @@ import os
 import re
 import time
 import random
+import logging
+from pathlib import Path
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Dict, Any, Optional, Tuple
 from urllib.parse import urlencode, urlparse, parse_qsl, urlunparse, quote
@@ -68,6 +70,28 @@ load_dotenv(find_dotenv())
 # --- Third-party ---
 import requests
 from selenium.webdriver.common.by import By
+
+# ====== [一時デバッグ] DELETE DEBUG専用ログファイル ======
+# apps/publish/make_listing_space.py と同じ logs/delete_debug.log に出力する。
+# logging.getLogger("delete_debug") はプロセス内で共有されるため、
+# どちらのモジュールが先にimportされてもハンドラは1つだけ追加される。
+# 調査が終わったらこのブロックごと削除してよい。
+_DELETE_DEBUG_LOG_PATH = Path(__file__).resolve().parents[2] / "logs" / "delete_debug.log"
+_DELETE_DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+_delete_debug_logger = logging.getLogger("delete_debug")
+if not _delete_debug_logger.handlers:
+    _delete_debug_logger.setLevel(logging.DEBUG)
+    _delete_debug_handler = logging.FileHandler(_DELETE_DEBUG_LOG_PATH, encoding="utf-8")
+    _delete_debug_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    _delete_debug_logger.addHandler(_delete_debug_handler)
+    _delete_debug_logger.propagate = False
+
+
+def _log_delete_debug(msg: str) -> None:
+    """[一時デバッグ] コンソール(print)と logs/delete_debug.log の両方に同じ内容を出力する。"""
+    print(msg)
+    _delete_debug_logger.debug(msg)
 
 # ====== 設定（あなたの環境に合わせて）======
 def _require_env(name: str) -> str:
@@ -440,30 +464,57 @@ def post_one_item(payload: Dict[str, Any], account_name: str, acct_policies: Dic
     return item_id
 
 # ====== Trading API（バイヤーへのメッセージ送信）======
+# send_buyer_thankyou_message() 用フォールバックlogger。
+# 呼び出し側(fetch_orders_ebay.py等)が自前のloggerを渡さなかった場合のみ使う。
+_THANKYOU_FALLBACK_LOG = logging.getLogger("apps.adapters.ebay_api")
+
+
 def send_buyer_thankyou_message(
     account: str,
     order_id: str,
     buyer_username: str,
     ebay_id: str,
+    logger: Optional[logging.Logger] = None,
 ) -> dict:
     """
     Trading API AddMemberMessageAAQToPartner でバイヤーへサンキューメッセージを送信。
     1注文につき1回だけ呼ぶこと（呼び出し側で制御）。
+
+    logger: 呼び出し側のロガーを渡すと、そのログへ「API送信開始」「APIレスポンス(Ack)」
+    「成功/失敗」「エラーコード/メッセージ」「処理時間」を記録する。省略時はこの
+    モジュール用のフォールバックloggerを使う（fetch_orders_ebay.py以外から呼ばれた場合など）。
     """
+    log = logger or _THANKYOU_FALLBACK_LOG
+    start = time.monotonic()
+
+    def _elapsed_ms() -> float:
+        return round((time.monotonic() - start) * 1000, 1)
+
+    log.info(
+        f"[ThankYou] API送信開始: order_id={order_id} ebay_id={ebay_id} buyer={buyer_username}"
+    )
+
     if not ebay_id or not buyer_username:
-        print(f"  [ThankYou] SKIP: ebay_id or buyer_username missing (order={order_id})")
+        log.warning(
+            f"[ThankYou] SKIP（ebay_idまたはbuyerが未設定）: order_id={order_id} "
+            f"ebay_id={ebay_id} buyer={buyer_username} elapsed_ms={_elapsed_ms()}"
+        )
         return {"success": False, "error": "missing_ebay_id_or_buyer"}
 
     token = get_access_token_new(account)
     if not token:
-        print(f"  [ThankYou] FAIL: token error (order={order_id})")
+        log.error(
+            f"[ThankYou] 失敗（トークン取得エラー）: order_id={order_id} ebay_id={ebay_id} "
+            f"buyer={buyer_username} elapsed_ms={_elapsed_ms()}"
+        )
         return {"success": False, "error": "no_token"}
 
     subject = "Thank you for your purchase!"
     body = (
-        "Thank you so much for your order! "
-        "We will ship your item as quickly as possible. "
-        "Please feel free to message us if you have any questions."
+        "Thank you very much for your order! We truly appreciate your business. "
+        "We will do our best to ship your item as quickly as possible and aim to "
+        "dispatch it within 5 business days. If you have any questions, please "
+        "don't hesitate to contact us."
     )
 
     xml_data = f"""<?xml version="1.0" encoding="utf-8"?>
@@ -474,6 +525,7 @@ def send_buyer_thankyou_message(
   <MemberMessage>
     <Body>{body}</Body>
     <MessageType>AskSellerQuestion</MessageType>
+    <QuestionType>CustomizedSubject</QuestionType>
     <Subject>{subject}</Subject>
     <RecipientID>{buyer_username}</RecipientID>
   </MemberMessage>
@@ -491,7 +543,11 @@ def send_buyer_thankyou_message(
         r = requests.post(TRADING_ENDPOINT, headers=headers, data=xml_data, timeout=30)
 
         if r.status_code != 200:
-            print(f"  [ThankYou] FAIL: HTTP {r.status_code} order={order_id} raw={r.text[:300]}")
+            log.error(
+                f"[ThankYou] 失敗（HTTPエラー）: order_id={order_id} ebay_id={ebay_id} "
+                f"buyer={buyer_username} http_status={r.status_code} "
+                f"response={r.text[:300]!r} elapsed_ms={_elapsed_ms()}"
+            )
             return {"success": False, "http_status": r.status_code}
 
         root = ET.fromstring(r.text)
@@ -499,7 +555,10 @@ def send_buyer_thankyou_message(
         ack = (root.findtext("e:Ack", default="", namespaces=ns) or "").strip()
 
         if ack in ("Success", "Warning"):
-            print(f"  [ThankYou] OK: order={order_id} buyer={buyer_username}")
+            log.info(
+                f"[ThankYou] 成功: order_id={order_id} ebay_id={ebay_id} buyer={buyer_username} "
+                f"ack={ack} elapsed_ms={_elapsed_ms()}"
+            )
             return {"success": True}
 
         errs = []
@@ -507,14 +566,23 @@ def send_buyer_thankyou_message(
             code = (err.findtext("e:ErrorCode", default="", namespaces=ns) or "").strip()
             msg  = (err.findtext("e:LongMessage", default="", namespaces=ns) or
                     err.findtext("e:ShortMessage", default="", namespaces=ns) or "").strip()
-            errs.append(f"{code}: {msg}")
+            errs.append((code, msg))
 
-        err_str = "; ".join(errs) or f"Ack={ack}"
-        print(f"  [ThankYou] FAIL: order={order_id} buyer={buyer_username} error={err_str}")
+        error_code = ",".join(code for code, _ in errs if code) or ""
+        err_str = "; ".join(f"{code}: {msg}" for code, msg in errs) or f"Ack={ack}"
+        log.error(
+            f"[ThankYou] 失敗（APIエラー応答）: order_id={order_id} ebay_id={ebay_id} "
+            f"buyer={buyer_username} ack={ack} error_code={error_code} "
+            f"error_message={err_str} elapsed_ms={_elapsed_ms()}"
+        )
         return {"success": False, "error": err_str}
 
     except Exception as e:
-        print(f"  [ThankYou] EXCEPTION: order={order_id} {e}")
+        log.error(
+            f"[ThankYou] 失敗（例外発生）: order_id={order_id} ebay_id={ebay_id} "
+            f"buyer={buyer_username} error={e} elapsed_ms={_elapsed_ms()}",
+            exc_info=True,
+        )
         return {"success": False, "error": str(e)}
 
 
@@ -674,13 +742,16 @@ def delete_item_from_ebay_bk(account: str, item_id: str) -> Dict[str, Any]:
     m = re.search(r"<ErrorCode>(\d+)</ErrorCode>", text)
     return {"success": False, "error_code": int(m.group(1)) if m else "api_error", "raw_response": text}
 
-def delete_items_from_ebay_batch(account: str, item_ids: list[str]) -> Dict[str, Any]:
+def delete_items_from_ebay_batch(account: str, item_ids: list[str], batch_no: Optional[int] = None) -> Dict[str, Any]:
+    # batch_no は[一時デバッグ]ログ表示専用の任意引数。渡さなくても動作は変わらない。
     if not item_ids:
         return {"success": True, "results": []}
     if len(item_ids) > 10:
         raise ValueError("EndItems は最大10件まで。")
     token = get_access_token_new(account)
     if not token:
+        # ===== [一時デバッグ] トークン取得失敗でここで打ち切られていないか =====
+        _log_delete_debug(f"[DELETE DEBUG][ebay_api] account={account} batch_no={batch_no} item_ids={item_ids} token取得失敗のため no_token を返します")
         return {"success": False, "error_code": "no_token"}
 
     headers = {
@@ -706,6 +777,10 @@ def delete_items_from_ebay_batch(account: str, item_ids: list[str]) -> Dict[str,
     r = requests.post(TRADING_ENDPOINT, headers=headers, data=body, timeout=30)
     text = r.text
 
+    # ===== [一時デバッグ] EndItems APIの生レスポンスをそのまま出力 =====
+    _log_delete_debug(f"[DELETE DEBUG][ebay_api] account={account} batch_no={batch_no} item_ids={item_ids} http_status={r.status_code}")
+    _log_delete_debug(f"[DELETE DEBUG][ebay_api] account={account} batch_no={batch_no} raw_response={text!r}")
+
     results = []
     blocks = re.findall(r"<EndItemResponseContainer>(.*?)</EndItemResponseContainer>", text, flags=re.S)
     for b in blocks:
@@ -730,15 +805,24 @@ def delete_items_from_ebay_batch(account: str, item_ids: list[str]) -> Dict[str,
     if not results:
         em = re.search(r"<ErrorCode>(\d+)</ErrorCode>", text)
         lm = re.search(r"<LongMessage>(.*?)</LongMessage>", text, flags=re.S)
-        return {
+        result = {
             "success": False,
             "error_code": int(em.group(1)) if em else "parse_error",
             "error_message": lm.group(1).strip() if lm else "",
             "raw_response": text,
         }
+        # ===== [一時デバッグ] EndItemResponseContainerが1件も取れなかった(パース失敗) =====
+        _log_delete_debug(f"[DELETE DEBUG][ebay_api] account={account} batch_no={batch_no} results抽出0件(parse_error) result={result!r}")
+        return result
     if any(r.get("error_code") in (518, 429) for r in results):
-        return {"success": False, "error_code": 518, "results": results, "message": "per-container rate limit", "raw_response": text}
-    return {"success": True, "results": results, "raw_response": text}
+        result = {"success": False, "error_code": 518, "results": results, "message": "per-container rate limit", "raw_response": text}
+        # ===== [一時デバッグ] レート制限(518/429)を検知 =====
+        _log_delete_debug(f"[DELETE DEBUG][ebay_api] account={account} batch_no={batch_no} レート制限検知 result={result!r}")
+        return result
+    result = {"success": True, "results": results, "raw_response": text}
+    # ===== [一時デバッグ] 正常応答(success=Trueだが、個々のitemがsuccess=Falseの場合もある) =====
+    _log_delete_debug(f"[DELETE DEBUG][ebay_api] account={account} batch_no={batch_no} 正常応答 result={result!r}")
+    return result
 
 # ====== 価格改定：Trading の失敗を Inventory にフォールバック ======
 def _inventory_get_offer_id_by_sku(token: str, sku: str, marketplace_id: str = "EBAY_US") -> tuple[Optional[str], dict]:

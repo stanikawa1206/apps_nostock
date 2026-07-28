@@ -1,6 +1,0 @@
-2026-03-07 14:06:03,486 [INFO] カナダ向け判定済み・未書き出しASINの出力処理を開始します。
-2026-03-07 14:06:18,676 [ERROR] DB接続エラー: ('08001', '[08001] [Microsoft][ODBC Driver 17 for SQL Server]TCP プロバイダー: 待ち操作がタイムアウトになりました。\r\n (258) (SQLDriverConnect); [08001] [Microsoft][ODBC Driver 17 for SQL Server]ログイン タイムアウトが時間切れになりました (0); [08001] [Microsoft][ODBC Driver 17 for SQL Server]SQL Server への接続の確立中に、ネットワーク関連のエラーまたはインスタンス固有のエラーが発生しました。サーバーが見つからないか、アクセスできません。インスタンス名が正しいことと、SQL Server がリモート接続を許可するように構成されていることを確認してください。詳細については、SQL Server オンライン ブックを参照してください。 (258)')
-2026-03-07 14:08:46,752 [INFO] カナダ向け判定済み・未書き出しASINの出力処理を開始します。
-2026-03-07 14:08:47,272 [INFO] 出力対象のASIN(CA)を 25009 件取得しました。
-2026-03-07 14:08:47,434 [INFO] CSV(CA)を出力しました: \\MOUSE\apps_nostock\apps\snapshot\Venesplo_CA\input\ca_listable_items_additional_20260307.csv
-2026-03-07 14:08:47,979 [INFO] データベースの出力フラグ(CA_Venesplo)を更新しました。

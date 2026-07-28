@@ -8,10 +8,33 @@
 追加していく前提の構成にしている。
 """
 
+import logging
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from apps.common.utils import get_sql_server_connection
 from apps.adapters.ebay_api import delete_items_from_ebay_batch
+
+
+# ===== [一時デバッグ] DELETE DEBUG専用ログファイル =====
+# actual_count=0になる原因調査用の一時ログ。logs/delete_debug.log にタイムスタンプ付きで出力する。
+# 調査が終わったらこのブロックごと削除してよい。
+_DELETE_DEBUG_LOG_PATH = Path(__file__).resolve().parents[2] / "logs" / "delete_debug.log"
+_DELETE_DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+_delete_debug_logger = logging.getLogger("delete_debug")
+if not _delete_debug_logger.handlers:
+    _delete_debug_logger.setLevel(logging.DEBUG)
+    _delete_debug_handler = logging.FileHandler(_DELETE_DEBUG_LOG_PATH, encoding="utf-8")
+    _delete_debug_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    _delete_debug_logger.addHandler(_delete_debug_handler)
+    _delete_debug_logger.propagate = False
+
+
+def _log_delete_debug(msg: str) -> None:
+    """[一時デバッグ] コンソール(print)と logs/delete_debug.log の両方に同じ内容を出力する。"""
+    print(msg)
+    _delete_debug_logger.debug(msg)
 
 
 # ===== 設定 =====
@@ -68,15 +91,23 @@ def secure_listing_space_for_account(account, item_ids):
 
     try:
         idx = 0
+        batch_no = 0
         while idx < len(item_ids):
 
+            batch_no += 1
             batch = item_ids[idx: idx + BATCH_SIZE]
 
-            result = delete_items_from_ebay_batch(account, batch)
+            result = delete_items_from_ebay_batch(account, batch, batch_no=batch_no)
 
+            # ===== [一時デバッグ] delete_items_from_ebay_batch の戻り値をそのまま出力 =====
+            _log_delete_debug("[DELETE DEBUG]")
+            _log_delete_debug(f"account={account} batch_no={batch_no}")
+            _log_delete_debug(f"requested_item_ids={batch}")
+            _log_delete_debug(f"result={result!r}")
 
             if not isinstance(result, dict):
-                print(f"⚠️ {account}: API異常")
+                _log_delete_debug(f"⚠️ {account}: API異常")
+                _log_delete_debug(f"[DELETE DEBUG] account={account} batch_no={batch_no} result型異常のためbreak: type={type(result)!r}")
                 break
 
             res_list = result.get("results") or []
@@ -85,6 +116,26 @@ def secure_listing_space_for_account(account, item_ids):
             for r in res_list:
                 if r.get("success"):
                     ok_ids.append(str(r.get("item_id")))
+
+            # ===== [一時デバッグ] このバッチで何件確保できたか／できなかった理由 =====
+            _log_delete_debug(
+                "[DELETE DEBUG] "
+                f"account={account} batch_no={batch_no} "
+                f"requested={len(batch)} "
+                f"deleted={len(ok_ids)} "
+                f"success={result.get('success')} "
+                f"error_code={result.get('error_code')} "
+                f"error_message={result.get('error_message') or result.get('message')} "
+                f"raw_response={result.get('raw_response')!r} "
+                f"results={res_list!r}"
+            )
+
+            if not ok_ids:
+                _log_delete_debug(
+                    f"[DELETE DEBUG] account={account} batch_no={batch_no} このバッチはdeleted=0件。"
+                    f"success={result.get('success')} のため成功扱いのitemが無かったか、"
+                    f"resultsキー自体が無い(no_token/parse_error等)ことが原因です。"
+                )
 
             # ===== DB更新 =====
             if ok_ids:
@@ -112,6 +163,16 @@ def secure_listing_space_for_account(account, item_ids):
                 secured += len(ok_ids)
 
             idx += BATCH_SIZE
+
+        # ===== [一時デバッグ] 最終結果サマリー(actual_count==0の場合に理由が追えるように) =====
+        if secured == 0:
+            _log_delete_debug(
+                f"[DELETE DEBUG] account={account} requested_total={len(item_ids)} batch_count={batch_no} "
+                f"actual_count=0 (delete_items_from_ebay_batch が1件も success を返しませんでした。"
+                f"logs/delete_debug.log の同一account/batch_noの result= / error_code= を確認してください)"
+            )
+        else:
+            _log_delete_debug(f"[DELETE DEBUG] account={account} actual_count={secured} (requested_total={len(item_ids)}, batch_count={batch_no})")
 
         return account, secured
 

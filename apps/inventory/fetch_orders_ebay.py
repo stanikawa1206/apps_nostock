@@ -1,7 +1,10 @@
 # apps/inventory/fetch_orders_ebay.py
 
 import csv
+import json
+import logging
 import os
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 import sys
 from datetime import datetime
@@ -29,6 +32,60 @@ from apps.common.utils import USD_JPY_RATE, get_sql_server_connection
 _ACCESS_CONN_STR = r"Driver={Microsoft Access Driver (*.mdb, *.accdb)};DBQ=Y:\ヤフオクDB.accdb;"
 _JST = timezone(timedelta(hours=9))
 _rate_cache: dict = {"value": None, "expires": 0.0}
+
+
+# --------------------------------------------------
+# ロギング設定
+# --------------------------------------------------
+# 過去に print() が Windows コンソールへの書き込み(WriteConsoleW)でブロックし、
+# メインループ全体が停止する障害が発生したため、コンソール出力には依存しない。
+# ログはファイルのみに出力する（安全側・最小構成）。
+_LOG_DIR = _PROJECT_ROOT / "logs"
+_LOG_FILE = _LOG_DIR / "fetch_orders_ebay.log"
+_HEARTBEAT_FILE = _LOG_DIR / "fetch_orders_ebay.heartbeat.json"
+
+
+def _setup_logging() -> logging.Logger:
+    logger = logging.getLogger("fetch_orders_ebay")
+    if logger.handlers:
+        return logger
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    try:
+        _LOG_DIR.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(
+            str(_LOG_FILE), maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
+        )
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+        ))
+        logger.addHandler(handler)
+    except Exception:
+        # ファイルログの初期化自体に失敗しても、コンソールへはフォールバックしない
+        # （コンソール書き込みブロックの再発を避けるため）。ログなしで処理を継続する。
+        logger.addHandler(logging.NullHandler())
+    return logger
+
+
+log = _setup_logging()
+
+
+def _update_heartbeat(**kwargs) -> None:
+    """稼働監視用の最終時刻を記録する（last_loop_start / last_api_access /
+    last_db_commit / last_success）。書き込みに失敗しても処理は継続する。"""
+    try:
+        data = {}
+        if _HEARTBEAT_FILE.exists():
+            try:
+                data = json.loads(_HEARTBEAT_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                data = {}
+        data.update(kwargs)
+        tmp = _HEARTBEAT_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(_HEARTBEAT_FILE)
+    except Exception:
+        log.warning("heartbeat書き込みに失敗しました", exc_info=True)
 
 # ==== LINE Messaging API トークン ====
 _LINE_TOKEN_TAKAFUMI = "fsrkRPiEQ5Lyb/vV2NSbNeI9CeT5nkjIFvUrh5H2k+Ubi06UaZob4kRlh5ox/+q+Mt7ahfkb4BX/0PSYAaisFT/qSeCsHHjl1p095GRmJKOT7K8u0O+AEr8VO9oV4ShIEX2Yd5RMbICIpkJzvwc2kgdB04t89/1O/w1cDnyilFU="
@@ -75,35 +132,99 @@ def _get_usd_jpy_rate() -> float:
         rate = r.json()["chart"]["result"][0]["meta"]["regularMarketPrice"]
         _rate_cache["value"] = rate
         _rate_cache["expires"] = now_ts + 300  # 5分キャッシュ
-        print(f"  USD/JPY: {rate}")
+        log.info(f"USD/JPY: {rate}")
         return rate
     except Exception as e:
-        print(f"  [WARN] 為替レート取得失敗: {e}")
+        log.warning(f"為替レート取得失敗: {e}", exc_info=True)
         return _rate_cache["value"] or USD_JPY_RATE
 
 
 # --------------------------------------------------
 # vendor情報取得（仕入先名・仕入値）
 # --------------------------------------------------
-def _get_vendor_info(vendor_item_id: str):
+_DEADLOCK_SQLSTATE = "40001"
+_VENDOR_INFO_MAX_ATTEMPTS = 3
+_VENDOR_INFO_BACKOFF_SECONDS = (0.5, 1, 2)
+
+
+def _get_vendor_info(vendor_item_id: str, order_id: str = None, ebay_id: str = None):
+    """
+    trx.vendor_item から仕入先名・仕入値を取得する。
+
+    SQL Serverのデッドロック(SQLSTATE 40001)が発生した場合のみ、
+    短い待機を挟んで最大3回まで再試行する。デッドロック以外のエラーは
+    再試行せずそのまま呼び出し元へ伝播させる。
+    order_id / ebay_id はログに文脈を残すためだけの任意引数（呼び出し側で
+    分かっていれば渡す。クエリ自体には使わない）。
+    """
     if not vendor_item_id:
         return None, None
-    cn = get_sql_server_connection()
+
+    for attempt in range(1, _VENDOR_INFO_MAX_ATTEMPTS + 1):
+        cn = get_sql_server_connection()
+        try:
+            cur = cn.cursor()
+            cur.execute(
+                "SELECT vendor_name, price FROM trx.vendor_item WHERE vendor_item_id = ?",
+                vendor_item_id,
+            )
+            row = cur.fetchone()
+            return (row[0], row[1]) if row else (None, None)
+        except pyodbc.Error as e:
+            sqlstate = e.args[0] if e.args else ""
+            is_deadlock = (sqlstate == _DEADLOCK_SQLSTATE)
+            is_last_attempt = (attempt >= _VENDOR_INFO_MAX_ATTEMPTS)
+
+            if is_deadlock and not is_last_attempt:
+                wait_sec = _VENDOR_INFO_BACKOFF_SECONDS[attempt - 1]
+                log.warning(
+                    f"[_get_vendor_info] デッドロック検知・再試行 "
+                    f"(attempt {attempt}/{_VENDOR_INFO_MAX_ATTEMPTS}) "
+                    f"order_id={order_id} ebay_id={ebay_id} sku={vendor_item_id} "
+                    f"- {wait_sec}秒後リトライ: {e}"
+                )
+                time.sleep(wait_sec)
+                continue
+
+            if is_deadlock:
+                log.error(
+                    f"[_get_vendor_info] デッドロック再試行上限({_VENDOR_INFO_MAX_ATTEMPTS}回)到達 "
+                    f"order_id={order_id} ebay_id={ebay_id} sku={vendor_item_id}: {e}",
+                    exc_info=True,
+                )
+            raise
+        finally:
+            cn.close()
+
+    return None, None
+
+
+# --------------------------------------------------
+# Access「日常」テーブル: 存在確認・INSERT
+# --------------------------------------------------
+def _access_order_exists(order_id: str, vendor_item_id: str) -> bool:
+    """
+    Access「日常」テーブルに対象注文（order_id + vendor_item_id(SKU)）が
+    すでに存在するかを確認する。_insert_access_nichinichi()の重複防止と、
+    run()側の「SQL Serverには存在するがAccessには存在しない」検出の両方で使う。
+    """
+    conn = None
     try:
-        cur = cn.cursor()
+        conn = pyodbc.connect(_ACCESS_CONN_STR)
+        cur = conn.cursor()
         cur.execute(
-            "SELECT vendor_name, price FROM trx.vendor_item WHERE vendor_item_id = ?",
-            vendor_item_id,
+            "SELECT COUNT(*) FROM 日常 WHERE amazon注文番号=? AND 注文ID=?",
+            order_id or "", vendor_item_id or ""
         )
-        row = cur.fetchone()
-        return (row[0], row[1]) if row else (None, None)
+        return cur.fetchone()[0] > 0
     finally:
-        cn.close()
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
-# --------------------------------------------------
-# Access「日常」テーブルへ1レコードINSERT
-# --------------------------------------------------
 def _insert_access_nichinichi(
     account: str,
     order_id: str,
@@ -118,7 +239,15 @@ def _insert_access_nichinichi(
     rate: float,
     vendor_name,
     cost_jpy,
-):
+) -> bool:
+    """
+    Access「日常」テーブルへ1レコードINSERTする。
+
+    戻り値: 呼び出し完了後にAccess側へレコードが存在していればTrue
+    （すでに存在していてスキップした場合を含む）、INSERTに失敗した場合はFalse。
+    冪等: 同じ注文（order_id + vendor_item_id）で複数回呼び出しても、
+    実際にINSERTされるのは1回だけ。
+    """
     # order_date → JST変換後、日付部分のみ（時刻不要）
     try:
         dt_utc = datetime.fromisoformat(order_date_str.replace("Z", "+00:00"))
@@ -150,18 +279,21 @@ def _insert_access_nichinichi(
     else:
         shipping = INTL_SHIPPING_JPY
 
+    log.info(
+        f"[Access] Access登録開始: order_id={order_id} ebay_id={ebay_id} sku={vendor_item_id}"
+    )
+
+    # 重複チェック（同一注文の2重登録防止。冪等性の担保はここで行う）
+    if _access_order_exists(order_id, vendor_item_id):
+        log.info(
+            f"[Access] SKIP: already exists order_id={order_id} ebay_id={ebay_id} sku={vendor_item_id}"
+        )
+        return True
+
+    conn = None
     try:
         conn = pyodbc.connect(_ACCESS_CONN_STR)
         cur  = conn.cursor()
-
-        # 重複チェック（同一注文の2重登録防止）
-        cur.execute(
-            "SELECT COUNT(*) FROM 日常 WHERE amazon注文番号=? AND 注文ID=?",
-            order_id or "", vendor_item_id or ""
-        )
-        if cur.fetchone()[0] > 0:
-            print(f"    [Access] SKIP: already exists ({order_id} / {vendor_item_id})")
-            return
 
         cur.execute("""
             INSERT INTO 日常 (
@@ -192,20 +324,30 @@ def _insert_access_nichinichi(
             Decimal(str(shipping)),
         )
         conn.commit()
-        print(f"    [Access] INSERT OK: sale={sale_price} fee={fee} ship={shipping}")
+        log.info(
+            f"[Access] Access登録成功: order_id={order_id} ebay_id={ebay_id} "
+            f"sku={vendor_item_id} sale={sale_price} fee={fee} ship={shipping}"
+        )
+        return True
     except Exception as e:
-        print(f"    [Access] INSERT ERROR: {e}")
+        log.error(
+            f"[Access] Access登録失敗: order_id={order_id} ebay_id={ebay_id} "
+            f"sku={vendor_item_id} error={e}",
+            exc_info=True,
+        )
+        return False
     finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def fetch_paid_orders(account: str, start: datetime, end: datetime):
     token = get_access_token_new(account)
     if not token:
-        print("  ❌ access token 取得失敗")
+        log.error("access token 取得失敗")
         return []
 
     url = "https://api.ebay.com/sell/fulfillment/v1/order"
@@ -234,8 +376,7 @@ def fetch_paid_orders(account: str, start: datetime, end: datetime):
         r = requests.get(url, headers=headers, params=params, timeout=30)
 
         if r.status_code != 200:
-            print(f"  ❌ API error: {r.status_code}")
-            print(r.text)
+            log.error(f"API error: {r.status_code} {r.text}")
             break
 
         orders = r.json().get("orders", [])
@@ -244,7 +385,7 @@ def fetch_paid_orders(account: str, start: datetime, end: datetime):
 
         all_orders.extend(orders)
 
-        print(f"  取得件数: {len(all_orders)}")
+        log.info(f"取得件数: {len(all_orders)}")
 
         # 次ページへ
         offset += limit
@@ -379,7 +520,7 @@ def send_new_order_mail(
         server.login(sender_email, password)
         server.send_message(msg)
 
-    print("Mail sent OK")
+    log.info("Mail sent OK")
 
 
 # --------------------------------------------------
@@ -414,9 +555,9 @@ def send_line_broadcast(token: str, text: str = None, image_url: str = None):
         return
     r = requests.post(url, headers=headers, json={"messages": messages}, timeout=10)
     if r.status_code == 200:
-        print("  LINE broadcast OK")
+        log.info("LINE broadcast OK")
     else:
-        print(f"  [WARN] LINE broadcast failed: {r.status_code} {r.text}")
+        log.warning(f"LINE broadcast failed: {r.status_code} {r.text}")
 
 
 def send_line_new_order(
@@ -450,7 +591,7 @@ def send_line_new_order(
                 image_url = None
                 vendor_name = None
         except Exception as e:
-            print(f"  [WARN] LINE: 画像URL取得失敗: {e}")
+            log.warning(f"LINE: 画像URL取得失敗: {e}", exc_info=True)
  
         ebay_url = f"https://www.ebay.com/itm/{ebay_id}" if ebay_id else ""
 
@@ -489,7 +630,7 @@ def send_line_new_order(
 
 
     except Exception as e:
-        print(f"  [WARN] LINE通知エラー: {e}")
+        log.warning(f"LINE通知エラー: {e}", exc_info=True)
 
 
 # --------------------------------------------------
@@ -559,7 +700,7 @@ def _wait_for_ship_by_date(account: str, order_id: str, ebay_id: str, max_retrie
                 timeout=30,
             )
             if r.status_code != 200:
-                print(f"  [wait {attempt}/{max_retries}] API error {r.status_code}")
+                log.warning(f"[wait {attempt}/{max_retries}] API error {r.status_code}")
                 time.sleep(10)
                 continue
 
@@ -580,18 +721,18 @@ def _wait_for_ship_by_date(account: str, order_id: str, ebay_id: str, max_retrie
                     sbd = li.get("lineItemFulfillmentInstructions", {}).get("shipByDate")
                     if sbd:
                         ship_by_date = sbd
-                        print(f"  [wait {attempt}] shipByDate OK: {ship_by_date}")
+                        log.info(f"[wait {attempt}] shipByDate OK: {ship_by_date}")
                         return ship_by_date, country, is_ag
                     break
 
-            print(f"  [wait {attempt}/{max_retries}] shipByDate 未設定 - 10秒後リトライ")
+            log.info(f"[wait {attempt}/{max_retries}] shipByDate 未設定 - 10秒後リトライ")
 
         except Exception as e:
-            print(f"  [wait {attempt}] error: {e}")
+            log.warning(f"[wait {attempt}] error: {e}", exc_info=True)
 
         time.sleep(10)
 
-    print(f"  [wait timeout] 5分経過 - NULL で登録")
+    log.warning("[wait timeout] 5分経過 - NULL で登録")
     return ship_by_date, country, is_ag
 
 
@@ -599,10 +740,10 @@ def _wait_for_ship_by_date(account: str, order_id: str, ebay_id: str, max_retrie
 # メイン処理
 # --------------------------------------------------
 def run():
-    import traceback
-    print(f"START: {datetime.now():%Y-%m-%d %H:%M:%S}")
+    log.info(f"START: {datetime.now():%Y-%m-%d %H:%M:%S}")
 
     while True:
+        _update_heartbeat(last_loop_start=datetime.now(timezone.utc).isoformat())
         try:
             now = datetime.now(timezone.utc)
 
@@ -611,10 +752,10 @@ def run():
 
             if max_date is None:
                 start_time = now - timedelta(days=720)
-                print(f"  [初回] フル取得: {start_time:%Y-%m-%d} ～ {now:%Y-%m-%d %H:%M:%S} UTC")
+                log.info(f"[初回] フル取得: {start_time:%Y-%m-%d} ～ {now:%Y-%m-%d %H:%M:%S} UTC")
             else:
                 start_time = max_date - timedelta(minutes=5)
-                print(f"  [差分] {start_time:%Y-%m-%d %H:%M:%S} ～ {now:%Y-%m-%d %H:%M:%S} UTC")
+                log.info(f"[差分] {start_time:%Y-%m-%d %H:%M:%S} ～ {now:%Y-%m-%d %H:%M:%S} UTC")
 
             cn = get_sql_server_connection()
             cur = cn.cursor()
@@ -622,8 +763,9 @@ def run():
             rate = _get_usd_jpy_rate()
 
             for account in load_accounts():
-                print(f"[ACCOUNT] {account}")
+                log.info(f"[ACCOUNT] {account}")
                 orders = fetch_paid_orders(account, start_time, now)
+                _update_heartbeat(last_api_access=datetime.now(timezone.utc).isoformat())
 
                 if not orders:
                     continue
@@ -658,12 +800,73 @@ def run():
                         item_title     = item.get("title")
                         initial_ship_by = item.get("lineItemFulfillmentInstructions", {}).get("shipByDate")
 
-                        # 重複チェック
+                        # 重複チェック（trx.ebay_ordersに存在するか）
                         cur.execute("""
-                            SELECT 1 FROM trx.ebay_orders
+                            SELECT account, order_date, price_usd, country, is_ag,
+                                   item_title, ship_by_date
+                            FROM trx.ebay_orders
                             WHERE order_id = ? AND ebay_id = ?
                         """, order_id, ebay_id)
-                        if cur.fetchone():
+                        existing = cur.fetchone()
+
+                        if existing:
+                            # trx.ebay_ordersには存在する。
+                            # Accessにも存在するなら本当に処理済み → 何もしない。
+                            # Accessに存在しないなら、以前の実行がAccess登録の手前で
+                            # 中断した状態（今回のバグの再発パターン）なので、
+                            # メール・LINE・サンキュー・trx.ebay_ordersへの再INSERTは
+                            # 一切行わず、Access登録だけを再試行する。
+                            if _access_order_exists(order_id, vendor_item_id):
+                                continue
+
+                            log.warning(
+                                f"[RECONCILE] SQL Serverには存在するがAccessに存在しない注文を検出: "
+                                f"order_id={order_id} ebay_id={ebay_id} sku={vendor_item_id}"
+                            )
+
+                            (existing_account, existing_order_date, existing_price_usd,
+                             existing_country, existing_is_ag, existing_item_title,
+                             existing_ship_by) = existing
+
+                            try:
+                                vendor_name, cost_jpy = _get_vendor_info(
+                                    vendor_item_id, order_id=order_id, ebay_id=ebay_id
+                                )
+                            except Exception as e:
+                                log.error(
+                                    f"[RECONCILE] vendor情報取得に失敗したため今回は見送ります"
+                                    f"（次回ループで再試行）: order_id={order_id} ebay_id={ebay_id} "
+                                    f"sku={vendor_item_id} error={e}",
+                                    exc_info=True,
+                                )
+                                continue
+
+                            reconcile_ok = _insert_access_nichinichi(
+                                account=existing_account,
+                                order_id=order_id,
+                                vendor_item_id=vendor_item_id,
+                                ebay_id=ebay_id,
+                                item_title=existing_item_title,
+                                order_date_str=(
+                                    existing_order_date.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+                                    if existing_order_date else None
+                                ),
+                                ship_by_date_str=(
+                                    existing_ship_by.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+                                    if existing_ship_by else None
+                                ),
+                                is_ag=int(existing_is_ag) if existing_is_ag is not None else 0,
+                                country=existing_country,
+                                price_usd=float(existing_price_usd) if existing_price_usd is not None else 0.0,
+                                rate=rate,
+                                vendor_name=vendor_name,
+                                cost_jpy=cost_jpy,
+                            )
+                            log.info(
+                                f"[RECONCILE] Accessのみ再登録した結果: "
+                                f"order_id={order_id} ebay_id={ebay_id} sku={vendor_item_id} "
+                                f"result={'成功' if reconcile_ok else '失敗'}"
+                            )
                             continue
 
                         # ① メール送信（最優先・即時）
@@ -689,12 +892,23 @@ def run():
 
                         # ② バイヤーへサンキューメッセージ（注文単位で1回のみ）
                         if not thankyou_sent:
-                            send_buyer_thankyou_message(
+                            thankyou_result = send_buyer_thankyou_message(
                                 account=account,
                                 order_id=order_id,
                                 buyer_username=buyer,
                                 ebay_id=ebay_id,
+                                logger=log,
                             )
+                            if thankyou_result.get("success"):
+                                log.info(
+                                    f"[ThankYou] 呼び出し結果: 成功 order_id={order_id} "
+                                    f"ebay_id={ebay_id} buyer={buyer}"
+                                )
+                            else:
+                                log.warning(
+                                    f"[ThankYou] 呼び出し結果: 失敗 order_id={order_id} "
+                                    f"ebay_id={ebay_id} buyer={buyer} detail={thankyou_result}"
+                                )
                             thankyou_sent = True
 
                         # ④ shipByDate 待機
@@ -705,7 +919,7 @@ def run():
                             country      = initial_country
                             is_ag        = initial_is_ag
                         else:
-                            print(f"  shipByDate 未設定 - 最大5分待機")
+                            log.info("shipByDate 未設定 - 最大5分待機")
                             ship_by_date, country, is_ag = _wait_for_ship_by_date(
                                 account, order_id, ebay_id
                             )
@@ -716,10 +930,28 @@ def run():
                             if is_ag == 0 and initial_is_ag == 1:
                                 is_ag = initial_is_ag
 
-                        print(f"  NEW ORDER: {order_id} / {vendor_item_id} "
-                              f"/ is_ag={is_ag} / ship_by={ship_by_date}")
+                        log.info(f"NEW ORDER: {order_id} / {vendor_item_id} "
+                                 f"/ is_ag={is_ag} / ship_by={ship_by_date}")
 
-                        # ⑤ SQL Server INSERT
+                        # ⑤ vendor情報取得（trx.ebay_orders INSERTより前に取得する。
+                        # デッドロック再試行の上限に達して失敗しても、trx.ebay_ordersへの
+                        # 登録自体は止めない。vendor_nameがNoneのままAccess登録を試み、
+                        # それも失敗すれば次回ループの[RECONCILE]経路が拾う）
+                        try:
+                            vendor_name, cost_jpy = _get_vendor_info(
+                                vendor_item_id, order_id=order_id, ebay_id=ebay_id
+                            )
+                            vendor_info_ok = True
+                        except Exception as e:
+                            log.error(
+                                f"[VENDOR] vendor情報取得に失敗しました（再試行上限到達）: "
+                                f"order_id={order_id} ebay_id={ebay_id} sku={vendor_item_id} error={e}",
+                                exc_info=True,
+                            )
+                            vendor_name, cost_jpy = None, None
+                            vendor_info_ok = False
+
+                        # ⑥ SQL Server INSERT
                         cur.execute("""
                             INSERT INTO trx.ebay_orders (
                                 account, order_id, buyer, ebay_id, vendor_item_id,
@@ -733,31 +965,45 @@ def run():
                             item_title, ship_by_date,
                         )
                         cn.commit()
-
-                        # ⑥ Access「日常」テーブルへ書き込み
-                        vendor_name, cost_jpy = _get_vendor_info(vendor_item_id)
-                        _insert_access_nichinichi(
-                            account=account,
-                            order_id=order_id,
-                            vendor_item_id=vendor_item_id,
-                            ebay_id=ebay_id,
-                            item_title=item_title,
-                            order_date_str=order_date,
-                            ship_by_date_str=ship_by_date,
-                            is_ag=is_ag,
-                            country=country,
-                            price_usd=float(price_usd),
-                            rate=rate,
-                            vendor_name=vendor_name,
-                            cost_jpy=cost_jpy,
+                        _update_heartbeat(last_db_commit=datetime.now(timezone.utc).isoformat())
+                        log.info(
+                            f"[SQL] SQL Server登録成功: order_id={order_id} ebay_id={ebay_id} "
+                            f"sku={vendor_item_id}"
                         )
+
+                        # ⑦ Access「日常」テーブルへ書き込み
+                        # vendor情報取得に失敗した場合は今回はAccess登録を見送る
+                        # （trx.ebay_ordersには登録済みなので、次回ループの[RECONCILE]経路が
+                        # Access登録だけを改めて再試行する）
+                        if vendor_info_ok:
+                            _insert_access_nichinichi(
+                                account=account,
+                                order_id=order_id,
+                                vendor_item_id=vendor_item_id,
+                                ebay_id=ebay_id,
+                                item_title=item_title,
+                                order_date_str=order_date,
+                                ship_by_date_str=ship_by_date,
+                                is_ag=is_ag,
+                                country=country,
+                                price_usd=float(price_usd),
+                                rate=rate,
+                                vendor_name=vendor_name,
+                                cost_jpy=cost_jpy,
+                            )
+                        else:
+                            log.warning(
+                                f"[Access] vendor情報未取得のためAccess登録を見送りました。"
+                                f"次回ループで再試行されます: order_id={order_id} ebay_id={ebay_id} "
+                                f"sku={vendor_item_id}"
+                            )
 
             cur.close()
             cn.close()
+            _update_heartbeat(last_success=datetime.now(timezone.utc).isoformat())
 
         except Exception as e:
-            print(f"[ERROR] {e}")
-            traceback.print_exc()
+            log.error(f"run()ループでエラー: {e}", exc_info=True)
 
         time.sleep(10)
 

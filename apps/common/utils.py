@@ -86,6 +86,7 @@ def compute_cost_range_jpy_from_usd_range(
         if effective_mode == "GA":
             ship = Decimal(DOMESTIC_SHIPPING_JPY)
             duty = Decimal("0")
+            # duty = Decimal(str(DUTY_RATE))
         elif effective_mode == "DDP":
             ship = Decimal(INTL_SHIPPING_JPY)
             duty = Decimal(str(DUTY_RATE))
@@ -215,6 +216,7 @@ def compute_start_price_usd(
 
         ship_ga = Decimal(DOMESTIC_SHIPPING_JPY)
         duty_ga = Decimal("0")
+        # duty_ga = Decimal(str(DUTY_RATE)) # 26/07/22 変更
         usd_ga = calc_usd(ship_ga, duty_ga)
 
         ship_ddp = Decimal(INTL_SHIPPING_JPY)
@@ -794,10 +796,15 @@ def send_mail(
     receiver_email: str | None = None,
     password: str | None = None,
     attachments: list[str] | None = None,
-):
+) -> bool:
     """
     シンプルなテキストメール送信（添付対応）。
     - attachments: 添付したいファイルパスのリスト。未指定(None)なら本文のみ。
+
+    戻り値: 送信に成功したら True、失敗したら False。
+    認証情報未設定・SMTP通信失敗など、どの理由であっても例外は投げず、
+    呼び出し元を巻き込んでクラッシュさせないようにしている
+    （タイムアウトも設定し、通信不調時に無期限にハングしないようにしている）。
     """
 
     sender_email = sender_email or os.getenv("GMAIL_SENDER_EMAIL")
@@ -805,7 +812,8 @@ def send_mail(
     password = password or os.getenv("GMAIL_APP_PASSWORD")
 
     if not sender_email or not password:
-        raise RuntimeError("GMAIL_SENDER_EMAIL / GMAIL_APP_PASSWORD が未設定です")
+        print("❌ メール送信失敗: GMAIL_SENDER_EMAIL / GMAIL_APP_PASSWORD が未設定です", flush=True)
+        return False
 
     msg = MIMEMultipart()
     msg["From"] = sender_email
@@ -836,13 +844,16 @@ def send_mail(
             msg.attach(part)
 
     try:
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+        # timeoutを指定し、通信不調時に無期限にハングしないようにする
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as server:
             server.starttls()
             server.login(sender_email, password)
             server.send_message(msg)
         print("📧 完了通知メールを送信しました", flush=True)
+        return True
     except Exception as e:
         print(f"❌ メール送信失敗: {e}", flush=True)
+        return False
 
 
 
