@@ -22,11 +22,13 @@ make_listing_space.py は「出品枠を確保するだけ」を行う。
 """
 
 import calendar
+import logging
 import math
 import subprocess
 import sys
 import os
 import time
+import traceback
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -43,6 +45,23 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from apps.common.utils import get_sql_server_connection
+
+# ======================
+# 停止地点特定用トレースログ（次回再現時の切り分け専用。挙動は一切変更しない）
+# ======================
+_PM_TRACE_LOG_PATH = PROJECT_ROOT / "logs" / "publish_manager.log"
+_pm_trace_logger = logging.getLogger("publish_manager_trace")
+if not _pm_trace_logger.handlers:
+    _pm_trace_logger.setLevel(logging.DEBUG)
+    _pm_trace_handler = logging.FileHandler(_PM_TRACE_LOG_PATH, encoding="utf-8")
+    _pm_trace_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    _pm_trace_logger.addHandler(_pm_trace_handler)
+    _pm_trace_logger.propagate = False
+
+
+def _pm_log(msg: str) -> None:
+    """[トレース専用] logs/publish_manager.log にタイムスタンプ付きで記録する。"""
+    _pm_trace_logger.debug(msg)
 
 # 出品枠確保は make_listing_space.py の責務。
 # publish_manager は「1アカウント分だけ確保する」公開関数を直接importして呼び出す。
@@ -119,13 +138,17 @@ def clear_close_status(account):
     他のアカウントの状態には影響しない。
     """
 
+    _pm_log(f"[clear_close_status] start account={account}")
     conn = get_sql_server_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(SQL_CLEAR_CLOSE_STATUS_FOR_ACCOUNT, account)
+            _pm_log(f"[clear_close_status] rowcount={cur.rowcount} account={account}")
         conn.commit()
+        _pm_log(f"[clear_close_status] commit success account={account}")
     finally:
         conn.close()
+        _pm_log(f"[clear_close_status] end account={account}")
 
 
 SQL_MARK_ACCOUNT_DONE = """
@@ -572,6 +595,8 @@ def get_limit_accounts():
             for row in rows
         ]
 
+        _pm_log(f"[get_limit_accounts] result={limit_accounts}")
+
         return limit_accounts
 
     finally:
@@ -633,12 +658,16 @@ def request_listing_space(account, remaining):
     （LIMIT状態を解除してよいかの判断は呼び出し元(handle_limit_account)が行う）。
     """
 
+    _pm_log(f"[request_listing_space] start account={account} remaining={remaining}")
+
     print(f"🟡 {account} {remaining}件分の出品枠を確保します")
 
     actual_count = run_make_listing_space(account, remaining)
 
     if actual_count > 0:
         print(f"🟢 {account} {actual_count}件分の出品枠を確保しました")
+
+    _pm_log(f"[request_listing_space] end account={account} actual_count={actual_count}")
 
     return actual_count
 
@@ -671,6 +700,8 @@ def handle_limit_account(account_info):
     account = account_info["account"]
     active_workers = account_info["active_workers"]
 
+    _pm_log(f"[handle_limit_account] start account={account} active_workers={active_workers}")
+
     # ===== 二重削除防止: 全workerが終了するまで待つ =====
     # 同一アカウントは複数VPS(最大MAX_PARALLEL_PC台)が並行して処理し得る。
     # ある1台がLIMITでclose_reason='LIMIT'を書いた直後は、まだ他のVPSが
@@ -687,6 +718,8 @@ def handle_limit_account(account_info):
 
     try:
         remaining = calculate_remaining_count(account_info)
+
+        _pm_log(f"[calculate_remaining_count] account={account} remaining={remaining} post_target={account_info['post_target']}")
 
         print(f"🟡 {account} LIMITを検知しました")
         print(f"   post_target={account_info['post_target']}")
@@ -717,11 +750,14 @@ def handle_limit_account(account_info):
         # 次の監視サイクルが改めてremainingを計算して対応する。
         # publish_ebayは待機中なので、解除後に自動で出品を再開する。
         clear_close_status(account)
+        _pm_log(f"[handle_limit_account] clear_close_status returned account={account}")
         print(f"🟢 {account} LIMIT状態を解除しました")
 
     except Exception as e:
         # remaining計算・出品枠確保・LIMIT解除のどこで例外が起きても、ここで吸収する。
         # LIMIT状態はクリアせず（＝安全側）維持し、他アカウントの監視は継続させる。
+        _pm_log(f"[handle_limit_account] EXCEPTION account={account} error={e}")
+        _pm_log(traceback.format_exc())
         print(f"❌ {account} 出品枠確保処理中に例外が発生しました: error={e}")
 
 
@@ -771,6 +807,8 @@ def auto_fix_done_accounts():
     必ずこの補正を先に行ってから行う。
     """
 
+    _pm_log("[auto_fix_done_accounts] start")
+
     conn = get_sql_server_connection()
     try:
         with conn.cursor() as cur:
@@ -783,6 +821,8 @@ def auto_fix_done_accounts():
     for account in fixed_accounts:
         print("INFO")
         print(f"Auto fixed DONE account: {account}")
+
+    _pm_log(f"[auto_fix_done_accounts] end fixed_accounts={fixed_accounts}")
 
     return fixed_accounts
 
@@ -805,12 +845,16 @@ def is_all_accounts_finished():
     close_reason だけを信用せず、今日の実績を反映した状態で判定する。
     """
 
+    _pm_log("[is_all_accounts_finished] start")
+
     conn = get_sql_server_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(SQL_SELECT_UNFINISHED_ACCOUNT)
             row = cur.fetchone()
-        return row is None
+        result = row is None
+        _pm_log(f"[is_all_accounts_finished] result={result}")
+        return result
     finally:
         conn.close()
 
@@ -841,7 +885,14 @@ def monitor_limit_accounts():
     いなければ）、publish_managerの役目は終わったとみなしループを抜ける。
     """
 
+    _pm_log("[monitor_limit_accounts] start")
+
+    loop_no = 0
+
     while True:
+        loop_no += 1
+        _pm_log(f"[monitor_limit_accounts] loop start loop_no={loop_no}")
+
         # LIMITアカウント取得
         limit_accounts = get_limit_accounts()
 
@@ -861,9 +912,11 @@ def monitor_limit_accounts():
             print("INFO")
             print("All publish accounts finished.")
             print("publish_manager exiting.")
+            _pm_log(f"[monitor_limit_accounts] all accounts finished, breaking loop loop_no={loop_no}")
             break
 
         # 少し待ってからもう一度確認する
+        _pm_log(f"[monitor_limit_accounts] sleep before loop_no={loop_no} seconds={LIMIT_CHECK_INTERVAL_SECONDS}")
         time.sleep(LIMIT_CHECK_INTERVAL_SECONDS)
 
 
@@ -904,6 +957,8 @@ def main():
     # LIMIT状態を解除すれば自動的に出品を再開する。
     monitor_limit_accounts()
 
+    _pm_log("[main] completed normally")
+
     print("=" * 40)
     print("=== publish_manager.py 正常終了 ===")
     print("=" * 40)
@@ -913,6 +968,8 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
+        _pm_log(f"[__main__] UNCAUGHT EXCEPTION: {e}")
+        _pm_log(traceback.format_exc())
         print("=" * 40)
         print("=== publish_manager.py 異常終了 ===")
         print(f"例外内容: {e}")

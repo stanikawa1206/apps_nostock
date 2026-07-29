@@ -3,6 +3,7 @@
 import sys
 import subprocess
 import time
+import logging
 from pathlib import Path
 from datetime import datetime, timedelta
 from datetime import time as clock_time
@@ -28,6 +29,19 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from apps.common.utils import send_mail, get_sql_server_connection
+
+# ======================
+# 子スクリプトのreturncode/stdout/stderr記録用トレースログ
+# （次回再現時の停止地点特定専用。挙動は一切変更しない）
+# ======================
+_SUBPROCESS_TRACE_LOG_PATH = PROJECT_ROOT / "logs" / "daily_check_subprocess.log"
+_subprocess_trace_logger = logging.getLogger("daily_check_subprocess_trace")
+if not _subprocess_trace_logger.handlers:
+    _subprocess_trace_logger.setLevel(logging.DEBUG)
+    _subprocess_trace_handler = logging.FileHandler(_SUBPROCESS_TRACE_LOG_PATH, encoding="utf-8")
+    _subprocess_trace_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    _subprocess_trace_logger.addHandler(_subprocess_trace_handler)
+    _subprocess_trace_logger.propagate = False
 
 # ======================
 # 設定
@@ -132,6 +146,12 @@ def run_script(path: Path) -> tuple[int, str]:
         print(result.stdout, end="")
     if result.stderr:
         print(result.stderr, end="", file=sys.stderr)
+
+    # 次回再現時に停止地点を特定できるよう、returncode/stdout/stderrをファイルへ記録する
+    # （daily_check側のコンソール出力はどこにも永続化されないため、ここでのみ確認可能）
+    _subprocess_trace_logger.debug(f"[run_script] script={path.name} returncode={result.returncode}")
+    _subprocess_trace_logger.debug(f"[run_script] script={path.name} stdout=\n{result.stdout}")
+    _subprocess_trace_logger.debug(f"[run_script] script={path.name} stderr=\n{result.stderr}")
 
     if result.returncode == 0:
         print(f"=== ✅ {path.name} 正常終了 ===")
