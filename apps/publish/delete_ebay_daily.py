@@ -28,7 +28,7 @@ from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from apps.adapters.mercari_item_status import handle_listing_delete
 
-from apps.common.utils import get_sql_server_connection
+from apps.common.utils import get_sql_server_connection, log_listings_change
 
 from apps.adapters.ebay_api import (
     delete_items_from_ebay_batch,
@@ -280,15 +280,21 @@ def delete_items_from_ebay_and_sql(account: str, item_ids):
                 # ★ listing_id単位で論理削除
                 with conn.cursor() as cur:
                     for iid in res["ok_ids"]:
+                        delete_reason = "定期削除"
                         cur.execute("""
                             UPDATE trx.listings
                                SET is_deleted = 1,
                                    deleted_at = SYSDATETIME(),
                                    delete_reason = ?  -- ★ここを追加
+                             OUTPUT deleted.vendor_item_id
                              WHERE account = ?
                                AND listing_id = ?
                                AND ISNULL(is_deleted, 0) = 0
-                        """, ("定期削除", account, iid)) # ★引数に "定期削除" を追加
+                        """, (delete_reason, account, iid)) # ★引数に "定期削除" を追加
+                        row = cur.fetchone()
+                        log_listings_change(
+                            "DELETE", account, iid, row[0] if row else None, delete_reason
+                        )
                 conn.commit()
 
                 deleted_total += len(res["ok_ids"])

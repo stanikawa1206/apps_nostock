@@ -22,7 +22,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from apps.common.utils import get_sql_server_connection
+from apps.common.utils import get_sql_server_connection, log_listings_change
 from apps.adapters.ebay_api import delete_items_from_ebay_batch
 
 # ===== テスト設定 =====
@@ -148,17 +148,20 @@ def delete_rows_from_sql(account: str, item_ids):
         for iid in item_ids:
             cur.execute("""
                 UPDATE [trx].[listings]
-                SET 
+                SET
                     [is_deleted] = 1,
                     [deleted_at] = SYSDATETIME(),
                     [delete_reason] = N'特別'
-                WHERE 
-                    [account] = ? 
+                OUTPUT deleted.listing_id
+                WHERE
+                    [account] = ?
                     AND [vendor_item_id] = ?
                     and [is_deleted] = 0
             """, account, iid)
-            if cur.rowcount:
-                deleted += cur.rowcount
+            rows = cur.fetchall()
+            deleted += len(rows)
+            for row in rows:
+                log_listings_change("DELETE", account, row[0], iid, "特別")
         conn.commit()
     return deleted
 

@@ -19,3 +19,8 @@ apps/snapshot/Venesplo/
 worker_*.log
 __pycache__/
 *.pyc
+
+# runtime-generated artifacts (実行時生成物)
+worker_status_*.txt
+*_status.txt
+apps/etc/output/

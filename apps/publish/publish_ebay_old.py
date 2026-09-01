@@ -55,6 +55,7 @@ from apps.common.utils import (
     contains_risky_word,
     build_driver,
     get_openai_client,
+    log_listings_change,
 )
 
 from apps.adapters.ebay_api import ApiHandledError, ListingLimitError, post_one_item
@@ -730,6 +731,7 @@ VALUES
 """, (listing_id, account_name, vendor_item_id, vendor_name))
 
         conn.commit()
+        log_listings_change("INSERT", account_name, listing_id, vendor_item_id)
     finally:
         conn.close()
 

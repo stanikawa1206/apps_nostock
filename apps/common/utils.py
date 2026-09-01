@@ -19,9 +19,12 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 import time
+import logging
 import unicodedata
 import smtplib
+from pathlib import Path
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional, Tuple, Dict, List
 
@@ -644,6 +647,40 @@ Japanese description:
         )
 
         return (fb + "\n\n" + _IMPORT_NOTICE + _regional_note).replace("\n", "<br>")
+
+
+# =========================
+# trx.listings 更新ログ（INSERT / 論理削除 / 復活を一元記録）
+# =========================
+_TRX_LISTINGS_LOG_PATH = Path(__file__).resolve().parents[2] / "logs" / "trx_listings_changes.log"
+_trx_listings_change_logger = logging.getLogger("trx_listings_changes")
+if not _trx_listings_change_logger.handlers:
+    _trx_listings_change_logger.setLevel(logging.INFO)
+    _trx_listings_change_handler = logging.FileHandler(_TRX_LISTINGS_LOG_PATH, encoding="utf-8")
+    _trx_listings_change_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    _trx_listings_change_logger.addHandler(_trx_listings_change_handler)
+    _trx_listings_change_logger.propagate = False
+
+
+def log_listings_change(action: str, account, listing_id, vendor_item_id, delete_reason=None) -> None:
+    """
+    trx.listings への INSERT / 論理削除(is_deleted=1) / 復活(is_deleted=0) を
+    logs/trx_listings_changes.log に一元記録する（プログラム別ではなく共通ログ）。
+
+    action: "INSERT" | "DELETE" | "RESTORE"
+    delete_reason は action="DELETE" のときのみ出力する。
+    Program名は呼び出し元スクリプトを自動判定する（sys.argv[0]のファイル名）。
+    """
+    program_name = Path(sys.argv[0]).name if sys.argv and sys.argv[0] else "?"
+
+    msg = (
+        f"Program={program_name} Action={action} "
+        f"Account={account} ListingID={listing_id} VendorItemID={vendor_item_id}"
+    )
+    if action == "DELETE":
+        msg += f" DeleteReason={delete_reason}"
+
+    _trx_listings_change_logger.info(msg)
 
 
 # =========================

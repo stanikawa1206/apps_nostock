@@ -41,7 +41,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 # utils.py の get_sql_server_connection を使用
-from apps.common.utils import get_sql_server_connection, translate_ja_to_en_deepl
+from apps.common.utils import get_sql_server_connection, translate_ja_to_en_deepl, log_listings_change
 
 MAX_LISTINGS = 5
 
@@ -195,6 +195,7 @@ VALUES (
         cur = conn.cursor()
         cur.execute(sql, (listing_id, asin))
         conn.commit()
+        log_listings_change("INSERT", "JOOM", listing_id, asin)
 
 # =========================
 # 1 ASIN 処理

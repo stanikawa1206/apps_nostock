@@ -30,7 +30,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from apps.common.utils import get_sql_server_connection
+from apps.common.utils import get_sql_server_connection, log_listings_change
 from apps.adapters.ebay_api import delete_items_from_ebay_batch
 
 # =========================================================
@@ -38,7 +38,7 @@ from apps.adapters.ebay_api import delete_items_from_ebay_batch
 # =========================================================
 
 TARGET_SKUS_RAW = """
-m62734336906
+m77256282137
 """
 
 TARGET_SKUS = [
@@ -311,6 +311,9 @@ def delete_rows_from_sql(account: str, pairs):
                 AND listing_id = ?
                 AND is_deleted = 0
             """, account, listing_id)
+
+            if cur.rowcount:
+                log_listings_change("DELETE", account, listing_id, vendor_item_id, "特別")
 
             deleted += cur.rowcount
 

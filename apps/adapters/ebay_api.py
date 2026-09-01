@@ -62,7 +62,7 @@ from urllib.parse import urlencode, urlparse, parse_qsl, urlunparse, quote
 import xml.etree.ElementTree as ET
 
 # 自前ユーティリティ（pyodbc統一）
-from apps.common.utils import get_sql_server_connection
+from apps.common.utils import get_sql_server_connection, log_listings_change
 
 from dotenv import load_dotenv, find_dotenv
 load_dotenv(find_dotenv())
@@ -971,9 +971,12 @@ def update_ebay_price_rest(
                     error_at = SYSDATETIME(),
                     deleted_at = SYSDATETIME(),
                     is_deleted = 1
+                OUTPUT deleted.account, deleted.listing_id
                 WHERE vendor_item_id = ?
                 AND is_deleted = 0
             """, error_message, "IP違反", sku)
+            for row in cursor.fetchall():
+                log_listings_change("DELETE", row[0], row[1], sku, "IP違反")
 
             conn.commit()
             conn.close()
@@ -1005,6 +1008,7 @@ def update_ebay_price_rest(
                 error_at = SYSDATETIME(),
                 deleted_at = SYSDATETIME(),
                 is_deleted = 1
+            OUTPUT deleted.account, deleted.listing_id
             WHERE vendor_item_id = ?
             AND is_deleted=0
             """,
@@ -1012,6 +1016,8 @@ def update_ebay_price_rest(
             "価格更新失敗",  # delete_reason に入る値
             sku
         )
+        for row in cursor.fetchall():
+            log_listings_change("DELETE", row[0], row[1], sku, "価格更新失敗")
 
         conn.commit()
         conn.close()
@@ -1090,9 +1096,12 @@ def update_ebay_price_rest(
                     error_at = SYSDATETIME(),
                     deleted_at = SYSDATETIME(),
                     is_deleted = 1
+                OUTPUT deleted.account, deleted.listing_id
                 WHERE vendor_item_id = ?
                 AND is_deleted = 0
             """, error_message, "IP違反", sku)
+            for row in cursor.fetchall():
+                log_listings_change("DELETE", row[0], row[1], sku, "IP違反")
 
             conn.commit()
             conn.close()
@@ -1107,19 +1116,22 @@ def update_ebay_price_rest(
         cursor.execute(
             """
             UPDATE trx.listings
-            SET 
-                error_message = ?, 
+            SET
+                error_message = ?,
                 delete_reason = ?,  -- 追加
-                error_at = SYSDATETIME(), 
+                error_at = SYSDATETIME(),
                 deleted_at = SYSDATETIME(),
                 is_deleted = 1
+            OUTPUT deleted.account, deleted.listing_id
             WHERE vendor_item_id = ?
             AND is_deleted = 0
             """,
-            error_message, 
+            error_message,
             "価格更新失敗",  # delete_reason に入る値
             sku
         )
+        for row in cursor.fetchall():
+            log_listings_change("DELETE", row[0], row[1], sku, "価格更新失敗")
         conn.commit()
         conn.close()
 

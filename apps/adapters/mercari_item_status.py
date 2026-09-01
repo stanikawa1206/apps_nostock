@@ -18,6 +18,7 @@ from datetime import datetime, timezone, timedelta
 # ★ eBay削除API ← 波線エラーの正体はコレ
 from apps.adapters.ebay_api import delete_item_from_ebay
 from apps.adapters.ebay_api import update_ebay_price_rest
+from apps.common.utils import log_listings_change
 
 # ================================
 # 例外定義  
@@ -564,6 +565,7 @@ def handle_listing_delete(
                    AND account = ?
             """, (datetime.now(),reason, listing_id, account))
         conn.commit()
+        log_listings_change("DELETE", account, listing_id, vendor_item_id, reason)
 
 
 

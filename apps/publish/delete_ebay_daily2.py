@@ -2,7 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from apps.common.utils import get_sql_server_connection
+from apps.common.utils import get_sql_server_connection, log_listings_change
 from apps.adapters.ebay_api import delete_items_from_ebay_batch
 
 
@@ -82,15 +82,21 @@ def delete_for_account(account, item_ids):
             if ok_ids:
                 with conn.cursor() as cur:
                     for iid in ok_ids:
+                        delete_reason = "定期削除(watch0)"
                         cur.execute("""
                             UPDATE trx.listings
                                SET is_deleted = 1,
                                    deleted_at = SYSDATETIME(),
                                    delete_reason = ?
+                             OUTPUT deleted.vendor_item_id
                              WHERE account = ?
                                AND listing_id = ?
                                AND ISNULL(is_deleted, 0) = 0
-                        """, ("定期削除(watch0)", account, iid))
+                        """, (delete_reason, account, iid))
+                        row = cur.fetchone()
+                        log_listings_change(
+                            "DELETE", account, iid, row[0] if row else None, delete_reason
+                        )
 
                         # ★ ここ追加
                         cur.execute("""
