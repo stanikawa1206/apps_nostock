@@ -673,43 +673,11 @@ def request_listing_space(account, remaining):
 
 
 def handle_limit_account(account_info):
-    """
-    LIMITになった1アカウント分の対応を行う。
-
-    流れ:
-      0. まず active_workers（このアカウントを今処理中のworker数）を確認する。
-         1台以上残っている場合は、まだ他のVPS/ローカルがこのアカウントを処理中で
-         あり、これからLIMITで止まる可能性があるため、ここでは何もせず
-         次回の監視サイクルに委ねる（二重削除防止。詳細は下記コメント参照）。
-      1. active_workers == 0 になって初めて、今日あと何件出品したいか計算する
-      2. remaining <= 0 なら、すでに目標達成済みなので削除はせずDONEに確定させる
-         （NULLに戻してworkerの再取得に委ねると、複数worker並行投稿による
-         target超過とLIMIT検知が重なった場合にLIMITのまま固まり得るため、
-         ここで直接DONEにする。万一ここを通らなくても
-         auto_fix_done_accounts() が同じ条件で補正する）
-      3. remaining > 0 なら、必要な件数分だけ古い出品を削除して空きを作る
-      4. 空きができた場合（1件以上確保できた場合）だけLIMIT状態を解除する
-         （publish_ebayは待機中なので、解除後に自動で出品を再開する）
-      5. 途中のどこで何が起きても（DBエラー・make_listing_space側の例外など）、
-         この関数の中で例外を吸収し、LIMIT状態は維持したまま次の監視サイクルに委ねる。
-         1件の処理で失敗しても、他のアカウントの監視は止めない
-         （この関数を呼び出す handle_limit_accounts / monitor_limit_accounts 側には
-         例外を伝播させない）。
-    """
-
     account = account_info["account"]
     active_workers = account_info["active_workers"]
 
     _pm_log(f"[handle_limit_account] start account={account} active_workers={active_workers}")
 
-    # ===== 二重削除防止: 全workerが終了するまで待つ =====
-    # 同一アカウントは複数VPS(最大MAX_PARALLEL_PC台)が並行して処理し得る。
-    # ある1台がLIMITでclose_reason='LIMIT'を書いた直後は、まだ他のVPSが
-    # そのアカウントを処理中で、少し遅れて同じくLIMITになることがある。
-    # ここでactive_workers>0のまま出品枠確保を始めてしまうと、
-    # 「1台目のLIMITで確保→2台目が遅れてLIMITを検知して再度確保」という
-    # 二重削除が起こり得るため、全workerがこのアカウントの処理を終えて
-    # active_workers==0になるまでは何もせず待つ。
     if active_workers > 0:
         print(f"🕒 {account} はまだ{active_workers}台が処理中のため、出品枠確保を待機します")
         return
@@ -726,36 +694,22 @@ def handle_limit_account(account_info):
         print(f"   today_posted={account_info['post_target'] - remaining}")
         print(f"   remaining={remaining}")
 
-        # すでに当日の目標数に達している（remaining<=0）なら、削除は不要。
-        # ここでNULLに戻してworkerの再取得に委ねると、複数workerの並行投稿で
-        # post_targetを超過しつつeBay側の実制限にも同時にヒットした場合、
-        # workerがループ先頭のsent_now>=post_targetチェックへ戻れず
-        # LIMITのまま固まる恐れがある（再度LIMITでbreakする可能性があるため）。
-        # そのためworkerの再取得を待たず、ここで直接DONEに確定させる。
         if remaining <= 0:
             mark_account_done(account)
             print(f"🟢 {account} 目標達成済みのためDONEにしました")
             return
 
-        # 必要な件数分だけ古い出品を削除して空きを作る
         actual_count = request_listing_space(account, remaining)
 
         if actual_count <= 0:
-            # 空きができていないので、LIMIT状態はそのまま維持して次の監視へ進む。
             print(f"⚠️ {account} 出品枠を確保できませんでした。LIMIT状態を維持します。")
             return
 
-        # 1件以上確保できていれば（要求件数に届かなくても）LIMIT状態を解除してよい。
-        # まだ足りない分は、publish_ebay再開後に再びLIMITになった時点で
-        # 次の監視サイクルが改めてremainingを計算して対応する。
-        # publish_ebayは待機中なので、解除後に自動で出品を再開する。
         clear_close_status(account)
         _pm_log(f"[handle_limit_account] clear_close_status returned account={account}")
         print(f"🟢 {account} LIMIT状態を解除しました")
 
     except Exception as e:
-        # remaining計算・出品枠確保・LIMIT解除のどこで例外が起きても、ここで吸収する。
-        # LIMIT状態はクリアせず（＝安全側）維持し、他アカウントの監視は継続させる。
         _pm_log(f"[handle_limit_account] EXCEPTION account={account} error={e}")
         _pm_log(traceback.format_exc())
         print(f"❌ {account} 出品枠確保処理中に例外が発生しました: error={e}")

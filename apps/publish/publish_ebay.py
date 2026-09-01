@@ -2114,8 +2114,8 @@ def fetch_next_account_and_lock(conn, current_pc):
     SET account = Target.account
     OUTPUT inserted.account, Target.preset_group, Target.post_target
     FROM mst.execute_pcs AS P
-    CROSS APPLY (
-        SELECT TOP 1 
+    OUTER APPLY (
+        SELECT TOP 1
             A.account, A.preset_group, A.post_target
         FROM mst.ebay_accounts A
         LEFT JOIN (
@@ -2145,7 +2145,9 @@ def fetch_next_account_and_lock(conn, current_pc):
         cur.execute(sql, (MAX_PARALLEL_PC, current_pc))
         row = cur.fetchone()
         conn.commit()
-        if row:
+        # OUTER APPLY化により、候補が無い場合も1行返るが account 等は NULL になる
+        # （このUPDATE自体でexecute_pcs.accountがNULLへ確実にクリアされる）。
+        if row and row[0]:
             return Account(account=row[0].strip(), preset_group=row[1].strip(), post_target=row[2])
     return None
 
@@ -2585,9 +2587,21 @@ def main():
                     except FatalRendererError:
                         # [publish_ebay 全体の終了③] ブラウザ(renderer)側の致命的クラッシュ。
                         # 個別アカウント終了ではなく、プロセスそのものを即座に異常終了させる
-                        # （sys.exit(1)。sys.exit(10)の正常終了とは区別されるコード）。
-                        print("[FATAL] Renderer crash → exit 1")
-                        sys.exit(1)
+                        # （exit code 1。sys.exit(10)の正常終了とは区別されるコード）。
+                        #
+                        # あえて sys.exit(1) を使わない: sys.exit は SystemExit を発生させ、
+                        # このtryを囲むfinally（page/context/browser.close(), driver.quit()等）
+                        # を通過してからプロセスが終了する。しかしこの経路に来る時点で
+                        # Chrome/ChromeDriverは応答不能になっている可能性が高く、それらの
+                        # close()/quit()が壊れたRendererとの同期通信でハングし、プロセスが
+                        # 終了できなくなることが実際に確認されている
+                        # （publish_ebay_loop.shの15秒後リスタートに制御が戻らない）。
+                        # os._exit(1) はfinallyを一切実行せずOSレベルで即座にプロセスを終える
+                        # ため、この異常経路に限りcleanup処理への依存を断ち切る。
+                        print("[FATAL] Renderer crash → exit 1", flush=True)
+                        sys.stdout.flush()
+                        sys.stderr.flush()
+                        os._exit(1)
 
                     except Exception as e:
                         print(f" [ERROR] SKU={sku} 処理中に例外発生: {e}")

@@ -10,6 +10,9 @@ __pycache__/
 
 logs/
 
+# claude code local permission overrides (personal/machine-specific)
+.claude/settings.local.json
+
 .history/
 *.deb
 
@@ -24,3 +27,6 @@ __pycache__/
 worker_status_*.txt
 *_status.txt
 apps/etc/output/
+
+# claude code machine-specific settings (bypassPermissions等はmain共有しない)
+.claude/settings.json

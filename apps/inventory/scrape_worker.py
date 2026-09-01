@@ -48,10 +48,23 @@ BASE_DIR = os.environ.get("WORKER_STATUS_DIR", os.getcwd())
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 
-# ログ出力（PID単位）
+# ログ出力（PID単位）＋ 画面にも同時出力（tee）
+class _Tee:
+    def __init__(self, *streams):
+        self._streams = streams
+
+    def write(self, data):
+        for s in self._streams:
+            s.write(data)
+
+    def flush(self):
+        for s in self._streams:
+            s.flush()
+
 log_path = os.path.join(LOG_DIR, f"worker_{WORKER_PID}.log")
-sys.stdout = open(log_path, "a", encoding="utf-8", buffering=1)
-sys.stderr = sys.stdout
+_log_file = open(log_path, "a", encoding="utf-8", buffering=1)
+sys.stdout = _Tee(sys.stdout, _log_file)
+sys.stderr = _Tee(sys.stderr, _log_file)
 
 # ステータスファイル
 STATUS_FILE = os.path.join(BASE_DIR, f"worker_status_{WORKER_PID}.txt")
