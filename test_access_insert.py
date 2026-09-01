@@ -1,5 +1,5 @@
-"""
-テスト：Y:\ヤフオクDB.accdb の「日常」テーブルへ1レコードINSERT
+r"""
+テスト：\\MOUSE\My Documents\日常せどり\ヤフオクDB.accdb の「日常」テーブルへ1レコードINSERT
 """
 
 import requests
@@ -29,7 +29,8 @@ print(f"売価           : {price} 円  (120 USD × {rate})")
 # 3. Access 接続
 # ============================================================
 conn = pyodbc.connect(
-    r"Driver={Microsoft Access Driver (*.mdb, *.accdb)};DBQ=Y:\ヤフオクDB.accdb;"
+    r"Driver={Microsoft Access Driver (*.mdb, *.accdb)};"
+    r"DBQ=\\MOUSE\My Documents\日常せどり\ヤフオクDB.accdb;"
 )
 print("Access 接続    : OK")
 

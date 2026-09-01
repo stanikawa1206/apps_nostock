@@ -12,6 +12,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 import json
 import traceback
 import subprocess
+import threading
 import requests
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape as xml_escape
@@ -20,8 +21,22 @@ from datetime import datetime
 from flask import Flask, render_template_string, jsonify, request
 from apps.common.utils import get_sql_server_connection
 from apps.adapters.ebay_api import get_access_token_new
+# 値引き交渉の分類・金額計算ロジックはfetch_messages_ebay.pyと共通化し、
+# ここ(AI返信生成)でも同じ判定結果(category/価格/値引き率)を利用する
+from apps.etc.fetch_messages_ebay import (
+    analyze_price_negotiation,
+    _get_listing_price,
+    CATEGORY_GUIDE,
+    compute_negotiation_display,
+)
 
 EBAY_TRADING_URL = "https://api.ebay.com/ws/api.dll"
+
+# 自動更新の間隔（秒）。ここを変えるだけでフロント側の自動更新周期も変わる。
+AUTO_REFRESH_SECONDS = 600
+
+# /api/fetch の多重実行防止用ロック（自動更新と手動更新、複数タブからの同時実行をまとめて防ぐ）
+_fetch_lock = threading.Lock()
 
 app = Flask(__name__)
 
@@ -142,6 +157,13 @@ HTML = """<!DOCTYPE html>
   .thread-item:hover { background: #f5f9ff; }
   .thread-item.active { background: #e8f0fe; border-left: 3px solid #3665f3; }
 
+  /* 注文あり（購入後メッセージ）：一覧で一目で分かるよう背景と左バーで強調する。
+     .active より後ろに、かつクラス2つ以上の指定で書くことで選択中でも色を維持する */
+  .thread-item.has-order         { background: #fce4ec; border-left: 4px solid #d81b60; }
+  .thread-item.has-order:hover   { background: #f8bbd0; }
+  .thread-item.has-order.active  { background: #f8bbd0; border-left: 4px solid #ad1457; }
+  .thread-item.has-order .thread-sender { color: #ad1457; }
+
   .thread-info { flex: 1; min-width: 0; }
   .thread-sender {
     font-size: 14px; font-weight: 600; color: #191919;
@@ -163,6 +185,10 @@ HTML = """<!DOCTYPE html>
   .badge-unreplied { background: #fff3e0; color: #e65100;  font-size: 10px; padding: 2px 6px; border-radius: 10px; }
   .badge-replied   { background: #f0f0f0; color: #767676;  font-size: 10px; padding: 2px 6px; border-radius: 10px; }
   .badge-skip      { background: #e8eaf6; color: #5c6bc0;  font-size: 10px; padding: 2px 6px; border-radius: 10px; }
+  .badge-order     {
+    background: #d81b60; color: #fff; font-size: 10px; font-weight: 700;
+    padding: 2px 6px; border-radius: 10px; white-space: nowrap;
+  }
 
   /* 右：チャット */
   .chat-area {
@@ -185,6 +211,18 @@ HTML = """<!DOCTYPE html>
     background: #e8eaf6; color: #5c6bc0;
     font-size: 11px; padding: 2px 8px; border-radius: 10px; font-weight: 400;
   }
+  .badge-order-header {
+    background: #d81b60; color: #fff;
+    font-size: 12px; padding: 3px 10px; border-radius: 10px; font-weight: 700;
+  }
+  /* 購入後メッセージであることを見落とさないためのバナー（チャットヘッダー直下） */
+  .order-banner {
+    background: #fce4ec; border-bottom: 2px solid #d81b60;
+    color: #ad1457; font-size: 13px; font-weight: 700;
+    padding: 8px 20px; flex-shrink: 0;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .order-banner .order-banner-sub { font-size: 12px; font-weight: 400; color: #880e4f; }
   .header-btn {
     padding: 4px 10px; border-radius: 4px; font-size: 11px;
     font-weight: 600; cursor: pointer; border: none;
@@ -283,12 +321,14 @@ HTML = """<!DOCTYPE html>
   }
   .reply-right { flex: 1; display: flex; flex-direction: column; gap: 8px; }
   .reply-panel label { font-size: 12px; color: #767676; }
-  .reply-instruction {
+  .reply-japanese, .reply-instruction {
     width: 100%; border: 1px solid #ddd; border-radius: 8px;
-    padding: 8px 10px; font-size: 13px; resize: vertical; min-height: 200px;
-    font-family: inherit; line-height: 1.5; flex: 1;
+    padding: 8px 10px; font-size: 13px; resize: vertical;
+    font-family: inherit; line-height: 1.5;
   }
-  .reply-instruction:focus { outline: none; border-color: #3665f3; }
+  .reply-japanese:focus, .reply-instruction:focus { outline: none; border-color: #3665f3; }
+  .reply-japanese { min-height: 140px; flex: 2; }
+  .reply-instruction { min-height: 80px; flex: 1; }
   .btn-regenerate {
     background: #f0f4ff; color: #3665f3; border: 1px solid #c5d3f8;
     padding: 7px 12px; border-radius: 8px; font-size: 13px;
@@ -386,19 +426,36 @@ HTML = """<!DOCTYPE html>
 
 <script>
 const REPLY_TEMPLATES = {
+  // 具体的なBuyer希望価格がある場合(0%以上20%未満)。$[BUYER_OFFER]相当の金額は
+  // 呼び出し側でfmtMoney(negotiation_offered_price)を渡して埋め込む。
   price_negotiation: {
-    reply_en: "Thank you for your interest. We only offer small discounts, and large reductions are unlikely. If you are seriously considering purchasing, please let me know your best offer.",
-    reply_ja: "ご興味をお持ちいただきありがとうございます。小幅な値引きのみ対応しており、大幅な値下げは難しい状況です。ご購入をご検討でしたら、ご希望の金額をお知らせください。"
+    reply_en: (price) => `${price} would require my boss's approval.\\n\\nIf it gets approved, can you promise to complete the purchase?\\n\\nAlso, please note that we aim to ship within 5 business days after payment. I would appreciate it if you could confirm that this shipping timeframe is acceptable as well.\\n\\nIf you can confirm both, I'll do my best to negotiate with my boss for you.`,
+    reply_ja: (price) => `${price}については上司の承認が必要となります。承認が下りた場合、必ずご購入いただけますでしょうか。また当店ではお支払い後5営業日以内の発送を目指しておりますので、この発送までの期間についてもご了承いただけるかあわせてご確認をお願いいたします。両方をご確認いただけましたら、上司との交渉に最善を尽くします。`
+  },
+  // 具体的な希望価格がないvague("best price?"等)の場合。price_negotiationと同じcategoryだが
+  // 金額を埋め込めないため、希望額を尋ねる専用文を使う。
+  price_negotiation_vague: {
+    reply_en: "Thank you for your interest.\\n\\nPlease let me know the price you have in mind, and I will see what I can do.",
+    reply_ja: "ご興味をお持ちいただきありがとうございます。ご希望の金額をお知らせいただけましたら、可能な範囲で検討いたします。"
   },
   price_negotiation_large: {
-    reply_en: "Thank you for your offer. I appreciate your interest, but this discount is too large to consider. I'm open to reasonable offers, but this one is far below the item's value. Thank you for your understanding.",
-    reply_ja: "ご提案ありがとうございます。ご興味をお持ちいただき嬉しく思いますが、この値引き幅は大きすぎてお受けすることができません。合理的なご提案であれば検討いたしますが、今回のご提案は商品の価値を大きく下回っております。ご理解のほどよろしくお願いいたします。"
+    reply_en: "Thank you for your offer.\\n\\nWe generally only consider discounts of around 10% from the listed price, so unfortunately, your offer is lower than what we can accept.\\n\\nIf you are still interested, please feel free to make an offer closer to that range.",
+    reply_ja: "ご提案ありがとうございます。当店では基本的に、出品価格から約10%程度の値引きのみを検討しております。誠に恐れ入りますが、いただいたご提案はお受けできる範囲を下回っております。もしまだご興味をお持ちでしたら、その範囲に近いご提案を改めてお願いいたします。"
   },
   rude_offer: {
-    reply_en: "Thank you for your message. Unfortunately, the offer you proposed is significantly below our acceptable range. Therefore, we are completely unable to accommodate any discount requests for this transaction.",
-    reply_ja: "メッセージありがとうございます。ご提案いただいた金額は当店の許容範囲を大きく下回っております。そのため、今回のお取引では値引きのご要望には一切お答えできかねます。"
+    reply_en: "Thank you for your message.\\n\\nWe do not continue negotiations with buyers who initially offer 50% or less of the listed price.\\n\\nThank you for your understanding.",
+    reply_ja: "メッセージありがとうございます。当店では、最初のご提案が出品価格の50%以下となるお客様とは値引き交渉を継続しておりません。ご理解のほどよろしくお願いいたします。"
+  },
+  // 真贋確認のみのメッセージ("Is this authentic?"「本物ですか？」等)用の定型文。
+  // 現時点では自動送信の対象外(定型文セットのみ)。
+  authenticity_check: {
+    reply_en: "Yes, this item is authentic and genuine.\\n\\nThank you for your question.",
+    reply_ja: "はい、こちらの商品は本物・正規品です。ご質問ありがとうございます。"
   }
 };
+
+// 自動更新の間隔（秒）。サーバー側の AUTO_REFRESH_SECONDS 定数から注入される。
+const AUTO_REFRESH_SECONDS = {{ auto_refresh_seconds }};
 
 let threads = [];
 let activeThread = null;
@@ -408,6 +465,11 @@ let currentReplyMessageId = null;
 let currentFilter  = 'unreplied';
 let currentAccount = '';
 let selectedModel  = 'gpt-4o-mini';
+
+// /api/fetch の実行中Promiseを共有し、手動・自動どちらから来ても多重実行させない
+let fetchInFlightPromise = null;
+// 自動更新タイマーの再入防止（fetchが60秒を超えて実行中の場合に次のtickを無視する）
+let autoTimerBusy = false;
 
 function selectModel(model) {
   selectedModel = model;
@@ -482,7 +544,12 @@ function renderThreads() {
         + `<div class="thread-thumb-initials" style="display:none">${(t.sender_id||'?').slice(0,2).toUpperCase()}</div>`
       : `<div class="thread-thumb-initials">${(t.sender_id||'?').slice(0,2).toUpperCase()}</div>`;
 
-    return `<div class="thread-item${isActive ? ' active' : ''}" data-status="${t.thread_status}"
+    // 注文あり（購入後メッセージ）：行全体の色分け＋バッジで購入前と明確に区別する
+    const hasOrder   = !!t.has_order;
+    const orderBadge = hasOrder ? '<span class="badge-order">🛒 注文あり</span>' : '';
+
+    return `<div class="thread-item${hasOrder ? ' has-order' : ''}${isActive ? ' active' : ''}"
+              data-status="${t.thread_status}" data-order="${hasOrder ? 1 : 0}"
               onclick="openThread('${t.sender_id}','${t.listing_id}', this)">
       ${thumb}
       <div class="thread-info">
@@ -492,6 +559,7 @@ function renderThreads() {
       </div>
       <div class="thread-meta">
         <span class="thread-time">${time}</span>
+        ${orderBadge}
         ${badge}
       </div>
     </div>`;
@@ -509,6 +577,138 @@ async function loadThreads() {
 function moveToNextUnreplied() {
   const items = document.querySelectorAll('.thread-item[data-status="未返信"]');
   if (items.length > 0) items[0].click();
+}
+
+function safeMsgText(str) {
+  return (str || '')
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/\\n/g, '<br>');
+}
+
+// 現在開いているスレッドの新着メッセージだけをチャット欄に追記する。
+// 返信パネル（日本語/指示/英語返信案の入力中テキスト）や選択状態には一切触れない。
+async function refreshActiveThreadMessages() {
+  if (!activeThreadSenderId || !activeThreadItemId || !activeThread) return;
+
+  let data;
+  try {
+    const res = await fetch('/api/thread/' + encodeURIComponent(activeThreadSenderId) + '/' + encodeURIComponent(activeThreadItemId));
+    data = await res.json();
+  } catch (e) {
+    console.error('auto refresh (thread) error:', e);
+    return;
+  }
+  if (!data || data.error) return;
+
+  const known = new Set((activeThread.messages || []).map(m => m.message_id));
+  const newMsgs = (data.messages || []).filter(m => !known.has(m.message_id));
+  if (newMsgs.length === 0) return;
+
+  const container = document.getElementById('chat-messages');
+  if (!container) return;
+
+  const wasNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 60;
+
+  const html = newMsgs.map(m => {
+    const side = m.direction === 'seller' ? 'seller' : 'buyer';
+    const time = m.received_at ? new Date(m.received_at).toLocaleString('ja-JP', {timeZone:'Asia/Tokyo'}) : '';
+    const translation = m.body_text_ja ? `<div class="msg-translation">🇯🇵 ${m.body_text_ja}</div>` : '';
+    return `<div class="msg-row ${side}">
+      <div class="msg-bubble">${safeMsgText(m.body_text)}</div>
+      ${translation}
+      <div class="msg-time">${time}</div>
+    </div>`;
+  }).join('');
+
+  container.insertAdjacentHTML('beforeend', html);
+  activeThread.messages = data.messages;
+  if (wasNearBottom) container.scrollTop = container.scrollHeight;
+}
+
+// /api/fetch を呼び出す。既にリクエストが進行中ならそれをそのまま共有し、
+// 手動更新・自動更新のどちらから呼ばれても多重にサブプロセスが走らないようにする。
+function doFetch() {
+  if (fetchInFlightPromise) return fetchInFlightPromise;
+  fetchInFlightPromise = fetch('/api/fetch', { method: 'POST' })
+    .then(res => res.json())
+    .catch(e => ({ ok: false, error: String(e) }))
+    .finally(() => { fetchInFlightPromise = null; });
+  return fetchInFlightPromise;
+}
+
+// fetch成功後の画面反映。スレッド一覧は軽量に再取得し、開いているスレッドがあれば
+// 新着メッセージだけを差分追記する（入力中の返信文・選択中スレッドはそのまま）。
+async function afterFetchRefresh() {
+  await loadThreads();
+  await refreshActiveThreadMessages();
+}
+
+// 自動更新タイマー本体。前回の実行が終わっていなければ何もしない。
+async function autoRefreshTick() {
+  if (autoTimerBusy) return;
+  autoTimerBusy = true;
+  try {
+    const data = await doFetch();
+    if (data && data.ok) {
+      await afterFetchRefresh();
+    }
+  } finally {
+    autoTimerBusy = false;
+  }
+}
+
+// --- 値引き交渉の「定型文がセットされました」通知テキスト生成 ---
+// サーバー(api_thread)側で既に計算済みの negotiation_* フィールド（GPT呼び出しなし、
+// 保存済みoffer_type/value/currencyからの再計算のみ）をそのまま使って文言を組み立てる。
+function fmtMoney(v) {
+  const n = Math.round(Number(v) * 100) / 100;
+  return Number.isInteger(n) ? `$${n}` : `$${n.toFixed(2)}`;
+}
+function fmtPercent(rate) {
+  return (rate * 100).toFixed(1) + '%';
+}
+function fmtPercentValue(v) {
+  const n = Math.round(Number(v) * 10) / 10;
+  return Number.isInteger(n) ? `${n}%` : `${n.toFixed(1)}%`;
+}
+function buildTemplateNoticeText(m) {
+  const base = '💬 定型文がセットされました';
+  if (!m) return base;
+
+  if (m.negotiation_reason === 'vague') {
+    return `${base}（値引き交渉・具体的な希望額なし）`;
+  }
+  if (m.negotiation_reason === 'currency_mismatch') {
+    return `${base}（通貨が異なるため値引き率は未判定）`;
+  }
+  if (m.negotiation_offered_price == null || m.negotiation_discount_rate == null) {
+    return `${base}（値引き率を算出できないため通常の値引き交渉として判定）`;
+  }
+
+  const price = fmtMoney(m.negotiation_offered_price);
+  const rate  = m.negotiation_discount_rate;
+  let severity = '';
+  if (m.negotiation_category === 'price_negotiation_large') severity = '・大幅値引き';
+  else if (m.negotiation_category === 'rude_offer')          severity = '・大幅な値引き要求';
+  const rateSuffix = `${fmtPercent(rate)}値引き${severity}`;
+
+  if (m.negotiation_offer_type === 'amount_off' && m.negotiation_value != null) {
+    const off = fmtMoney(m.negotiation_value);
+    return `${base}（${off}値引き → 希望価格 ${price} / ${rateSuffix}）`;
+  }
+  if (m.negotiation_offer_type === 'percent_off' && m.negotiation_value != null) {
+    const pctReq = fmtPercentValue(m.negotiation_value);
+    // percent_offはBuyer指定%と算出discount_rateが常に一致するため、無印(price_negotiation)の
+    // 場合は重複表記を避け、大幅値引き等の付加情報がある場合のみ値引き率も併記する
+    if (!severity) {
+      return `${base}（${pctReq}値引き → 希望価格 ${price}）`;
+    }
+    return `${base}（${pctReq}値引き → 希望価格 ${price} / ${rateSuffix}）`;
+  }
+  // absolute_price、またはその他の場合
+  return `${base}（希望価格 ${price} / ${rateSuffix}）`;
 }
 
 async function openThread(senderId, itemId, el) {
@@ -571,7 +771,9 @@ async function openThread(senderId, itemId, el) {
             <button class="btn-model active" id="btn-model-mini" onclick="selectModel('gpt-4o-mini')">GPT-4o-mini</button>
             <button class="btn-model" id="btn-model-full" onclick="selectModel('gpt-4o')">GPT-4o</button>
           </div>
-          <label>指示（任意）</label>
+          <label>日本語</label>
+          <textarea class="reply-japanese" id="reply-japanese" placeholder="例：土日は出荷担当がお休みなので、商品の状態については月曜日に確認してお知らせします。&#10;箱や書類はありませんが、梱包はしっかり行います。"></textarea>
+          <label>指示</label>
           <textarea class="reply-instruction" id="reply-instruction" placeholder="例：もっと丁寧に、値引き不可を強調して、短くして"></textarea>
           <button class="btn-regenerate" id="btn-regenerate" onclick="generateReply()">🤖 AI返信作成</button>
         </div>
@@ -583,7 +785,7 @@ async function openThread(senderId, itemId, el) {
       </div>
       <div class="reply-panel-footer">
         <button class="btn-skip-reply" onclick="skipReply()">対応不要</button>
-        <button class="btn-send-final" id="btn-send-final" onclick="sendReply()" disabled>送信 GO →</button>
+        <button class="btn-send-final" id="btn-send-final" onclick="sendReply()">送信 GO →</button>
       </div>
     </div>` : '';
 
@@ -596,11 +798,28 @@ async function openThread(senderId, itemId, el) {
     ? `<img class="header-thumb" src="${data.image_url1}" loading="lazy" onerror="this.style.display='none'">`
     : '';
 
+  // 注文有無（/api/thread が trx.ebay_orders から取得した既存データ。
+  // メッセージ画面からeBayの注文APIは呼ばない）
+  const orderInfo = data.order_info || { has_order: false };
+  const orderHeaderBadge = orderInfo.has_order
+    ? '<span class="badge-order-header">🛒 注文あり</span>' : '';
+  const orderDateText = orderInfo.last_order_date
+    ? new Date(orderInfo.last_order_date).toLocaleString('ja-JP', {timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'})
+    : '';
+  const orderIdsText = (orderInfo.order_ids && orderInfo.order_ids.length)
+    ? ' / 注文ID ' + orderInfo.order_ids.join(', ') : '';
+  const orderBannerHtml = orderInfo.has_order ? `
+    <div class="order-banner">
+      <span>🛒 注文あり — このバイヤーは本商品を購入済みです（購入後の問い合わせ）</span>
+      <span class="order-banner-sub">${orderInfo.order_count || 1}件${orderDateText ? ' / 最新注文 ' + orderDateText : ''}${orderIdsText}</span>
+    </div>` : '';
+
   area.innerHTML = `
     <div class="chat-header">
-      <div class="chat-header-sender"><span onclick="window.open('https://www.ebay.com/usr/${senderId}', '_blank')" style="cursor:pointer; text-decoration:underline;">${senderId}</span>${ebayBtn}${vendorBtn}</div>
+      <div class="chat-header-sender"><span onclick="window.open('https://www.ebay.com/usr/${senderId}', '_blank')" style="cursor:pointer; text-decoration:underline;">${senderId}</span>${orderHeaderBadge}${ebayBtn}${vendorBtn}</div>
       <div class="chat-header-item">${headerThumb}${thread ? (thread.item_title || thread.listing_id || '') : ''}</div>
     </div>
+    ${orderBannerHtml}
     <div class="chat-messages" id="chat-messages">${messagesHtml}</div>
     ${replyPanelHtml}
   `;
@@ -614,22 +833,39 @@ async function openThread(senderId, itemId, el) {
   const allMsgs = data.messages || [];
   const lastSellerIdx = allMsgs.reduce((idx, m, i) => m.direction === 'seller' ? i : idx, -1);
   const unrepliedBuyers = allMsgs.filter((m, i) => m.direction !== 'seller' && i > lastSellerIdx);
-  const CATEGORY_PRIORITY = ['rude_offer', 'price_negotiation_large', 'price_negotiation'];
+  const CATEGORY_PRIORITY = ['rude_offer', 'price_negotiation_large', 'price_negotiation', 'authenticity_check'];
   let templateKey = null;
+  let templateMsg = null;
   for (const key of CATEGORY_PRIORITY) {
-    if (unrepliedBuyers.some(m => m.category === key)) { templateKey = key; break; }
+    const found = unrepliedBuyers.find(m => m.category === key);
+    if (found) { templateKey = key; templateMsg = found; break; }
   }
-  if (templateKey && REPLY_TEMPLATES[templateKey]) {
-    const tpl = REPLY_TEMPLATES[templateKey];
-    document.getElementById('reply-en').value = tpl.reply_en;
-    document.getElementById('reply-ja').textContent = '🇯🇵 ' + tpl.reply_ja;
-    document.getElementById('btn-send-final').disabled = false;
-    const panel = document.getElementById('reply-panel');
-    if (panel && !panel.querySelector('.template-notice')) {
-      const notice = document.createElement('div');
-      notice.className = 'template-notice';
-      notice.textContent = '💬 定型文が自動セットされました';
-      panel.insertBefore(notice, panel.firstChild);
+  if (templateKey) {
+    let replyEn = null;
+    let replyJa = null;
+    if (templateKey === 'price_negotiation' && templateMsg.negotiation_offered_price == null) {
+      // 具体的な希望価格を算出できない(vague/通貨不一致等)場合は、金額を埋め込む定型文ではなく
+      // 希望額を尋ねる専用定型文を使う
+      replyEn = REPLY_TEMPLATES.price_negotiation_vague.reply_en;
+      replyJa = REPLY_TEMPLATES.price_negotiation_vague.reply_ja;
+    } else if (templateKey === 'price_negotiation') {
+      const price = fmtMoney(templateMsg.negotiation_offered_price);
+      replyEn = REPLY_TEMPLATES.price_negotiation.reply_en(price);
+      replyJa = REPLY_TEMPLATES.price_negotiation.reply_ja(price);
+    } else if (REPLY_TEMPLATES[templateKey]) {
+      replyEn = REPLY_TEMPLATES[templateKey].reply_en;
+      replyJa = REPLY_TEMPLATES[templateKey].reply_ja;
+    }
+    if (replyEn != null) {
+      document.getElementById('reply-en').value = replyEn;
+      document.getElementById('reply-ja').textContent = '🇯🇵 ' + replyJa;
+      const panel = document.getElementById('reply-panel');
+      if (panel && !panel.querySelector('.template-notice')) {
+        const notice = document.createElement('div');
+        notice.className = 'template-notice';
+        notice.textContent = buildTemplateNoticeText(templateMsg);
+        panel.insertBefore(notice, panel.firstChild);
+      }
     }
   }
 }
@@ -637,16 +873,15 @@ async function openThread(senderId, itemId, el) {
 
 async function generateReply() {
   if (!currentReplyMessageId) return;
+  const japaneseText = document.getElementById('reply-japanese').value;
   const instruction  = document.getElementById('reply-instruction').value;
   const currentReply = document.getElementById('reply-en').value.trim();
   const regen = document.getElementById('btn-regenerate');
-  const send  = document.getElementById('btn-send-final');
   const enEl  = document.getElementById('reply-en');
   const jaEl  = document.getElementById('reply-ja');
 
   regen.disabled = true;
   regen.textContent = '生成中...';
-  send.disabled = true;
   enEl.placeholder = currentReply ? '✨ 再生成中...' : '✨ 返信案を生成中...';
   jaEl.textContent = '🔄 日本語訳を生成中...';
 
@@ -657,7 +892,7 @@ async function generateReply() {
     const res  = await fetch('/api/generate/' + currentReplyMessageId, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({instruction: instruction, current_reply: currentReply, model: selectedModel}),
+      body: JSON.stringify({japanese_text: japaneseText, instruction: instruction, current_reply: currentReply, model: selectedModel}),
       signal: controller.signal,
     });
     clearTimeout(timeoutId);
@@ -671,7 +906,6 @@ async function generateReply() {
       enEl.placeholder = '';
       enEl.value = data.reply_en || '';
       jaEl.textContent = data.reply_ja ? ('🇯🇵 ' + data.reply_ja) : '';
-      send.disabled = false;
     }
   } catch (e) {
     clearTimeout(timeoutId);
@@ -688,7 +922,10 @@ async function generateReply() {
 async function sendReply() {
   if (!currentReplyMessageId) return;
   const text = document.getElementById('reply-en').value;
-  if (!text.trim()) return;
+  if (!text.trim()) {
+    alert('英語返信案が入力されていません。');
+    return;
+  }
 
   const btn = document.getElementById('btn-send-final');
   btn.disabled = true;
@@ -697,19 +934,30 @@ async function sendReply() {
   const jaEl = document.getElementById('reply-ja');
   const replyJa = jaEl ? jaEl.textContent.replace(/^🇯🇵\\s*/, '') : '';
 
-  const res = await fetch('/api/send/' + currentReplyMessageId, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({reply_text: text, reply_ja: replyJa})
-  });
-  const data = await res.json();
+  let data;
+  try {
+    const res = await fetch('/api/send/' + currentReplyMessageId, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({reply_text: text, reply_ja: replyJa})
+    });
+    data = await res.json();
+  } catch (e) {
+    console.error('send communication error:', e);
+    alert('送信に失敗しました（通信エラー）: ' + e);
+    btn.disabled = false;
+    btn.textContent = '送信 GO →';
+    return;
+  }
 
   if (data.ok) {
+    btn.textContent = '✅ 送信完了';
     currentReplyMessageId = null;
     await loadThreads();
     moveToNextUnreplied();
   } else {
     console.error('send error:', data.error || '不明');
+    alert('送信に失敗しました: ' + (data.error || '不明なエラー'));
     btn.disabled = false;
     btn.textContent = '送信 GO →';
   }
@@ -739,10 +987,9 @@ async function runFetch() {
   btn.disabled = true;
   btn.textContent = '🔄 取得中...';
   try {
-    const res  = await fetch('/api/fetch', { method: 'POST' });
-    const data = await res.json();
+    const data = await doFetch();  // 自動更新が進行中ならそれに相乗りする
     if (data.ok) {
-      await loadThreads();
+      await afterFetchRefresh();
       btn.textContent = '✅ 完了';
       setTimeout(() => { btn.textContent = '🔄 更新'; btn.disabled = false; }, 2000);
     } else {
@@ -782,15 +1029,133 @@ async function loadAccounts() {
 
 loadAccounts();
 loadThreads();
-setInterval(loadThreads, 60000);
+// ページを開いている間だけ、AUTO_REFRESH_SECONDS 間隔でeBayメッセージを自動取得する
+setInterval(autoRefreshTick, AUTO_REFRESH_SECONDS * 1000);
 </script>
 </body>
 </html>
 """
 
+# --------------------------------------------------
+# 注文有無の判定（購入前 / 購入後メッセージの区別）
+#
+# 注文情報の取得・保存は apps/inventory/fetch_orders_ebay.py に一本化してあり、
+# メッセージ画面はそこが trx.ebay_orders に保存済みの既存データを参照するだけ。
+# ここから eBay の注文APIは絶対に呼ばない。
+#
+# 紐付けキー:
+#   trx.ebay_orders.ebay_id (= listing の ItemID) = trx.ebay_messages.listing_id
+#   trx.ebay_orders.buyer   (= バイヤーのeBay ID) = trx.ebay_messages.sender_id
+# 同一listingを複数のバイヤーが購入するケース（在庫1でも再出品/複数個出品で発生）が
+# 実データ上も存在するため、listing_id だけでは判定せず必ず sender_id との
+# 組み合わせで判定する。
+#
+# 将来 fetch_orders 側で注文status（未発送・発送済・返品など）を持つように
+# なった場合は、_ORDER_INFO_KEYS に status 系のキーを足し、下の2つのクエリで
+# その列を取得して order_info に詰めれば、画面・AIプロンプトの双方へ自動的に
+# 伝播する（呼び出し側の構造は変更不要）。
+# --------------------------------------------------
+
+def _empty_order_info() -> dict:
+    """注文が1件も無い場合の order_info。キー構成は _build_order_info と揃える。"""
+    return {
+        "has_order":       False,
+        "order_count":     0,
+        "order_ids":       [],
+        "last_order_date": None,
+        # 将来 fetch_orders 側でstatus管理を整備したらここに詰める（現時点は常にNone）
+        "order_status":    None,
+    }
+
+
+def _build_order_info(order_count: int, last_order_date, order_ids) -> dict:
+    """trx.ebay_orders の集計結果を画面/AI共通の order_info 形式に整える。"""
+    ids = []
+    for oid in (order_ids or []):
+        if oid and oid not in ids:
+            ids.append(oid)
+    return {
+        "has_order":       bool(order_count),
+        "order_count":     int(order_count or 0),
+        "order_ids":       ids,
+        "last_order_date": last_order_date.isoformat() + "Z" if last_order_date else None,
+        "order_status":    None,
+    }
+
+
+def _fetch_order_info_map(cur) -> dict:
+    """
+    全スレッド分の注文有無を1クエリでまとめて取得する（/api/threads用）。
+    戻り値: {(listing_id, sender_id_lower): order_info}
+    """
+    cur.execute("""
+        SELECT ebay_id, buyer, COUNT(*) AS order_count, MAX(order_date) AS last_order_date
+        FROM trx.ebay_orders
+        WHERE ebay_id IS NOT NULL AND buyer IS NOT NULL
+        GROUP BY ebay_id, buyer
+    """)
+    result = {}
+    for ebay_id, buyer, order_count, last_order_date in cur.fetchall():
+        key = (str(ebay_id), str(buyer).lower())
+        result[key] = _build_order_info(order_count, last_order_date, [])
+    return result
+
+
+def _fetch_order_info(cur, sender_id: str, listing_id: str) -> dict:
+    """
+    1スレッド（この相手・この商品）についての注文有無を取得する。
+    /api/thread と /api/generate から共通で使う。
+    """
+    if not sender_id or not listing_id:
+        return _empty_order_info()
+    cur.execute("""
+        SELECT order_id, order_date
+        FROM trx.ebay_orders
+        WHERE ebay_id = ? AND buyer = ?
+        ORDER BY order_date DESC
+    """, listing_id, sender_id)
+    rows = cur.fetchall()
+    if not rows:
+        return _empty_order_info()
+    return _build_order_info(
+        order_count=len(rows),
+        last_order_date=rows[0][1],
+        order_ids=[r[0] for r in rows],
+    )
+
+
+def _build_order_prompt_section(order_info: dict) -> str:
+    """
+    AI返信生成プロンプトへ渡す「注文あり / 注文なし」コンテキストを組み立てる。
+    注文statusを扱えるようになったら、ここに status の説明行を足すだけでよい。
+    """
+    info = order_info or _empty_order_info()
+    if not info.get("has_order"):
+        return (
+            "Order context: This buyer has NOT purchased this item. "
+            "This is a PRE-PURCHASE inquiry from a potential buyer.\n\n"
+        )
+    lines = [
+        "Order context: This buyer has ALREADY PURCHASED this item. "
+        "This is a POST-PURCHASE inquiry from an existing customer.",
+    ]
+    if info.get("order_count"):
+        lines.append("- Orders for this buyer on this listing: %d" % info["order_count"])
+    if info.get("last_order_date"):
+        lines.append("- Most recent order date (UTC): %s" % info["last_order_date"])
+    if info.get("order_status"):
+        lines.append("- Order status: %s" % info["order_status"])
+    lines.append(
+        "- Handle it as an inquiry about an existing order (shipping, tracking, delivery, "
+        "the item they already bought, returns, etc.). Do NOT ask them to purchase the item "
+        "and do NOT treat it as a price negotiation for a future purchase."
+    )
+    return "\n".join(lines) + "\n\n"
+
+
 @app.route("/")
 def index():
-    return render_template_string(HTML)
+    return render_template_string(HTML, auto_refresh_seconds=AUTO_REFRESH_SECONDS)
 
 
 @app.route("/api/accounts")
@@ -857,9 +1222,24 @@ def api_threads():
         """)
         cols = [d[0] for d in cur.description]
         rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+
+        # 注文有無（fetch_orders が保存済みの trx.ebay_orders を参照するだけ）。
+        # listing_id + sender_id の組で引くので、同一listingを別バイヤーが
+        # 購入していても他スレッドが「注文あり」に誤判定されることはない。
+        order_map = _fetch_order_info_map(cur)
+
         for r in rows:
             if r.get('received_at'):
                 r['received_at'] = r['received_at'].isoformat() + 'Z'
+
+            oi = order_map.get(
+                (str(r.get('listing_id') or ''), str(r.get('sender_id') or '').lower())
+            ) or _empty_order_info()
+            r['has_order']       = oi['has_order']
+            r['order_count']     = oi['order_count']
+            r['last_order_date'] = oi['last_order_date']
+            r['order_status']    = oi['order_status']
+
             if r.get('direction') == 'seller':
                 r['thread_status'] = '返信済'
             elif r.get('skip_reply'):
@@ -906,9 +1286,26 @@ def api_thread(sender_id, listing_id):
         msgs = [dict(zip(cols, row)) for row in cur.fetchall()]
         t2 = time.time()
         print(f"[thread] メッセージ取得({len(msgs)}件): {t2-t1:.3f}s")
+
+        # 値引き交渉メッセージの表示用情報(希望価格・値引き率)を付加する。
+        # fetch時にauto_reply_typeへ保存済みのoffer_type/value/currencyを再利用し、
+        # GPTを呼ばずにPython側の既存計算(_compute_offer等)だけで再計算する。
+        NEGOTIATION_CATEGORIES = ("price_negotiation", "price_negotiation_large", "rude_offer")
+        negotiation_start_price = None
+        if any(m.get('category') in NEGOTIATION_CATEGORIES for m in msgs):
+            negotiation_start_price = _get_listing_price(listing_id)
+
         for m in msgs:
             if m.get('received_at'):
                 m['received_at'] = m['received_at'].isoformat() + 'Z'
+            if m.get('direction') == 'buyer' and m.get('category') in NEGOTIATION_CATEGORIES:
+                display = compute_negotiation_display(m.get('auto_reply_type'), negotiation_start_price)
+                m['negotiation_offer_type']     = display['offer_type']
+                m['negotiation_value']          = display['value']
+                m['negotiation_offered_price']  = display['offered_price']
+                m['negotiation_discount_rate']  = display['discount_rate']
+                m['negotiation_category']       = display['category']
+                m['negotiation_reason']         = display['reason']
 
         # 仕入先情報（account はメッセージから取得）
         cur.execute("""
@@ -938,12 +1335,16 @@ def api_thread(sender_id, listing_id):
         else:
             vendor_url = None
 
+        # 注文有無（この相手・この商品に対する注文が trx.ebay_orders に存在するか）
+        order_info = _fetch_order_info(cur, sender_id, listing_id)
+
         result = jsonify({
             "messages":       msgs,
             "vendor_url":     vendor_url,
             "vendor_name":    vendor_name,
             "vendor_item_id": vendor_item_id,
             "image_url1":     image_url1,
+            "order_info":     order_info,
         })
         print(f"[thread] 合計: {time.time()-t0:.3f}s")
         return result
@@ -958,6 +1359,7 @@ def api_thread(sender_id, listing_id):
 def api_generate(message_id):
     try:
         data          = request.get_json() or {}
+        japanese_text = data.get("japanese_text", "").strip()
         instruction   = data.get("instruction",   "").strip()
         current_reply = data.get("current_reply", "").strip()
         model         = data.get("model", "gpt-4o-mini")
@@ -984,6 +1386,14 @@ def api_generate(message_id):
                 ORDER BY received_at ASC
             """, sender_id, listing_id)
             history = cur.fetchall()
+
+            # 購入前 / 購入後を区別してAIに返信案を作らせるため、注文有無を取得する。
+            # 取得元は fetch_orders が保存した trx.ebay_orders のみ（eBay APIは叩かない）。
+            try:
+                order_info = _fetch_order_info(cur, sender_id, listing_id)
+            except Exception as e:
+                print(f"[generate] order info skipped: {e}")
+                order_info = _empty_order_info()
         finally:
             if cur: cur.close()
             if cn: cn.close()
@@ -1001,29 +1411,105 @@ def api_generate(message_id):
         if len(history) > 1:
             context_block = "Conversation history:\n" + "\n".join(conv_lines) + "\n\n"
 
+        # 注文あり/なしのコンテキスト（購入後の問い合わせを取り違えないため）
+        order_section = _build_order_prompt_section(order_info)
+
+        # 値引き交渉コンテキスト(現在価格・Buyer希望価格・値引き率・category)をAI返信生成へ渡す。
+        # 判定はfetch_messages_ebay.pyの分類ロジックと共通の関数で行う(GPTには最終計算をさせない)。
+        # ここで失敗しても通常の返信生成自体は止めない。
+        negotiation_section = ""
+        try:
+            if latest_buyer_body:
+                start_price = _get_listing_price(listing_id)
+                analysis = analyze_price_negotiation(latest_buyer_body, listing_id=listing_id, start_price=start_price)
+                if analysis["category"] in ("price_negotiation", "price_negotiation_large", "rude_offer"):
+                    lines = []
+                    if start_price:
+                        lines.append(f"- Current listing price: ${start_price:.2f}")
+                    if analysis["offered_price"] is not None:
+                        lines.append(f"- Buyer requested price: ${analysis['offered_price']:.2f}")
+                    if analysis["discount_rate"] is not None:
+                        lines.append(f"- Discount rate: {analysis['discount_rate'] * 100:.1f}%")
+                    else:
+                        lines.append("- Buyer did not state a specific price, amount, or percentage")
+                    guide = CATEGORY_GUIDE.get(analysis["category"], "")
+                    lines.append(f"- Negotiation category: {analysis['category']} — {guide}")
+
+                    if japanese_text:
+                        # 日本語欄に具体的な内容がある場合、ここはあくまで状況理解のための
+                        # 補助情報。CATEGORY_GUIDEの一般方針(購入意思確認・発送日数・上司承認など)を
+                        # reply_enへ勝手に追加させないよう、明示的に禁止する。
+                        negotiation_section = (
+                            "Negotiation context (background information ONLY, to help you understand the "
+                            "situation — this is NOT a list of things to say. The category guide text below "
+                            "describes our general policy for this category, but do NOT use it to add any new "
+                            "facts, conditions, questions, promises, or requests to reply_en that are not already "
+                            "present in the Japanese source text or MANDATORY INSTRUCTIONS below):\n"
+                            + "\n".join(lines) + "\n\n"
+                        )
+                    else:
+                        negotiation_section = (
+                            "Negotiation context (background information to help you understand the situation; "
+                            "if it conflicts with the MANDATORY INSTRUCTIONS below, the MANDATORY INSTRUCTIONS win):\n"
+                            + "\n".join(lines) + "\n\n"
+                        )
+        except Exception as e:
+            print(f"[generate] negotiation analysis skipped: {e}")
+            negotiation_section = ""
+
         print(f"[generate] message_id={message_id}")
         print(f"[generate] model={model}")
+        print(f"[generate] japanese_text={repr(japanese_text[:80]) if japanese_text else '(empty)'}")
         print(f"[generate] instruction={repr(instruction)}")
         print(f"[generate] current_reply={repr(current_reply[:80]) if current_reply else '(empty)'}")
+        print(f"[generate] order_section={repr(order_section)}")
+        print(f"[generate] negotiation_section={repr(negotiation_section)}")
 
-        current_draft_section = f"Current draft:\n{current_reply}" if current_reply else "Current draft:\n(none)"
-        instruction_section   = instruction if instruction else "(none)"
+        current_draft_section  = f"Current draft:\n{current_reply}" if current_reply else "Current draft:\n(none)"
+        instruction_section    = instruction if instruction else "(none)"
+        japanese_source_section = (
+            f"Japanese source text - this is the primary and complete source of WHAT to say in reply_en. "
+            f"Translate/adapt it into natural, polite eBay-appropriate English (you may smooth out phrasing, "
+            f"adjust politeness, and add minimal greetings), but do NOT add any new facts, conditions, questions, "
+            f"promises, or requests that are not present in this text:\n{japanese_text}"
+            if japanese_text else "Japanese source text:\n(none)"
+        )
 
         user_prompt = f"""You are a Japanese eBay seller.
 
 {context_block}Buyer message: {latest_buyer_body}
 
+{order_section}{negotiation_section}{japanese_source_section}
+
 {current_draft_section}
 
-MANDATORY INSTRUCTIONS - YOU MUST FOLLOW ALL OF THESE:
+MANDATORY INSTRUCTIONS - describe how to adjust/style the reply. YOU MUST FOLLOW ALL OF THESE:
 {instruction_section}
 
+Priority order for deciding WHAT reply_en says (highest to lowest):
+1. MANDATORY INSTRUCTIONS
+2. Japanese source text
+3. Conversation history / latest Buyer message
+4. Negotiation context (category / discount rate / CATEGORY_GUIDE)
+5. Order context (whether the buyer has already purchased this item)
+
 Rules:
+- Order context is background information for judging the situation (pre-purchase vs post-purchase), NOT content to include. Do not state order IDs, order counts, or order dates in reply_en unless the Japanese source text or MANDATORY INSTRUCTIONS ask for it.
+- If Japanese source text is provided: reply_en's content must come ONLY from that text (plus anything MANDATORY INSTRUCTIONS explicitly adds). You may translate/adapt it into natural, polite eBay-appropriate English, fix awkward phrasing, and add minimal greetings — but do NOT add new facts, conditions, questions, promises, or negotiation terms (e.g. purchase-intent confirmation, shipping timeframe, boss's approval) that are not present in the Japanese source text, even if the Negotiation context or its category guide mentions them. Do not treat the Negotiation context as a checklist to cover.
+- If Japanese source text is empty: use the Negotiation context (price/discount rate/category/CATEGORY_GUIDE) and the conversation history to write an appropriate reply from scratch, as before.
+- MANDATORY INSTRUCTIONS always take priority over both the Japanese source text and the Negotiation context. Read each instruction carefully and judge whether it is a STYLE instruction (tone, politeness, length, wording — e.g. "be more polite") or a CONTENT instruction (asks for a new topic/question/condition to be added — e.g. "also confirm purchase intent"). For a STYLE instruction, only restyle the existing Japanese-source content; do NOT pull in new facts/conditions from the Negotiation context or its category guide just because it is "allowed" by priority order. Only add content from the Negotiation context when an instruction explicitly asks for it as new content.
 - Follow every instruction above without exception
 - reply_en must be 100% English only, no Japanese
 - reply_ja must be the Japanese translation of reply_en (NEVER leave it empty)
 - Do not add sign-off or placeholder names
-- Reply JSON only: {{"reply_en": "...", "reply_ja": "日本語訳..."}}"""
+- Reply JSON only: {{"reply_en": "...", "reply_ja": "日本語訳..."}}
+
+Example of a STYLE-only instruction (do NOT add new content):
+  Japanese source text: "１０％程度の値引きしか考えていません"
+  MANDATORY INSTRUCTIONS: "もっと丁寧に" (be more polite)
+  WRONG reply_en (adds a new condition not in the source): "Thank you for your offer. I can consider a discount of about 10%, but I would need to confirm if your offer can be accepted."
+  CORRECT reply_en (same content, just more polite): "Thank you so much for your interest. I'm afraid we can only offer a discount of around 10% at this time."
+This same principle applies to any other style-only instruction (e.g. "shorter", "more casual", "add a greeting")."""
 
         print(f"[generate] prompt=\n{user_prompt}\n---")
 
@@ -1198,20 +1684,27 @@ def api_send(message_id):
 
 @app.route("/api/fetch", methods=["POST"])
 def api_fetch():
-    fetch_script = Path(__file__).resolve().parent / "fetch_messages_ebay.py"
+    # 手動更新・自動更新・複数タブからの同時呼び出しでもサブプロセスが重複起動しないようにする
+    if not _fetch_lock.acquire(blocking=False):
+        return jsonify({"ok": True, "skipped": True, "log": "他の更新処理が実行中のためスキップしました"})
+
     try:
-        result = subprocess.run(
-            [sys.executable, str(fetch_script), "--once"],
-            capture_output=True, text=True, encoding='utf-8', timeout=300
-        )
-        if result.returncode == 0:
-            return jsonify({"ok": True, "log": result.stdout[-2000:]})
-        else:
-            return jsonify({"ok": False, "error": result.stderr[-500:] or result.stdout[-500:]})
-    except subprocess.TimeoutExpired:
-        return jsonify({"ok": False, "error": "タイムアウト（5分）"}), 500
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        fetch_script = Path(__file__).resolve().parent / "fetch_messages_ebay.py"
+        try:
+            result = subprocess.run(
+                [sys.executable, str(fetch_script), "--once"],
+                capture_output=True, text=True, encoding='utf-8', timeout=300
+            )
+            if result.returncode == 0:
+                return jsonify({"ok": True, "log": result.stdout[-2000:]})
+            else:
+                return jsonify({"ok": False, "error": result.stderr[-500:] or result.stdout[-500:]})
+        except subprocess.TimeoutExpired:
+            return jsonify({"ok": False, "error": "タイムアウト（5分）"}), 500
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        _fetch_lock.release()
 
 
 if __name__ == "__main__":

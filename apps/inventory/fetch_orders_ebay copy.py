@@ -25,8 +25,6 @@ if str(_PROJECT_ROOT) not in sys.path:
 from apps.adapters.ebay_api import get_access_token_new, send_buyer_thankyou_message
 from apps.common.utils import USD_JPY_RATE, get_sql_server_connection
 
-# ==== Access DB ====
-_ACCESS_CONN_STR = r"Driver={Microsoft Access Driver (*.mdb, *.accdb)};DBQ=Y:\ヤフオクDB.accdb;"
 _JST = timezone(timedelta(hours=9))
 _rate_cache: dict = {"value": None, "expires": 0.0}
 
@@ -146,7 +144,10 @@ def _insert_access_nichinichi(
         shipping = INTL_SHIPPING_JPY
 
     try:
-        conn = pyodbc.connect(_ACCESS_CONN_STR)
+        conn = pyodbc.connect(
+            r"Driver={Microsoft Access Driver (*.mdb, *.accdb)};"
+            r"DBQ=\\MOUSE\My Documents\日常せどり\ヤフオクDB.accdb;"
+        )
         cur  = conn.cursor()
 
         # 重複チェック（同一注文の2重登録防止）

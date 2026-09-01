@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "defaultMode": "bypassPermissions",
+    "allow": [
+      "PowerShell",
+      "Bash(python *)",
+      "Bash(curl *)",
+      "PowerShell(Get-Process *)",
+      "PowerShell(Get-CimInstance *)",
+      "PowerShell(Get-NetTCPConnection *)",
+      "PowerShell(Get-Item *)",
+      "PowerShell(Stop-Process *)",
+      "Bash(tail *)",
+      "Bash(ssh *)",
+      "Bash(netstat *)",
+      "PowerShell(*)"
+    ]
+  },
+  "skipDangerousModePermissionPrompt": true
+}

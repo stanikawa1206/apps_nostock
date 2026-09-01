@@ -1,7 +1,7 @@
 #!/bin/bash
 
 SESSION="pub"
-rm -rf /tmp/*
+find /tmp -mindepth 1 -maxdepth 1 -mmin +2880 ! -name 'tmux-*' -exec rm -rf {} +
 
 
 # tmux が無い場合はエラー

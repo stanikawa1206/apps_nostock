@@ -10,6 +10,9 @@ __pycache__/
 
 logs/
 
+# claude code local permission overrides (personal/machine-specific)
+.claude/settings.local.json
+
 .history/
 *.deb
 
@@ -19,3 +22,6 @@ apps/snapshot/Venesplo/
 worker_*.log
 __pycache__/
 *.pyc
+
+# worker status files (runtime generated)
+worker_status_*.txt

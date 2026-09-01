@@ -28,8 +28,6 @@ if str(_PROJECT_ROOT) not in sys.path:
 from apps.adapters.ebay_api import get_access_token_new, send_buyer_thankyou_message
 from apps.common.utils import USD_JPY_RATE, get_sql_server_connection
 
-# ==== Access DB ====
-_ACCESS_CONN_STR = r"Driver={Microsoft Access Driver (*.mdb, *.accdb)};DBQ=Y:\ヤフオクDB.accdb;"
 _JST = timezone(timedelta(hours=9))
 _rate_cache: dict = {"value": None, "expires": 0.0}
 
@@ -51,19 +49,30 @@ def _setup_logging() -> logging.Logger:
         return logger
     logger.setLevel(logging.INFO)
     logger.propagate = False
+
+    formatter = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+    )
+
     try:
         _LOG_DIR.mkdir(parents=True, exist_ok=True)
         handler = RotatingFileHandler(
             str(_LOG_FILE), maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
         )
-        handler.setFormatter(logging.Formatter(
-            "%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
-        ))
+        handler.setFormatter(formatter)
         logger.addHandler(handler)
     except Exception:
         # ファイルログの初期化自体に失敗しても、コンソールへはフォールバックしない
         # （コンソール書き込みブロックの再発を避けるため）。ログなしで処理を継続する。
         logger.addHandler(logging.NullHandler())
+
+    # 開発時に進捗を確認できるよう、ファイルログと同内容をコンソールにも出力する。
+    # print()は使わずlogging.StreamHandler経由にすることで、file/console間で
+    # フォーマットとログレベルを常に一致させる。
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    logger.addHandler(stream_handler)
+
     return logger
 
 
@@ -210,7 +219,13 @@ def _access_order_exists(order_id: str, vendor_item_id: str) -> bool:
     """
     conn = None
     try:
-        conn = pyodbc.connect(_ACCESS_CONN_STR)
+        # MOUSEはTailscale/VPN越しのネットワーク共有のため、接続不能時に長時間
+        # 待たされないよう明示的にタイムアウトを指定する（SQL_ATTR_LOGIN_TIMEOUT）
+        conn = pyodbc.connect(
+            r"Driver={Microsoft Access Driver (*.mdb, *.accdb)};"
+            r"DBQ=\\MOUSE\My Documents\日常せどり\ヤフオクDB.accdb;",
+            timeout=5,
+        )
         cur = conn.cursor()
         cur.execute(
             "SELECT COUNT(*) FROM 日常 WHERE amazon注文番号=? AND 注文ID=?",
@@ -292,7 +307,13 @@ def _insert_access_nichinichi(
 
     conn = None
     try:
-        conn = pyodbc.connect(_ACCESS_CONN_STR)
+        # MOUSEはTailscale/VPN越しのネットワーク共有のため、接続不能時に長時間
+        # 待たされないよう明示的にタイムアウトを指定する（SQL_ATTR_LOGIN_TIMEOUT）
+        conn = pyodbc.connect(
+            r"Driver={Microsoft Access Driver (*.mdb, *.accdb)};"
+            r"DBQ=\\MOUSE\My Documents\日常せどり\ヤフオクDB.accdb;",
+            timeout=5,
+        )
         cur  = conn.cursor()
 
         cur.execute("""
@@ -744,6 +765,7 @@ def run():
 
     while True:
         _update_heartbeat(last_loop_start=datetime.now(timezone.utc).isoformat())
+        cn = cur = None
         try:
             now = datetime.now(timezone.utc)
 
@@ -998,14 +1020,26 @@ def run():
                                 f"sku={vendor_item_id}"
                             )
 
-            cur.close()
-            cn.close()
             _update_heartbeat(last_success=datetime.now(timezone.utc).isoformat())
 
         except Exception as e:
             log.error(f"run()ループでエラー: {e}", exc_info=True)
+        finally:
+            # Access DB接続障害等、途中で例外が発生した場合でも
+            # SQL Serverコネクションは必ず閉じる（コネクションリーク防止）
+            if cur is not None:
+                try:
+                    cur.close()
+                except Exception:
+                    pass
+            if cn is not None:
+                try:
+                    cn.close()
+                except Exception:
+                    pass
 
-        time.sleep(10)
+        # 正常時・エラー時のいずれも、次サイクルまで60秒待機する
+        time.sleep(60)
 
 
 if __name__ == "__main__":

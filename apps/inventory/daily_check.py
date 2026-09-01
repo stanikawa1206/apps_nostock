@@ -34,11 +34,12 @@ from apps.common.utils import send_mail, get_sql_server_connection
 # 子スクリプトのreturncode/stdout/stderr記録用トレースログ
 # （次回再現時の停止地点特定専用。挙動は一切変更しない）
 # ======================
-_SUBPROCESS_TRACE_LOG_PATH = PROJECT_ROOT / "logs" / "daily_check_subprocess.log"
 _subprocess_trace_logger = logging.getLogger("daily_check_subprocess_trace")
 if not _subprocess_trace_logger.handlers:
     _subprocess_trace_logger.setLevel(logging.DEBUG)
-    _subprocess_trace_handler = logging.FileHandler(_SUBPROCESS_TRACE_LOG_PATH, encoding="utf-8")
+    _subprocess_trace_handler = logging.FileHandler(
+        PROJECT_ROOT / "logs" / "daily_check_subprocess.log", encoding="utf-8"
+    )
     _subprocess_trace_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
     _subprocess_trace_logger.addHandler(_subprocess_trace_handler)
     _subprocess_trace_logger.propagate = False
@@ -50,21 +51,9 @@ PYTHON = sys.executable
 BASE_DIR = Path(__file__).resolve().parents[2]  # ← apps_nostock 直下
 
 APPS_INV = BASE_DIR / "apps" / "inventory"
-APPS_PUB = BASE_DIR / "apps" / "publish"
 
 FETCH_ACTIVE = APPS_INV / "fetch_active_ebay.py"
 FETCH_SOLD       = APPS_INV / "fetch_sold_ebay.py"
-CHECK_REMAINING  = APPS_INV / "check_remaining_ebay.py"
-
-# 30日以上経過した古い出品を削除する処理。
-# LIMIT時に出品枠を確保する make_listing_space.py とは役割が異なり、
-# 「日次の定期清掃」として毎サイクル1回だけ実行する。
-DELETE_SCRIPT = APPS_PUB / "delete_ebay_daily.py"
-
-# 出品関連（Active Listing取得・LIMIT監視・出品）は publish_manager.py に一本化。
-# daily_check は「1日の流れ全体」を管理するオーケストレーターとして、
-# publish_manager を呼び出すだけにする。
-PUBLISH_MANAGER_SCRIPT = APPS_PUB / "publish_manager.py"
 
 WAIT_SECONDS = 3
 
@@ -131,34 +120,24 @@ DEBUG_STOP_AFTER_FIRST_INVENTORY = False
 def run_script(path: Path) -> tuple[int, str]:
     print(f"\n=== ▶ {path.name} 実行開始 ===")
 
+    # capture_output=Trueにしない: 子スクリプトの標準出力・標準エラーを
+    # 親（daily_check.py）のコンソールへそのまま継承させ、実行中の出力を
+    # リアルタイムに表示させるため。
     result = subprocess.run(
         [PYTHON, str(path)],
         cwd=str(BASE_DIR),
-        capture_output=True,  # 標準出力・エラーをキャプチャ
-        text=True,
-        encoding="utf-8",
-        errors="replace",
         env={**os.environ, "PYTHONIOENCODING": "utf-8"},
     )
 
-    # 子スクリプトの出力をそのままコンソールにも流す
-    if result.stdout:
-        print(result.stdout, end="")
-    if result.stderr:
-        print(result.stderr, end="", file=sys.stderr)
-
-    # 次回再現時に停止地点を特定できるよう、returncode/stdout/stderrをファイルへ記録する
-    # （daily_check側のコンソール出力はどこにも永続化されないため、ここでのみ確認可能）
+    # 次回再現時に停止地点を特定できるよう、returncodeをファイルへ記録する
     _subprocess_trace_logger.debug(f"[run_script] script={path.name} returncode={result.returncode}")
-    _subprocess_trace_logger.debug(f"[run_script] script={path.name} stdout=\n{result.stdout}")
-    _subprocess_trace_logger.debug(f"[run_script] script={path.name} stderr=\n{result.stderr}")
 
     if result.returncode == 0:
         print(f"=== ✅ {path.name} 正常終了 ===")
     else:
         print(f"=== ❌ {path.name} 異常終了（returncode={result.returncode}） ===")
 
-    return result.returncode, (result.stdout or "")
+    return result.returncode, ""
 
 
 def format_trx_listings_count_by_account(conn) -> str:
@@ -806,7 +785,7 @@ def run_inventory_management_round(conn, cycle_no, round_no):
     extra = f"remaining 処理件数: {processed_count} 件"
 
     send_script_mail(
-        CHECK_REMAINING,
+        Path(r"D:\apps_nostock\apps\inventory\check_remaining_ebay.py"),
         rem_start,
         rem_end,
         0,
@@ -949,7 +928,7 @@ def run_delete_ebay_daily(conn):
     """
 
     del_start = datetime.now()
-    del_code, _ = run_script(DELETE_SCRIPT)
+    del_code, _ = run_script(Path(r"D:\apps_nostock\apps\publish\delete_ebay_daily.py"))
     del_end = datetime.now()
 
     subject = (
@@ -959,7 +938,7 @@ def run_delete_ebay_daily(conn):
     )
 
     body = (
-        f"スクリプト: {DELETE_SCRIPT.name}\n"
+        f"スクリプト: delete_ebay_daily.py\n"
         f"開始時刻: {del_start}\n"
         f"終了時刻: {del_end}\n"
         f"処理時間: {del_end - del_start}\n"
@@ -994,7 +973,7 @@ def run_publish_manager(conn):
 
     # 開始時刻: publish_manager起動直前
     pub_start = datetime.now()
-    pub_code, _ = run_script(PUBLISH_MANAGER_SCRIPT)
+    pub_code, _ = run_script(Path(r"D:\apps_nostock\apps\publish\publish_manager.py"))
     # 終了時刻: run_script()（publish_manager.py本体）から戻った直後
     pub_end = datetime.now()
 
@@ -1180,6 +1159,8 @@ def run_one_cycle(cycle_no: int, conn):
 # メイン処理
 # ======================
 def main():
+    print("start")
+    print(__file__)
     os.system("find /tmp -mindepth 1 -delete")
     conn = get_sql_server_connection()
 
