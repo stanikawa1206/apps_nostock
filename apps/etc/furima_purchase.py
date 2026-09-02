@@ -51,6 +51,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 import json
 import os
 import re
+import socket
 import ssl
 import subprocess
 import time
@@ -58,7 +59,6 @@ import urllib.error
 import urllib.request
 from datetime import date, datetime, timedelta, timezone
 
-import psutil
 import pyodbc
 import requests
 from bs4 import BeautifulSoup
@@ -3259,26 +3259,29 @@ def send_rakuma_reply(vendor_item_id: str, expected_count: int, reply_text: str)
 # 1サイトの失敗で残りのサイトの実行を止めない（サイト単位でtry/exceptする）。
 #
 # 二重起動防止:
-#   ロックファイル(furima_purchase_runner.lock)に自分のPIDを書き込む。
-#   既存のロックファイルがある場合、そのPIDが実際に生きているプロセスかどうかを
-#   psutilで確認し、生きていれば「実行中」として二重起動を拒否する。
-#   PC再起動・強制終了等でプロセスが既に無いのにロックファイルだけ残っている
-#   （stale lock）場合は無視して実行する。
-#   【2026-08-29統合】ロック・状態ファイルは旧 furima_purchase_runner.py と同じ
-#   ファイル名を引き続き使う。統合当初は旧ファイルも現役という想定だったが、
-#   【2026-09-01確認】Access「ヤフオク.accdb」Form_到着日入力のVBAを実機で確認した
-#   ところ、Shell()は既に `python.exe furima_purchase.py` を直接起動しており、
-#   旧 furima_purchase_runner.py（→旧mercari_purchase.py等）は現在呼ばれていない。
-#   ファイル名共有は不要になったが、実害はないため据え置いている。
+#   【2026-09-02変更】mouse・HRSP-server等、複数PCから本ファイルが実行される実態が
+#   あるにもかかわらず、旧実装はPIDロックファイル(furima_purchase_runner.lock)を
+#   各PCのローカルディスク(D:\apps_nostock)に置いており、他PCの実行を一切検知できない
+#   欠陥があった（psutil.pid_exists()は自PCのプロセス表しか見られない）。
+#   一方、実際に書き込む先（Access日常＝Y:\ヤフオクDB.accdb、trx.*＝SQL Server）は
+#   PC間で共有されているため、二重起動時に競合し得る状態だった。
+#   このため、ロックファイルは廃止し、各PCから共通で参照できるY:\（Access日常と
+#   同じ共有領域）上の状態ファイル1つだけで二重起動防止を行う方式に変更した。
+#   PIDロックのような「プロセスの生死」チェックはできなくなるため、
+#   state=running のまま1時間以上経過した場合は自動解除せず、異常終了の疑いとして
+#   人間の確認を促すメッセージを表示するに留める（古いrunningの自動解除はしない）。
 #
-# 状態ファイル(furima_purchase_runner_status.txt)に running/done/error と
+# 状態ファイル(Y:\furima_purchase_runner_status.txt)に running/done/error、
+# 実行元(hostname)・PID（排他制御には使わない。調査用）、開始/終了時刻、
 # サイトごとの結果(success/error)を書き込む。Access側のフォームタイマーが
 # これをポーリングして表示更新・Requeryに使う。VBA側にJSONパーサーを新設
 # せずに読めるよう、あえてJSONではなく1行1個の"key=value"形式にしている。
 # ============================================================================
 # ============================================================================
-LOCK_FILE = Path(__file__).with_name("furima_purchase_runner.lock")
-STATUS_FILE = Path(__file__).with_name("furima_purchase_runner_status.txt")
+STATUS_FILE = Path(r"Y:\furima_purchase_runner_status.txt")
+
+# state=running のまま、これ以上経過していたら異常終了の疑いとして扱う（自動解除はしない）。
+RUNNING_STALE_WARNING_SEC = 3600
 
 # (状態ファイル上の表示名, 呼び出す各サイトのmain())
 SITES = [
@@ -3291,6 +3294,8 @@ SITES = [
 def _write_status(state: str, results: dict, started_at: str, finished_at: str = "") -> None:
     lines = [
         f"state={state}",
+        f"hostname={socket.gethostname()}",
+        f"PID={os.getpid()}",
         f"started_at={started_at}",
         f"finished_at={finished_at}",
     ]
@@ -3298,48 +3303,65 @@ def _write_status(state: str, results: dict, started_at: str, finished_at: str =
     STATUS_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _is_locked_by_live_process() -> bool:
-    """既存ロックファイルがあり、かつそのPIDが実際に生きているプロセスならTrue。
-    ファイルはあるが対応プロセスが存在しない場合（stale lock）はFalseを返す。"""
-    if not LOCK_FILE.exists():
-        return False
+def _read_status() -> dict:
+    """Y:\\の共通状態ファイルをkey=value形式で読み込む。存在しない場合は空辞書
+    （初回実行等、まだ一度も書き込まれていない状態として扱う＝実行可能）。"""
+    if not STATUS_FILE.exists():
+        return {}
+    status = {}
+    for line in STATUS_FILE.read_text(encoding="utf-8").splitlines():
+        if "=" in line:
+            key, _, value = line.partition("=")
+            status[key.strip()] = value.strip()
+    return status
+
+
+def _running_guard_message(status: dict) -> str:
+    """
+    state=running中に新規起動をブロックする際の表示文言を組み立てる。
+    started_atから現在までの経過時間を表示し、RUNNING_STALE_WARNING_SEC(1時間)
+    以上経過している場合は異常終了の疑いとして人間の確認を促す
+    （このファイル自身は古いrunningを自動解除しない）。
+    """
     try:
-        pid = int(LOCK_FILE.read_text(encoding="utf-8").strip())
-    except (ValueError, OSError):
-        return False
-    return psutil.pid_exists(pid)
+        started_at = datetime.fromisoformat(status.get("started_at", ""))
+        elapsed_sec = (datetime.now() - started_at).total_seconds()
+    except (ValueError, TypeError):
+        elapsed_sec = None
+
+    if elapsed_sec is not None and elapsed_sec >= RUNNING_STALE_WARNING_SEC:
+        return (
+            "フリマ情報取得は実行中のまま1時間以上経過しています。\n"
+            "異常終了している可能性があります。谷川まで連絡してください。"
+        )
+    if elapsed_sec is not None:
+        return f"フリマ情報取得は既に実行中です。\n開始から{int(elapsed_sec // 60)}分経過しています。"
+    return "フリマ情報取得は既に実行中です。"
 
 
 def main() -> None:
-    if _is_locked_by_live_process():
-        print("[INFO] 既に実行中のプロセスが存在するため、今回は起動しません。")
+    status = _read_status()
+    if status.get("state") == "running":
+        print(_running_guard_message(status))
         return
 
-    LOCK_FILE.write_text(str(os.getpid()), encoding="utf-8")
     started_at = datetime.now().isoformat()
     results = {name: "pending" for name, _ in SITES}
     _write_status("running", results, started_at)
 
-    try:
-        for name, run_func in SITES:
-            print(f"\n{'=' * 20} {name} {'=' * 20}", flush=True)
-            try:
-                run_func()
-                results[name] = "success"
-            except Exception as e:
-                print(f"[ERROR] {name} の実行中にエラーが発生しました: {e}", flush=True)
-                results[name] = "error"
-            # 1サイト終わるたびに書き込み、Access側が進捗を見られるようにする。
-            _write_status("running", results, started_at)
-
-        overall_state = "done" if all(v == "success" for v in results.values()) else "error"
-        _write_status(overall_state, results, started_at, finished_at=datetime.now().isoformat())
-
-    finally:
+    for name, run_func in SITES:
+        print(f"\n{'=' * 20} {name} {'=' * 20}", flush=True)
         try:
-            LOCK_FILE.unlink()
-        except OSError:
-            pass
+            run_func()
+            results[name] = "success"
+        except Exception as e:
+            print(f"[ERROR] {name} の実行中にエラーが発生しました: {e}", flush=True)
+            results[name] = "error"
+        # 1サイト終わるたびに書き込み、Access側が進捗を見られるようにする。
+        _write_status("running", results, started_at)
+
+    overall_state = "done" if all(v == "success" for v in results.values()) else "error"
+    _write_status(overall_state, results, started_at, finished_at=datetime.now().isoformat())
 
 
 if __name__ == "__main__":
