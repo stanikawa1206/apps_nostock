@@ -1,0 +1,15 @@
+=== presets_price_ranges (貴文/アクセサリー) ===
+preset_group: 貴文
+category_group: アクセサリー
+low_usd_target: 700.00
+high_usd_target: 1500.00
+low_jpy_target: 59630
+high_jpy_target: 131550
+category_priority: 1
+---
+
+=== presets_categories (226) ===
+(226, False)
+
+=== seller for this item ===
+('6adx4iMRhZj2dVLimbf6J', 1488, False, True, datetime.datetime(2026, 9, 5, 3, 25, 15, 689647))

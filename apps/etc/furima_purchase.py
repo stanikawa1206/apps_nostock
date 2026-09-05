@@ -684,6 +684,24 @@ def fetch_pending_seller_messages(sql_conn, access_frontend_conn):
         key = (active_orders[oid]["vendor_name"], oid)
         history_by_key.setdefault(key, [])
 
+    # Mercariの「無言発送」判定（条件B）専用のガード。
+    # 【2026-09-05】別Mercariアカウントで購入した注文（Access日常には正常に存在するが、
+    # 現在の自動取得アカウントの取引一覧には一度も現れない）が、Access日常の
+    # eBayステータスだけを根拠に無言発送扱いされ、/messagesへ誤って表示される
+    # 不具合が発生したための対応。trx.vendor_purchaseは現在の自動取得アカウントが
+    # 実際に取引一覧上でその注文を見つけた場合にのみ行が作られるため、
+    # 一度もその行が無い注文は「現在のアカウントで一度も捕捉したことがない注文」
+    # とみなせる（単発の取得漏れとは異なり、行が完全に無い点で区別できる）。
+    # PayPay/Rakumaはtrx.vendor_purchaseへのUPSERT自体を行っていないため対象外
+    # （条件Aには広げない。条件Aはtrx.vendor_messageの実データに基づくため対象外）。
+    mercari_order_ids = [
+        oid for oid in target_order_ids
+        if active_orders[oid]["vendor_name"] == MERCARI_VENDOR_NAME
+    ]
+    mercari_status_by_id = _fetch_vendor_purchase_statuses(
+        sql_conn, MERCARI_VENDOR_NAME, mercari_order_ids
+    )
+
     items = []
     for (vendor_name, vendor_item_id), history in history_by_key.items():
         order_info = active_orders.get(vendor_item_id)
@@ -706,8 +724,19 @@ def fetch_pending_seller_messages(sql_conn, access_frontend_conn):
         # 条件B: 発送済みで、まだ返信2相当を送っていない（無言発送も含む）。
         # メッセージが1件も無いことがあるため、reply_skippedを乗せる行が無く、
         # このケースは「返信不要」を保存しない（ボタン自体を表示しない）。
+        # Mercariに限り、trx.vendor_purchaseに一度も行が無い注文（＝現在の自動取得
+        # アカウントで一度も取引として捕捉していない注文）はここで除外する。
         if is_shipped and suggested_reply["template_key"] == "shipped_2":
-            include = True
+            if vendor_name != MERCARI_VENDOR_NAME or vendor_item_id in mercari_status_by_id:
+                include = True
+
+        # Mercariに限り、取引ページ自体が既に「取引が完了しました」と確認できている
+        # 取引（trx.vendor_purchase.status == MERCARI_COMPLETED_STATUS）は、
+        # 条件A・条件Bのどちらに該当していても対象外にする（取引完了後は返信不要のため）。
+        # 個別IDでの除外ではなく、mercari_mark_transaction_completed()が記録した
+        # 汎用ステータス値による判定。
+        if vendor_name == MERCARI_VENDOR_NAME and mercari_status_by_id.get(vendor_item_id) == MERCARI_COMPLETED_STATUS:
+            include = False
 
         if not include:
             continue
@@ -785,6 +814,28 @@ def _fetch_histories_for_orders(sql_conn, order_ids):
     return history_by_key
 
 
+def _fetch_vendor_purchase_statuses(sql_conn, vendor_name, order_ids):
+    """
+    trx.vendor_purchaseに存在する、指定vendor_nameかつorder_ids中の
+    vendor_item_idの行について、{vendor_item_id: status} を返す
+    （行が無いものは辞書に含まれない＝「現在の自動取得アカウントが、この注文を
+    取引一覧上で一度も見つけて登録したことがない」ことを意味する）。
+    fetch_pending_seller_messagesのMercari専用判定
+    （無言発送のガード・取引完了の除外）で使う。
+    """
+    order_ids = list(order_ids)
+    if not order_ids:
+        return {}
+
+    order_id_placeholders = ", ".join(["?"] * len(order_ids))
+    with sql_conn.cursor() as cur:
+        cur.execute(f"""
+            SELECT vendor_item_id, status FROM trx.vendor_purchase
+            WHERE vendor_name = ? AND vendor_item_id IN ({order_id_placeholders})
+        """, [vendor_name] + order_ids)
+        return {row[0]: row[1] for row in cur.fetchall()}
+
+
 # ------------------------------------------------------------
 # 「返信不要」の永続化（trx.vendor_message.reply_skipped）
 # ------------------------------------------------------------
@@ -846,7 +897,17 @@ _TEMPLATE_SHIPPED_DETECT_RE = re.compile("到着を楽しみに|受取通知")
 # 投函直後など）、出品者が発送完了を明言した時点で発送のお礼を出したい、という
 # 実運用上の要望に基づく。実際に発送済みかどうかの追跡はこの判定の責任範囲外
 # （既存の通常の配送ステータス取得処理に任せる）。
-_SHIPPED_COMPLETE_MESSAGE_RE = re.compile("発送(?:(?:手配)?(?:いた)?しました|手続き完了しました(?!ら))")
+# 「発送」に加え「出荷」も同じ発送完了の言い回しとして扱う（実例m0443821001
+# 「本日出荷済みです。到着までしばらくお待ちください。」が「発送」表現しか
+# 見ていなかったため候補なしになっていた。2026-09-03追加）。また「済み」
+# （「出荷済みです」等、「しました」ではない完了の言い切り形）も完了表現として
+# 追加する。「準備」「予定」「遅れ」等の未完了表現は「発送/出荷」の直後に
+# 続かないため、これらのpositive evidenceを追加しても誤検知しない
+# （「発送準備中です」「出荷予定です」等は「発送」「出荷」の直後がこの alternation
+# のいずれにも一致しないため対象外のまま）。
+_SHIPPED_COMPLETE_MESSAGE_RE = re.compile(
+    "(?:発送|出荷)(?:(?:手配)?(?:いた)?しました|手続き完了しました(?!ら)|済み(?:です)?)"
+)
 
 # 出品者からの最初のメッセージに対する返信（まだ発送前・まだ一度も返信していない場合のみ）。
 TEMPLATE_FIRST_REPLY_ONEGAI = (
@@ -927,6 +988,13 @@ def determine_suggested_reply(history: list, is_shipped: bool) -> dict:
         m for m in seller_messages if (m["message_body"] or "") != "スタンプ"
     ]
 
+    # 発送のお礼(shipped_2)を過去に一度でも送信済みかどうか。優先順位1だけでなく
+    # 優先順位2の発動条件にも使う（下記2026-09-03の修正理由を参照）ため、関数の
+    # 先頭側で一度だけ判定する。
+    already_sent_shipped_thanks = any(
+        _TEMPLATE_SHIPPED_DETECT_RE.search(m["message_body"] or "") for m in own_messages
+    )
+
     seller_announced_shipped = bool(
         meaningful_seller_messages
         and _SHIPPED_COMPLETE_MESSAGE_RE.search(meaningful_seller_messages[-1]["message_body"] or "")
@@ -943,14 +1011,22 @@ def determine_suggested_reply(history: list, is_shipped: bool) -> dict:
     )
 
     if seller_announced_shipped or (is_shipped and not seller_pending_unconfirmed):
-        already_sent = any(
-            _TEMPLATE_SHIPPED_DETECT_RE.search(m["message_body"] or "") for m in own_messages
-        )
-        if not already_sent:
+        if not already_sent_shipped_thanks:
             return {"text": TEMPLATE_SHIPPED, "source": "template", "template_key": "shipped_2"}
         return {"text": "", "source": None, "template_key": None}
 
-    if len(meaningful_seller_messages) == 1:
+    # 【2026-09-03 会話段階の後退を防ぐ修正】無言発送等で自分から先にshipped_2を
+    # 送信した後、出品者が「ありがとうございます。宜しくお願い致します。」のような
+    # 発送完了の明言を含まない簡単な返礼だけを送ってくると、その返礼が
+    # meaningful_seller_messagesの1件目・かつ最新の出品者メッセージになる。
+    # 従来はこの状態で下のreplied_after判定に入ってしまい、自分のshipped_2
+    # メッセージがその出品者メッセージより前（message_noが小さい）にあるという
+    # 理由だけで「まだ返信していない」と誤認し、初回提案(first_reply_onegai等)へ
+    # 後退していた（実例: m68660410032）。shipped_2を送信済みの場合は、以降の
+    # 出品者メッセージの内容によらず初回提案を出さない（already_sent_shipped_thanksで
+    # ガードする）。m11655754962対応（出品者メッセージより前の自分の挨拶を
+    # 「返信済み」の判定に使わない＝下のreplied_after自体の仕様）はそのまま維持する。
+    if len(meaningful_seller_messages) == 1 and not already_sent_shipped_thanks:
         first_seller_message = meaningful_seller_messages[0]
         replied_after = any(
             m["sender_type"] == "購入者" and m["message_no"] > first_seller_message["message_no"]
@@ -1537,6 +1613,51 @@ def get_purchase_info(driver):
     purchase_price = int(price_text)
 
     return purchase_datetime, purchase_price
+
+
+# 「/messages」候補になったが、既に「取引中の商品」一覧から外れているMercari取引を
+# 対象に、取引ページ自体が「取引が完了しました」を表示しているかを個別に確認するための
+# 専用処理。mercari_get_raw_status()は「受取評価をしました」と「取引が完了しました」を
+# 意図的に同じ"☆出荷可能"へ丸め込む設計（買い手側は対応不要という点で共通のため）なので、
+# ここでは流用せず区別する。mercari_main()の通常巡回（現在の取引一覧が対象）には
+# 組み込まず、/messages候補の事後確認としてのみ使う想定。
+MERCARI_TRANSACTION_COMPLETED_HEADING = "取引が完了しました"
+MERCARI_COMPLETED_STATUS = "取引完了"
+
+
+def mercari_is_transaction_completed(driver) -> bool:
+    """現在表示中のMercari取引ページの見出しが「取引が完了しました」で始まるか。"""
+    status_heading = driver.find_elements(By.CSS_SELECTOR, '[data-testid="status-heading"]')
+    if not status_heading:
+        return False
+    return status_heading[0].text.strip().startswith(MERCARI_TRANSACTION_COMPLETED_HEADING)
+
+
+def mercari_mark_transaction_completed(driver, conn, vendor_item_id: str) -> bool:
+    """
+    指定取引の個別ページへ1回だけアクセスし、「取引が完了しました」と確認できた場合のみ
+    trx.vendor_purchase.status を MERCARI_COMPLETED_STATUS として記録する
+    （既存のMERCARI_SQL_UPSERT_VENDOR_PURCHASEをそのまま使う。行が無ければ新規作成）。
+    確認できなかった場合は何も書き込まない。
+    戻り値: 取引完了と確認して記録できたか。
+    """
+    driver.get(f"https://jp.mercari.com/transaction/{vendor_item_id}")
+    _wait_for_transaction_page_ready(driver)
+
+    if not mercari_is_transaction_completed(driver):
+        return False
+
+    item_name = get_item_name(driver)
+    purchase_datetime, purchase_price = get_purchase_info(driver)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            MERCARI_SQL_UPSERT_VENDOR_PURCHASE,
+            (MERCARI_VENDOR_NAME, vendor_item_id, purchase_datetime, purchase_price,
+             MERCARI_COMPLETED_STATUS, item_name)
+        )
+    conn.commit()
+    return True
 
 
 MESSAGES_API_URL_SUBSTR = "transaction_messages/get_messages"

@@ -475,6 +475,7 @@ def refresh_presets_lookup(conn):
         SELECT category_group, mode, low_usd_target, high_usd_target,
                low_jpy_target, high_jpy_target
         FROM mst.category_groups
+        WHERE is_scrape_stopped = 0
     """).fetchall()
 
     cgc_rows = cur.execute("""

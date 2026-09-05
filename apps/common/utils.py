@@ -554,6 +554,93 @@ def strip_no_return_policy(text: str) -> str:
     return t
 
 
+# =========================
+# eBay外連絡誘導の除去（Offering to Buy or Sell Outside of eBay Policy対策）
+# =========================
+# 単純な電話番号・メールアドレス・URLはここでルールベースに除去する。
+# 住所・SNSアカウント・「店舗へお問い合わせください」等の文章による
+# 外部連絡誘導は strip_external_contact_solicitation() でAI判定して除去する。
+
+_URL_CUT_PATTERNS = [
+    r"https?://\S+",
+    r"\bwww\.\S+",
+]
+
+_EMAIL_CUT_PATTERN = r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"
+
+# 日本の電話番号表記（携帯 090/080/070、市外局番付き固定電話、0120等のフリーダイヤル）
+_PHONE_CUT_PATTERNS = [
+    r"(?<!\d)0\d{1,4}-\d{1,4}-\d{3,4}(?!\d)",
+    r"(?<!\d)0\d{9,10}(?!\d)",
+]
+
+def strip_contact_info(text: str) -> str:
+    """
+    電話番号・メールアドレス・URLをルールベースで除去する。
+    （住所・SNS・問い合わせ誘導文はAI判定側 strip_external_contact_solicitation で対応）
+    """
+    t = text or ""
+    for pat in [_EMAIL_CUT_PATTERN, *_URL_CUT_PATTERNS, *_PHONE_CUT_PATTERNS]:
+        t = re.sub(pat, "", t, flags=re.IGNORECASE)
+    t = re.sub(r"[ \t]{2,}", " ", t)
+    t = re.sub(r"\n{2,}", "\n\n", t).strip()
+    return t
+
+
+def strip_external_contact_solicitation(description_jp: str) -> str:
+    """
+    商品説明（日本語）から、eBay外での連絡につながる記載
+    （店舗名・住所・営業時間・SNSアカウント・問い合わせ誘導など）を
+    GPTで検知し除去する。商品の状態・サイズ・型番・付属品などの
+    商品情報は残す。
+
+    英訳生成の「前」に日本語側で除去することで、GPTがそれらの情報を
+    英語説明文に翻訳・出力してしまうのを防ぐ。
+    """
+    text = (description_jp or "").strip()
+    if not text:
+        return text
+
+    client = get_openai_client()
+
+    prompt = f"""
+You are cleaning a Japanese secondhand-marketplace product description that will be rewritten into an eBay listing description.
+
+Remove ONLY the parts that direct the buyer to contact the seller outside of eBay, for example:
+- store name / shop name / seller/business name
+- physical store address or location, business hours
+- phone number, contact person, or requests like "please mention this number/code when inquiring"
+- SNS or messaging accounts (LINE, Instagram, Twitter/X, Facebook, etc.) and requests to follow/add/DM/message them
+- any invitation to visit the store, call, email, or otherwise contact the seller directly outside eBay
+
+Keep everything else exactly as-is, especially:
+- product condition, size, measurements, model number, material, color, brand
+- included accessories, box, manual, defects, flaws
+- any other factual information about the product itself
+
+Rules:
+- Do not translate or paraphrase. Only delete the disallowed parts, keep the rest of the Japanese text unchanged.
+- Do not invent or add anything.
+- If nothing needs to be removed, return the original text unchanged.
+- Return plain text only. No JSON, no markdown, no explanation, no quotes.
+
+Japanese text:
+{text}
+""".strip()
+
+    try:
+        resp = client.responses.create(
+            model="gpt-4o-mini",
+            input=prompt,
+            temperature=0,
+        )
+        cleaned = (resp.output_text or "").strip()
+        return cleaned or text
+    except Exception as e:
+        print(f"[WARN] strip_external_contact_solicitation failed: {e}")
+        return text
+
+
 _IMPORT_NOTICE = (
     "<hr>\n"
     "<b>⚠️ International Buyers:</b><br>\n"
@@ -579,6 +666,8 @@ def generate_ebay_description(
 
     description_jp = strip_authenticity_doubt(description_jp)
     description_jp = strip_no_return_policy(description_jp)
+    description_jp = strip_contact_info(description_jp)
+    description_jp = strip_external_contact_solicitation(description_jp)
 
     _regional_note = ""
     if model_jp and model_us and model_jp != model_us:
@@ -609,6 +698,7 @@ Rewrite the Japanese product description into clear English.
 - Use short sentences.
 - Do not invent facts.
 - If details are missing, say so briefly.
+- Never include the seller's store name, address, phone number, email, URL, SNS/messaging account, business hours, or any other way to contact the seller outside of eBay. Only describe the product itself.
 
 {brand_rule}
 """.strip()
@@ -634,6 +724,7 @@ Japanese description:
 
         desc = (response.output_text or "").replace("\r\n", "\n").strip()
         desc = re.sub(r"\n{3,}", "\n\n", desc).strip()
+        desc = strip_contact_info(desc)
 
         return (desc + "\n\n" + _IMPORT_NOTICE + _regional_note).replace("\n", "<br>")
 
