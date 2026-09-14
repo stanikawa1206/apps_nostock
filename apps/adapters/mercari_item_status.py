@@ -1,10 +1,14 @@
 from __future__ import annotations
+import os
 import re
+import sys
 import time
+import threading
 from typing import Literal, Optional, Tuple, Dict, Any
 import requests
 from typing import Optional
 import json
+import psutil
 from playwright.sync_api import sync_playwright
 
 import pyodbc
@@ -42,6 +46,61 @@ TIMEOUT = 12
 
 # 価格抽出用
 PRICE_RE = re.compile(r"[¥￥]\s*([0-9,]+)")
+
+# ================================
+# fetch_json_core内 page.evaluate(scrollTo) 専用の監視タイマー
+# ================================
+# page.evaluate() はPlaywrightのAPI仕様上タイムアウト引数を持たず、
+# レンダラーが無応答になると例外も出さずに無期限へブロックし得る
+# （2026-09-13 01:37:27、x162-43-39-209で実際に発生し、mst.execute_pcsの
+# 出品枠がプロセス再起動まで解放されない障害の原因になった）。
+# この定数秒数内にevaluate()が返らなければ _on_evaluate_timeout() を発火する。
+EVALUATE_WATCHDOG_TIMEOUT_SEC = 20
+
+
+def _on_evaluate_timeout(url: str) -> None:
+    """
+    page.evaluate(scrollTo) がEVALUATE_WATCHDOG_TIMEOUT_SEC秒以内に返らなかった
+    場合に、監視用の別スレッド(threading.Timer)から呼ばれる。
+
+    メインスレッドはevaluate()の呼び出し（Playwright driverプロセスとのCDP
+    往復）でブロックされたままになり得るため、そのスレッドの状態には一切
+    依存せず、プロセス全体をos._exit()で即座に終了させる。sys.exit()は
+    呼び出したスレッドにしかSystemExitを発生させずメインスレッドのハングを
+    止められないため使わない。
+
+    os._exit()はfinally節を一切実行しない（publish_ebay.py側のpage/context/
+    browser.close()、mst.execute_pcs解放を含む）ため、このプロセスが起動した
+    ブラウザ子プロセス（Playwright driverのNode.jsプロセスとその配下の
+    Chromium一式）を先に明示的にkillしてから終了する。publish_ebay_loop.sh
+    はexit code 0/10以外で15秒後に自動再起動し、再起動後のプロセスが
+    fetch_next_account_and_lock()で自分のmst.execute_pcs行を必ず上書きする
+    ため、出品枠は再起動後に自己修復される。
+    """
+    print(
+        f"[EVALUATE_WATCHDOG] page.evaluate がタイムアウトしました "
+        f"({EVALUATE_WATCHDOG_TIMEOUT_SEC}秒) url={url} "
+        "→ 子プロセスを強制終了してworkerを再起動します",
+        flush=True,
+    )
+
+    try:
+        me = psutil.Process(os.getpid())
+        children = me.children(recursive=True)
+        for child in children:
+            try:
+                child.kill()
+            except psutil.NoSuchProcess:
+                pass
+            except Exception as e:
+                print(f"[EVALUATE_WATCHDOG] 子プロセスkill失敗 pid={child.pid}: {e}", flush=True)
+        print(f"[EVALUATE_WATCHDOG] 子プロセス{len(children)}件にkillを送信しました", flush=True)
+    except Exception as e:
+        print(f"[EVALUATE_WATCHDOG] 子プロセス列挙に失敗: {e}", flush=True)
+
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(2)
 
 
 # ================================
@@ -117,7 +176,17 @@ def fetch_json_core(page, url, match_func, status_holder: Optional[dict] = None)
         print("scroll", datetime.now().strftime("%H:%M:%S"))
         try:
             print("evaluate", datetime.now().strftime("%H:%M:%S"))
-            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            # page.evaluate()はタイムアウト引数を持たず無期限にブロックし得るため、
+            # 監視タイマーで囲む（EVALUATE_WATCHDOG_TIMEOUT_SEC秒で強制終了）。
+            evaluate_watchdog = threading.Timer(
+                EVALUATE_WATCHDOG_TIMEOUT_SEC, _on_evaluate_timeout, args=(url,)
+            )
+            evaluate_watchdog.daemon = True
+            evaluate_watchdog.start()
+            try:
+                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            finally:
+                evaluate_watchdog.cancel()
         except Exception:
             print("[WARN] scroll失敗（無視して続行）")
 
