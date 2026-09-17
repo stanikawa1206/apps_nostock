@@ -70,12 +70,13 @@ PUBLISH_MANAGER_SCRIPT = APPS_PUB / "publish_manager.py"
 WAIT_SECONDS = 3
 
 # ======================
-# 運用方針: 「在庫管理 → delete_ebay_daily → 出品」を1サイクルとし、これを複数回実行できるようにする
+# 運用方針: 「在庫管理 → delete_ebay_daily → 出品」を1サイクルとし、これを永久ループで繰り返す。
+# 停止するかどうかは SQL Server 側の mst.control テーブル（コントロールマスター）で判定する。
+# 1サイクル（1日分）が完了するたびに判定し、在庫管理の各回転終了時には判定しない。
 # ======================
 
-# 1日に回すサイクル数。
-# 通常運用は 1。長期不在時などは 2 や 7 のように変更するだけでよい。
-TOTAL_CYCLES = 1
+# コントロールマスター（mst.control）で日次処理停止フラグを表すキー名
+CONTROL_KEY_STOP_DAILY_CHECK = "日次処理停止"
 
 # daily_check.py が動くサーバー（このマシン）のタイムゾーン。
 # datetime.now() はこのタイムゾーンのnaive（tzinfo無し）な値を返す前提で扱う。
@@ -461,7 +462,7 @@ def refresh_presets_lookup(conn):
     """).fetchall()
 
     brands = cur.execute("""
-        SELECT brand_id, brand_name_ja, default_brand_en, is_active, is_listing_target
+        SELECT brand_id, brand_name_ja, default_brand_en, is_active
         FROM mst.presets_brand
         WHERE is_active = 1
     """).fetchall()
@@ -543,7 +544,6 @@ def refresh_presets_lookup(conn):
                     cg.high_jpy_target,
                     cg.category_group,
                     brand.is_active,
-                    brand.is_listing_target,
                 ))
 
     # 2) brand_category_groupsに無いcategory_group、is_brand_dependent=0
@@ -581,7 +581,6 @@ def refresh_presets_lookup(conn):
                 cg.low_jpy_target,
                 cg.high_jpy_target,
                 cg.category_group,
-                1,
                 1,
             ))
 
@@ -623,7 +622,6 @@ def refresh_presets_lookup(conn):
                     cg.high_jpy_target,
                     cg.category_group,
                     brand.is_active,
-                    brand.is_listing_target,
                 ))
 
     cur.fast_executemany = True
@@ -643,10 +641,9 @@ def refresh_presets_lookup(conn):
             low_jpy_target,
             high_jpy_target,
             category_group,
-            is_active,
-            is_listing_target
+            is_active
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, rows)
 
     conn.commit()
@@ -930,6 +927,40 @@ def log_inventory_round_decision(now: datetime) -> bool:
 
 
 # ======================
+# コントロールマスター（mst.control）による停止判定
+# ======================
+def should_stop_daily_check(conn) -> bool:
+    """
+    1サイクル（在庫管理N回転 → 古い出品削除 → 出品）が完了した直後にだけ呼び出す。
+    在庫管理の各回転終了時には呼び出さない。
+
+    mst.control の param_key = CONTROL_KEY_STOP_DAILY_CHECK（日次処理停止）を確認し、
+      - param_value = 1        : フラグをNULLへ戻した上でTrueを返す（daily_check.pyを終了させる）
+      - param_value = NULL/0   : Falseを返す（次の1日分を継続する）
+    """
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT param_value FROM mst.control WHERE param_key = ?",
+        CONTROL_KEY_STOP_DAILY_CHECK,
+    )
+    row = cur.fetchone()
+    value = row[0] if row else None
+
+    if value == 1:
+        cur.execute(
+            "UPDATE mst.control SET param_value = NULL WHERE param_key = ?",
+            CONTROL_KEY_STOP_DAILY_CHECK,
+        )
+        conn.commit()
+        print(f"🛑 mst.control『{CONTROL_KEY_STOP_DAILY_CHECK}』= 1 を検知。"
+              "フラグをNULLへ戻し、daily_check.pyを終了します。")
+        return True
+
+    print(f"▶ mst.control『{CONTROL_KEY_STOP_DAILY_CHECK}』= {value}。次の1日分を開始します。")
+    return False
+
+
+# ======================
 # 古い出品の削除（delete_ebay_daily 呼び出し）
 # ======================
 def run_delete_ebay_daily(conn):
@@ -1048,7 +1079,7 @@ def run_one_cycle(cycle_no: int, conn):
     """
 
     print("\n=========================")
-    print(f"Cycle {cycle_no} / {TOTAL_CYCLES}")
+    print(f"Cycle {cycle_no}")
     print("=========================")
 
     round_no = 1
@@ -1126,8 +1157,8 @@ def run_one_cycle(cycle_no: int, conn):
             print("❌ 【DEBUG】メール送信失敗")
 
         if DEBUG_STOP_AFTER_FIRST_INVENTORY:
-            # TOTAL_CYCLES の値に関わらず、ここでプログラム自体を終了する
-            # （return では TOTAL_CYCLES>1 の場合に次サイクルへ進んでしまうため）
+            # 永久ループの値に関わらず、ここでプログラム自体を終了する
+            # （return では次サイクルへ進んでしまうため）
             sys.exit(0)
         ############################################
         # END DEBUG TEMPORARY
@@ -1165,7 +1196,7 @@ def run_one_cycle(cycle_no: int, conn):
     # 出品後チェック
     post_publish_check()
 
-    print(f"\n✅ Cycle {cycle_no} / {TOTAL_CYCLES} 終了")
+    print(f"\n✅ Cycle {cycle_no} 終了")
 
 
 # ======================
@@ -1180,12 +1211,20 @@ def main():
     refresh_presets_lookup(conn)
 
     try:
-        print(f"=== 🧭 daily_check.py 開始（{TOTAL_CYCLES}サイクル） ===")
+        print("=== 🧭 daily_check.py 開始（永久ループ、mst.control で停止制御） ===")
 
-        for cycle_no in range(1, TOTAL_CYCLES + 1):
+        cycle_no = 1
+        while True:
             run_one_cycle(cycle_no, conn)
 
-        print(f"\n=== 🎉 全サイクル完了（{TOTAL_CYCLES}サイクル） ===")
+            # 1サイクル（1日分）完了直後にのみ停止判定する。
+            # 在庫管理の各回転終了時（run_one_cycle内のround_noループ）では判定しない。
+            if should_stop_daily_check(conn):
+                break
+
+            cycle_no += 1
+
+        print("\n=== 🎉 daily_check.py 終了（mst.control の停止フラグを検知） ===")
 
     finally:
         try:

@@ -36,7 +36,6 @@
 import sys
 import time
 import json
-import csv
 import argparse
 import logging
 from logging.handlers import RotatingFileHandler
@@ -94,6 +93,12 @@ ORDER_URL_TMPL = "https://api.ebay.com/sell/fulfillment/v1/order/{order_id}"
 TRANSACTION_PAGE_LIMIT = 200   # eBay仕様上の上限は1000だが、負荷を抑えて200に設定
 PAYOUT_PAGE_LIMIT = 200
 
+# Finances APIは1回のfilterで指定できる日付レンジが最大36ヶ月に制限されている
+# （超えるとerrorId 135016「date range cannot exceed 36 months」で400エラー）。
+# 5年近くまで遡る初回バックフィルでは単発リクエストでは範囲を超えるため、
+# 安全マージンを見て1000日（≈33ヶ月）ごとにチャンク分割してリクエストする。
+MAX_FILTER_RANGE = timedelta(days=1000)
+
 # Fulfillment API (/sell/fulfillment/v1/order/{orderId}) の実測データ保持期限。
 # Finances API（transaction/payoutとも「5年より古い開始日は不可」という明示エラー）とは別物で、
 # Fulfillment APIはエラーメッセージも無く"400 Invalid Order Id"を返すだけなので気付きにくい。
@@ -103,8 +108,13 @@ PAYOUT_PAGE_LIMIT = 200
 # （2年より古いデータのSKU/タイトルは別手段で補完する運用のため、ここでは追わない）。
 FULFILLMENT_RETENTION_DAYS = 700
 
-# 初回（DBに何もない場合）の取得開始日
-DEFAULT_START_DATE = datetime(2024, 4, 1, tzinfo=timezone.utc)
+# 初回（DBに何もない場合）の取得開始日。
+# Finances APIは「開始日が5年より古いと400エラー（errorId 135015）」という制限があり、
+# 2026-09-16時点で実測したところ、1828日前(2021-09-14)は成功・1829日前(2021-09-13)は
+# 失敗と1日単位で境界を特定した。境界ギリギリだと実行タイミングのズレで失敗しうるため、
+# 安全マージンを見て1800日前を初回バックフィルの開始日とする（FULFILLMENT_RETENTION_DAYSと
+# 同様の考え方）。
+DEFAULT_START_DATE = datetime.now(timezone.utc) - timedelta(days=1800)
 
 # 差分取得時に遡るバッファ（境界のズレでデータが漏れないように少し重複させる）
 OVERLAP_WINDOW = timedelta(minutes=5)
@@ -124,13 +134,6 @@ PAYOUT_SETTLE_WINDOW = timedelta(days=45)
 # 際限なく広がらないよう、探索対象は直近UNRESOLVED_LOOKBACK_CAP以内に限定する。
 UNRESOLVED_LOOKBACK_CAP = timedelta(days=180)
 
-# 本スクリプトだけで対象外にしたいアカウント（Fulfillment API保持期間切れで
-# SKU補完がほぼ機能しないなど）。mst.ebay_accounts.is_excluded は
-# fetch_orders_ebay.py（受注通知の本番デーモン）とも共有されているため、
-# ここでは触らずスクリプトローカルに除外する。
-SKIP_ACCOUNTS: set[str] = {"貴文"}
-
-
 # --------------------------------------------------
 # アカウント一覧
 # --------------------------------------------------
@@ -144,14 +147,9 @@ def load_accounts() -> list[str]:
             WHERE is_excluded = 0
             ORDER BY account
         """)
-        accounts = [row[0] for row in cur.fetchall()]
+        return [row[0] for row in cur.fetchall()]
     finally:
         cn.close()
-
-    skipped = [a for a in accounts if a in SKIP_ACCOUNTS]
-    if skipped:
-        log.info(f"SKIP_ACCOUNTS指定によりスキップ: {skipped}")
-    return [a for a in accounts if a not in SKIP_ACCOUNTS]
 
 
 # --------------------------------------------------
@@ -210,31 +208,28 @@ def _fmt_ebay_datetime(dt: datetime) -> str:
 # --------------------------------------------------
 # eBay Finances API: /transaction 全件取得（ページネーション）
 # --------------------------------------------------
-def fetch_transactions(token: str, start: datetime, end: datetime) -> list[dict]:
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-    }
-    url = TRANSACTION_URL
-    params = {
-        "filter": f"transactionDate:[{_fmt_ebay_datetime(start)}..{_fmt_ebay_datetime(end)}]",
-        "limit": TRANSACTION_PAGE_LIMIT,
-    }
+def _iter_date_chunks(start: datetime, end: datetime, max_span: timedelta):
+    cur = start
+    while cur < end:
+        chunk_end = min(cur + max_span, end)
+        yield cur, chunk_end
+        cur = chunk_end
 
-    all_transactions: list[dict] = []
+
+def _fetch_paginated(url: str, headers: dict, params: dict, data_key: str, label: str) -> list[dict]:
+    all_items: list[dict] = []
     page = 1
     while url:
         r = requests.get(url, headers=headers, params=params, timeout=30)
         if r.status_code == 429:
-            log.warning("[transaction] レート制限 - 5秒待機してリトライ")
+            log.warning(f"[{label}] レート制限 - 5秒待機してリトライ")
             time.sleep(5)
             continue
         r.raise_for_status()
         data = r.json()
 
-        all_transactions.extend(data.get("transactions", []))
-        log.info(f"[transaction] page={page} 累計={len(all_transactions)}件")
+        all_items.extend(data.get(data_key, []))
+        log.info(f"[{label}] page={page} 累計={len(all_items)}件")
 
         if data.get("next"):
             url = data["next"]
@@ -244,6 +239,24 @@ def fetch_transactions(token: str, start: datetime, end: datetime) -> list[dict]
         else:
             url = None
 
+    return all_items
+
+
+def fetch_transactions(token: str, start: datetime, end: datetime) -> list[dict]:
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    all_transactions: list[dict] = []
+    for chunk_start, chunk_end in _iter_date_chunks(start, end, MAX_FILTER_RANGE):
+        params = {
+            "filter": f"transactionDate:[{_fmt_ebay_datetime(chunk_start)}..{_fmt_ebay_datetime(chunk_end)}]",
+            "limit": TRANSACTION_PAGE_LIMIT,
+        }
+        all_transactions.extend(
+            _fetch_paginated(TRANSACTION_URL, headers, params, "transactions", "transaction")
+        )
     return all_transactions
 
 
@@ -256,34 +269,15 @@ def fetch_payouts(token: str, start: datetime, end: datetime) -> list[dict]:
         "Accept": "application/json",
         "Content-Type": "application/json",
     }
-    url = PAYOUT_URL
-    params = {
-        "filter": f"payoutDate:[{_fmt_ebay_datetime(start)}..{_fmt_ebay_datetime(end)}]",
-        "limit": PAYOUT_PAGE_LIMIT,
-    }
-
     all_payouts: list[dict] = []
-    page = 1
-    while url:
-        r = requests.get(url, headers=headers, params=params, timeout=30)
-        if r.status_code == 429:
-            log.warning("[payout] レート制限 - 5秒待機してリトライ")
-            time.sleep(5)
-            continue
-        r.raise_for_status()
-        data = r.json()
-
-        all_payouts.extend(data.get("payouts", []))
-        log.info(f"[payout] page={page} 累計={len(all_payouts)}件")
-
-        if data.get("next"):
-            url = data["next"]
-            params = None
-            page += 1
-            time.sleep(0.3)
-        else:
-            url = None
-
+    for chunk_start, chunk_end in _iter_date_chunks(start, end, MAX_FILTER_RANGE):
+        params = {
+            "filter": f"payoutDate:[{_fmt_ebay_datetime(chunk_start)}..{_fmt_ebay_datetime(chunk_end)}]",
+            "limit": PAYOUT_PAGE_LIMIT,
+        }
+        all_payouts.extend(
+            _fetch_paginated(PAYOUT_URL, headers, params, "payouts", "payout")
+        )
     return all_payouts
 
 
@@ -543,33 +537,42 @@ def upsert_row(cur, row: dict) -> None:
 # --------------------------------------------------
 # 既知のSKU/タイトル補完（再取得ウィンドウ内のFulfillment API呼び出しを削減）
 # --------------------------------------------------
+_SQL_PARAM_BATCH_SIZE = 1000  # SQL Serverのパラメータ上限(2100)にマージンを見たIN句の分割単位
+
+
 def get_known_enrichment(cn, account: str, record_ids: list[str]) -> dict[str, dict]:
     """
     DBに既にSKU等が入っているrecord_idについて、値を引いておく。
     ローリングウィンドウでの再取得のたびにFulfillment APIを叩き直す無駄と、
     一時的な失敗でNULL上書きしてしまうリスクを避けるため。
+
+    record_idsが多い場合（初回の大量バックフィル時など）、SQL Serverの
+    パラメータ上限（既定2100）をIN句だけで超えてしまうため、_SQL_PARAM_BATCH_SIZE
+    件ずつに分割してクエリする。
     """
     if not record_ids:
         return {}
     cur = cn.cursor()
-    placeholders = ", ".join("?" for _ in record_ids)
-    cur.execute(
-        f"""
-        SELECT record_id, custom_label, item_title, ebay_item_id, quantity
-        FROM trx.ebay_transactions
-        WHERE account = ? AND record_type = 'TRANSACTION'
-          AND custom_label IS NOT NULL
-          AND record_id IN ({placeholders})
-        """,
-        account, *record_ids,
-    )
-    return {
-        row[0]: {
-            "custom_label": row[1], "item_title": row[2],
-            "ebay_item_id": row[3], "quantity": row[4],
-        }
-        for row in cur.fetchall()
-    }
+    result: dict[str, dict] = {}
+    for i in range(0, len(record_ids), _SQL_PARAM_BATCH_SIZE):
+        batch = record_ids[i:i + _SQL_PARAM_BATCH_SIZE]
+        placeholders = ", ".join("?" for _ in batch)
+        cur.execute(
+            f"""
+            SELECT record_id, custom_label, item_title, ebay_item_id, quantity
+            FROM trx.ebay_transactions
+            WHERE account = ? AND record_type = 'TRANSACTION'
+              AND custom_label IS NOT NULL
+              AND record_id IN ({placeholders})
+            """,
+            account, *batch,
+        )
+        for row in cur.fetchall():
+            result[row[0]] = {
+                "custom_label": row[1], "item_title": row[2],
+                "ebay_item_id": row[3], "quantity": row[4],
+            }
+    return result
 
 
 # --------------------------------------------------
@@ -627,73 +630,6 @@ def sync_account(cn, account: str) -> None:
 
 
 # --------------------------------------------------
-# CSV検証モード（SQL Serverに書き込まず、取得結果をCSVで確認する）
-# --------------------------------------------------
-_CSV_OUTPUT_DIR = _PROJECT_ROOT / "apps" / "etc" / "output"
-
-
-def sync_account_to_csv(
-    account: str, start: datetime, end: datetime, out_dir: Path, include_raw: bool = False
-) -> Path:
-    token = get_access_token_new(account)
-    if not token:
-        raise RuntimeError("アクセストークン取得失敗")
-
-    print(f"[{account}] transaction取得中... ({start:%Y-%m-%d} ~ {end:%Y-%m-%d})")
-    transactions = fetch_transactions(token, start, end)
-    print(f"[{account}] transaction {len(transactions)}件")
-
-    print(f"[{account}] payout取得中... ({start:%Y-%m-%d} ~ {end:%Y-%m-%d})")
-    payouts = fetch_payouts(token, start, end)
-    print(f"[{account}] payout {len(payouts)}件")
-
-    rows = [map_transaction_to_row(t, account) for t in transactions]
-    rows += [map_payout_to_row(p, account) for p in payouts]
-
-    if rows:
-        print(f"[{account}] Fulfillment APIでSKU/タイトル補完中...")
-        enrich_with_fulfillment(token, rows)
-
-    for row in rows:
-        row.pop("_line_item_id", None)
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filepath = out_dir / f"ebay_transactions_{account}_{timestamp}.csv"
-
-    columns = list(_COLUMNS) if include_raw else [c for c in _COLUMNS if c != "raw_json"]
-
-    with open(filepath, mode="w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.writer(f)
-        writer.writerow(columns)
-        for row in rows:
-            writer.writerow([row.get(c, "") for c in columns])
-
-    return filepath
-
-
-def run_csv(args: argparse.Namespace) -> None:
-    accounts = [args.account] if args.account else load_accounts()
-
-    if args.start:
-        start = datetime.strptime(args.start, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-    elif args.days:
-        start = datetime.now(timezone.utc) - timedelta(days=args.days)
-    else:
-        start = DEFAULT_START_DATE
-
-    end = datetime.now(timezone.utc)
-
-    for account in accounts:
-        try:
-            path = sync_account_to_csv(account, start, end, _CSV_OUTPUT_DIR, include_raw=args.raw)
-            print(f"[{account}] CSV出力完了 -> {path}")
-        except Exception as e:
-            log.error(f"[{account}] CSV出力中にエラー: {e}", exc_info=True)
-            print(f"[{account}] エラー: {e}")
-
-
-# --------------------------------------------------
 # メイン処理（1回実行して終了）
 # --------------------------------------------------
 def run(account: Optional[str] = None) -> None:
@@ -718,22 +654,11 @@ def run(account: Optional[str] = None) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="eBay Finances データ取得（DB同期モード / CSV検証モード）"
-    )
-    parser.add_argument(
-        "--mode", choices=["db", "csv"], default="db",
-        help="db: trx.ebay_transactions へUPSERT（既定）/ csv: SQL Serverに書き込まずCSV出力のみ",
+        description="eBay Finances データ取得（SQL Server同期）"
     )
     parser.add_argument("--account", help="対象アカウントを1件だけ指定（未指定なら全アカウント）")
-    parser.add_argument("--start", help="取得開始日 YYYY-MM-DD（csvモードのみ有効。未指定なら2024-04-01）")
-    parser.add_argument("--days", type=int, help="--start の代わりに直近N日を指定（csvモードのみ有効）")
-    parser.add_argument("--raw", action="store_true", help="CSVにraw_json列（API生レスポンス）を含める")
     args = parser.parse_args()
-
-    if args.mode == "csv":
-        run_csv(args)
-    else:
-        run(args.account)
+    run(args.account)
 
 
 if __name__ == "__main__":

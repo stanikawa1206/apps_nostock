@@ -38,7 +38,13 @@ furima_purchase_runner.py（下記「実行オーケストレーション」節�
     完了してから、1つずつ回帰確認しながら実施する）。
 """
 import sys
-sys.stdout.reconfigure(encoding="utf-8")
+# pythonw.exe（コンソール無し）ではsys.stdout/sys.stderrがNoneになるため、
+# タスクスケジューラをpython.exeからpythonw.exeへ切り替えても起動時に
+# AttributeErrorで落ちないようNoneチェックを行う。
+if sys.stdout is not None:
+    sys.stdout.reconfigure(encoding="utf-8")
+if sys.stderr is not None:
+    sys.stderr.reconfigure(encoding="utf-8")
 
 from pathlib import Path
 from dotenv import load_dotenv
@@ -49,15 +55,18 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 import json
+import logging
 import os
 import re
 import socket
 import ssl
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
 from datetime import date, datetime, timedelta, timezone
+from logging.handlers import RotatingFileHandler
 
 import pyodbc
 import requests
@@ -129,6 +138,15 @@ _STATUS_RANK = {
     "出荷済み": 4,
 }
 
+# 【2026-09-10 trx.vendor_purchase廃止に伴い追加】このプログラムの管理外・後工程の
+# 値。write_ebay_status_if_advancing()はランク比較すら行わず、常に上書きしない
+# （例: GA鑑定待ち・◎有在庫はメルカリ到着後の別ワークフロー、出荷済みはeBay側の
+# 発送完了で、このプログラムが管理する「購入〜到着」より後の工程のため）。
+# 「出荷済み」はランク上も最上位(4)のため従来から実質保護されていたが、
+# GA鑑定待ち・◎有在庫はランク表に無く既定で最下位(-1)扱いとなり上書きされて
+# しまっていたため、明示的に保護対象とする。
+PROTECTED_EBAY_STATUSES = ("GA鑑定待ち", "出荷済み", "◎有在庫")
+
 
 def is_shipped_status(status: str) -> bool:
     """
@@ -153,7 +171,9 @@ def write_ebay_status_if_advancing(access_cur, order_id: str, new_status: str) -
     """
     日常.eBayステータスを、状態が後退しない場合のみ上書きする
     （【購入済】/連絡あり(0) < 発送済み(1) < 到着予定(2) < ☆出荷可能/☆到着済(3)）。
-    ランク不明の現在値（人手入力など）は保護対象外とし、これまで通り上書きする。
+    現在値がPROTECTED_EBAY_STATUSES（このプログラムの管理外・後工程の値）の場合は、
+    ランク比較すら行わず一切上書きしない。それ以外でランク不明の現在値（人手入力など）は
+    保護対象外とし、これまで通り上書きする。
     戻り値: 該当行が存在し実際に更新できたか。
     """
     row = access_cur.execute(
@@ -162,8 +182,12 @@ def write_ebay_status_if_advancing(access_cur, order_id: str, new_status: str) -
     if row is None:
         return False
 
+    current_status = row[0]
+    if current_status in PROTECTED_EBAY_STATUSES:
+        return False
+
     new_rank = _STATUS_RANK.get(new_status, 999)
-    current_rank = _STATUS_RANK.get(row[0], -1)
+    current_rank = _STATUS_RANK.get(current_status, -1)
     if new_rank < current_rank:
         return False
 
@@ -214,6 +238,97 @@ def ensure_daily_record(access_conn, vendor_name: str, order_id: str, item_name,
         return True
     finally:
         access_cur.close()
+
+
+def sync_flema_active_orders(access_conn, vendor_name: str, active_order_ids) -> dict:
+    """
+    【2026-09-10 trx.vendor_purchase廃止に伴い新設】各サイトの「取引中」一覧を
+    最後まで正常取得できた直後に、店舗単位で日常.フリマ取引中を一括更新する。
+    呼び出し元は、一覧取得が完全に成功した場合のみこの関数を呼ぶこと
+    （取得失敗・途中中断時はフラグを一切変更しないため、この関数自体を呼ばない）。
+
+    手順（すべて1つのトランザクションとして実行する。【2026-09-10改善】途中で
+    例外が発生した場合はaccess_conn.rollback()して呼び出し元へ再送出し、
+    前回のフラグ状態を維持する。呼び出し元は、一覧取得が完全に成功した場合のみ
+    この関数を呼ぶため、この関数自体の失敗＝そのサイトの処理全体をエラー扱いに
+    してよい）:
+      1. その店舗の「現在ONになっている」行だけをOFFにする
+         （【2026-09-10改善】以前は店舗の全行を無条件UPDATEしており、対象外の
+         行数まで巨大なUPDATE件数として報告されていた。WHERE句にフリマ取引中=True
+         を加え、実際にOFFへ変化させる行だけに限定する）
+      2. active_order_ids に含まれる注文（既存行）はONにする
+         （店舗＋注文IDが日常上で複数行になっている場合は全行を更新する。
+         1回の購入を複数ASIN行に分けて記帳しているケースが実際にあるため）
+      3. 日常に存在しない注文IDは新規追加してONにする。新規追加時の仕入日は
+         スクレイプ実行日（実際の購入日時はこの時点では未取得のため）。
+         品目text・仕入（金額）は空のまま（後続の個別ページ処理・ensure_daily_record()
+         が正確な値を持っていれば追って補うが、この関数自体はここへ書き込まない）。
+         固定値（仕入元="電脳"・区分="その他"・eBayステータス="未入力"）は
+         ensure_daily_record()と同じものを使う（私物購入等も区別せず同じ扱いにする＝
+         除外しない）。
+
+    戻り値: {"reset": OFFへ変化させた行数, "updated": ONにした既存行数, "created": 新規追加件数}
+    """
+    access_cur = access_conn.cursor()
+    try:
+        access_cur.execute(
+            f"UPDATE {ACCESS_TABLE} SET フリマ取引中 = ? WHERE 店舗 = ? AND フリマ取引中 = ?",
+            False, vendor_name, True
+        )
+        reset = access_cur.rowcount
+
+        updated = 0
+        created = 0
+        for order_id in active_order_ids:
+            if not order_id:
+                continue
+            access_cur.execute(
+                f"UPDATE {ACCESS_TABLE} SET フリマ取引中 = ? WHERE 店舗 = ? AND 注文ID = ?",
+                True, vendor_name, order_id
+            )
+            if access_cur.rowcount > 0:
+                updated += access_cur.rowcount
+            else:
+                access_cur.execute(
+                    f"""INSERT INTO {ACCESS_TABLE}
+                        ([注文ID], [仕入元], [店舗], [仕入日], [eBayステータス], [区分], [フリマ取引中])
+                        VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    order_id, FIXED_SOURCE, vendor_name, date.today(), UNENTERED_STATUS, FIXED_CATEGORY, True
+                )
+                created += 1
+    except Exception:
+        access_conn.rollback()
+        raise
+    else:
+        access_conn.commit()
+    finally:
+        access_cur.close()
+
+    return {"reset": reset, "updated": updated, "created": created}
+
+
+def mark_flema_inactive(access_conn, vendor_name: str, order_id: str) -> int:
+    """
+    【2026-09-10 追加】指定の店舗＋注文IDについて、日常.フリマ取引中だけをFalseにする
+    （eBayステータス・到着日・メッセージ履歴など他の列は一切変更しない）。
+    購入者側の対応が完了した（例: メルカリで「受取評価をしました」を検出した）取引を、
+    出品者側がまだ「取引中の商品」一覧に残していても対象外にするために使う
+    （sync_flema_active_orders()の一括ON設定より後にこの関数を呼ぶことで、
+    最終的にOFFの状態を保つ）。
+    店舗＋注文IDが日常上で複数行になっている場合は全行を更新する。
+    戻り値: 更新した行数。
+    """
+    access_cur = access_conn.cursor()
+    try:
+        access_cur.execute(
+            f"UPDATE {ACCESS_TABLE} SET フリマ取引中 = ? WHERE 店舗 = ? AND 注文ID = ?",
+            False, vendor_name, order_id
+        )
+        updated = access_cur.rowcount
+        access_conn.commit()
+    finally:
+        access_cur.close()
+    return updated
 
 
 def update_daily_purchase_status(access_conn, order_id: str, raw_status: str, has_seller_message: bool) -> bool:
@@ -407,11 +522,19 @@ def sync_carrier_tracking_to_daily(access_conn):
     メルカリ・ラクマ・Yahoo!フリマいずれの購入にもそのまま使える。
 
     ステータスの反映ルール:
-      - 配達完了を確認できた場合 → 従来通り販売(eBay/amazon)に応じた到着済みステータス
-        （☆出荷可能／☆到着済）へ進める。
-      - 配達完了はまだだが配達予定日を取得できた場合 → ESTIMATED_ARRIVAL_STATUS(到着予定)。
-        実配達確認済みという意味ではないため、この状態のままでは対象から外れず、
-        次回以降も追跡を継続する。
+      - 配達完了を確認できた場合 → 到着日に実際の配達完了日を書き込み、従来通り
+        販売(eBay/amazon)に応じた到着済みステータス（☆出荷可能／☆到着済）へ進める。
+      - 配達完了はまだだが配達予定日を取得できた場合 → 到着日に配達予定日を書き込み、
+        ステータスをESTIMATED_ARRIVAL_STATUS(到着予定)へ進める。【2026-09-10再修正】
+        一度「配達予定日は到着日に書き込まない」方針に変更したが、ヤマト・日本郵便が
+        提示する到着予定日自体は信頼できる情報として引き続き到着日へ保存する方針に
+        戻した（フリマ画面側で「配達済み」を確認しただけの日付を到着日として代用する
+        （＝旧sync_arrival_status_to_access()のフォールバック）のとは別物）。
+        配達完了確認後は、下のUPDATEが実際の配達完了日で上書きするため、
+        到着予定日が古いまま残ることはない。実配達確認済みという意味ではないため、
+        この状態のままでは対象から外れず、次回以降も追跡を継続する
+        （受取評価忘れアラート側は、eBayステータス=到着予定の間は対象外にする。
+        fetch_pending_seller_messages側の_apply_arrival_reminders()参照）。
     いずれも write_ebay_status_if_advancing により、既存のeBayステータスより
     後退する更新は行わない（サイト側スクレイパーの表示が追いついていないだけで
     巻き戻さないようにするため）。
@@ -461,6 +584,8 @@ def sync_carrier_tracking_to_daily(access_conn):
         if arrival_date is None:
             continue
 
+        # 到着日は、確定配達日・配達予定日のいずれの場合も書き込む（配達完了確認後に
+        # 実行された場合は、ここで実際の配達完了日が予定日を上書きする）。
         with access_conn.cursor() as cur:
             cur.execute(
                 f"UPDATE {ACCESS_TABLE} SET 到着日 = ? WHERE 注文ID = ?",
@@ -561,45 +686,32 @@ TRANSACTION_URL_BUILDERS = {
 }
 
 
-# Access バックエンド（実データ本体。Y:\ヤフオクDB.accdb）に対して、フロントエンド
-# ヤフオク.accdb の保存済みクエリ「到着日入力」と同じ抽出条件を直接実行する。
-# フロントエンドの pyodbc 直結（旧get_access_frontend_connection）は、人がAccessで
-# フロントエンドを開いている間ロック競合(-3810)を起こすことが実機で複数回確認された。
-# 日常・ASINはいずれもフロントエンド側では単なるリンクテーブルで、実体はこのバックエンドに
-# あるため、バックエンドに直結すればフロントエンドの開閉状態に影響されない
-# （フロントエンドを開いたままバックエンドへ直結できることも実機確認済み）。
+# 【2026-09-10 trx.vendor_purchase廃止に伴い変更】従来は「到着日入力」フォームと
+# 同じ条件（仕入日・区分・発送日IS NULL等）で母集団を決めていたが、この条件は
+# 「こちらの作業（eBayへの再出品等）がまだ進んでいない」ことを基準にしており、
+# 各サイトの実際の「現在取引中」状態とは無関係だった（そのため、実サイトでは
+# 既に取引完了しているのに日常側の条件だけで一覧に残り続ける不具合があった。
+# 実例: m17393213750）。
 #
-# 「到着日入力」クエリ自体（WHERE条件）はバックエンド側にはオブジェクトとして
-# 保存されていないため、実機調査済みの条件をここに複製している:
-#     仕入日 >= 2024/7/1 AND 区分 <> "ama輸出"
-#     AND 返品依頼番号 IS NULL AND 発送日 IS NULL AND SKU IS NULL
-#     AND 入金日 IS NULL AND 出品日 IS NULL
-# 今後Access側でこの条件が変更された場合はここも追従して直す必要がある
-# （以前は「クエリの実行結果を正として条件を再実装しない」方針だったが、
-# ロック競合の解消を優先しバックエンド直結・条件複製の方針に変更した）。
-#
-# 商品名はフロントエンドの「到着日入力」と同じ導出方法（ASIN.品目があればそれを、
-# 無ければ日常.品目text を使う）をそのまま再現する。
+# 母集団は、各サイトのメイン取得処理（mercari_main/paypay_main/rakuma_main）が
+# 取引中一覧を最後まで正常取得できるたびに sync_flema_active_orders() で更新する
+# 日常.フリマ取引中フラグだけを基準にする。Access日常の他の列（発送日等）は
+# 一切参照しない（Accessの過去データを起点に検索しない）。
 FETCH_ACTIVE_ORDERS_SQL = """
     SELECT 日常.注文ID,
            IIf(IsNull(ASIN.品目), 日常.品目text, ASIN.品目) AS 商品名,
            日常.eBayステータス,
-           日常.店舗
+           日常.店舗,
+           日常.到着日
     FROM 日常 LEFT JOIN ASIN ON 日常.ASIN = ASIN.ASIN
-    WHERE 日常.仕入日 >= #7/1/2024#
-      AND 日常.区分 <> 'ama輸出'
-      AND 日常.返品依頼番号 IS NULL
-      AND 日常.発送日 IS NULL
-      AND 日常.SKU IS NULL
-      AND 日常.入金日 IS NULL
-      AND 日常.出品日 IS NULL
+    WHERE 日常.フリマ取引中 = True
 """
 
 
 def fetch_active_orders(access_conn) -> dict:
     """
-    バックエンド（Y:\\ヤフオクDB.accdb）へ直結し、「到着日入力」と同じ条件で
-    現在の抽出結果（注文ID・商品名・eBayステータス・店舗）を返す。
+    Access「日常」から、フリマ取引中=True（各サイトの直近の巡回で「取引中」と
+    確認できた注文）の一覧を取得する（注文ID・商品名・eBayステータス・店舗・到着日）。
 
     店舗列は、trx.vendor_messageに保存されている(vendor_name, vendor_item_id)全129件と
     突き合わせて実機検証済み（一致126件・不一致0件・NULL0件。残り3件は日常に
@@ -609,27 +721,136 @@ def fetch_active_orders(access_conn) -> dict:
 
     注文IDが日常テーブル上で複数行になっている場合（実データで実例あり。1回の
     購入で複数ASINを別行として記録している等）、それらをまとめて同一取引として扱う。
-    eBayステータス・店舗は注文単位の情報で、既存の更新処理（write_ebay_status_if_advancing
-    等）が常に注文ID一致の全行へUPDATEするため、対象行間で値が揃っている前提で
-    先に見つかった行の値を採用する。商品名だけは行ごとに異なりうるため、
-    重複を除いて出現順に全件保持する（1件も取りこぼさない）。
+    eBayステータス・店舗・到着日は注文単位の情報で、既存の更新処理
+    （write_ebay_status_if_advancing等）が常に注文ID一致の全行へUPDATEするため、
+    対象行間で値が揃っている前提で先に見つかった行の値を採用する。商品名だけは
+    行ごとに異なりうるため、重複を除いて出現順に全件保持する（1件も取りこぼさない）。
 
-    戻り値: {注文ID: {"product_names": [str, ...], "ebay_status": str, "vendor_name": str}, ...}
+    戻り値: {注文ID: {"product_names": [str, ...], "ebay_status": str, "vendor_name": str,
+                       "arrival_date": date|None}, ...}
     """
     result = {}
     with access_conn.cursor() as cur:
         cur.execute(FETCH_ACTIVE_ORDERS_SQL)
-        for order_id, product_name, ebay_status, vendor_name in cur.fetchall():
+        for order_id, product_name, ebay_status, vendor_name, arrival_date in cur.fetchall():
             if not order_id:
                 continue
             entry = result.setdefault(order_id, {
                 "product_names": [],
                 "ebay_status": ebay_status,
                 "vendor_name": vendor_name,
+                "arrival_date": arrival_date.date() if hasattr(arrival_date, "date") else arrival_date,
             })
             if product_name and product_name not in entry["product_names"]:
                 entry["product_names"].append(product_name)
     return result
+
+
+# 到着日からの経過日数（日付単位。時刻は見ない）がこの値以上で一覧へ強制表示し、
+# 行を黄色にする。+1日（＝ARRIVAL_REMINDER_THRESHOLD_DAYS+1日以上）で赤色にする
+# （具体的な色分けはフロント側のJSで行う。ここは「強制表示するかどうか」の閾値）。
+ARRIVAL_REMINDER_THRESHOLD_DAYS = 3
+
+# 【2026-09-14追加】各サイトの取引ごとの収集処理（個別取引ページの取得〜DB保存）が
+# 例外で失敗した場合に、その取引だけ最大でこの回数まで試行する（1回目の失敗で
+# 即座に諦めず、ページ読み込みの一時的な失敗等を自動的にリトライする）。
+# 3サイト共通（mercari_main/paypay_main/rakuma_main）で使う。取引URL一覧の取得
+# 自体（一覧ページ）の失敗はこの対象外（従来通り、サイト全体のエラーとして扱う）。
+ITEM_COLLECTION_MAX_ATTEMPTS = 2
+ITEM_COLLECTION_RETRY_WAIT_SEC = 3.0
+
+
+def _apply_arrival_reminders(sql_conn, active_orders, items) -> None:
+    """
+    配達後の受取評価忘れアラート。active_orders（fetch_active_orders()の戻り値。
+    日常.フリマ取引中=Trueの注文だけに絞られている＝各サイトの直近の巡回で
+    「現在取引中」と確認できたものだけ）のうち、到着日からARRIVAL_REMINDER_
+    THRESHOLD_DAYS日以上経過しているものを、未返信メッセージの有無や最新送信者に
+    関係なく強制的にitemsへ追加する（既にitemsに含まれている注文は追加せず、
+    到着日情報だけ付与する）。
+
+    【2026-09-10 trx.vendor_purchase廃止に伴い変更】母集団自体が既にフリマ取引中=True
+    （＝直近の巡回で現在取引中と確認できたもの）に限定されているため、この関数側で
+    メルカリだけ別途「取引完了」を除外する必要が無くなった（取引完了・キャンセル等で
+    サイトの取引中一覧から外れた注文は、次回のsync_flema_active_orders()でフラグが
+    OFFになり、active_orders自体に含まれなくなるため自動的に一覧から消える）。
+    is_shippedもメルカリ含め全サイト共通でAccess日常.eBayステータスから判定する
+    （trx.vendor_purchase.statusは参照しない）。
+
+    【2026-09-10 再修正】到着日には配達予定日（未確定）も書き込まれるようになった
+    （sync_carrier_tracking_to_daily()参照）ため、eBayステータスが到着予定
+    （ESTIMATED_ARRIVAL_STATUS）の間はこのアラートの対象にしない。配達予定日は
+    まだ配達完了が確認できていない見込み値であり、これを根拠に受取評価を催促するのは
+    不適切なため（配達完了が確認できると、eBayステータスは☆出荷可能／☆到着済へ
+    進み、到着日も実際の配達完了日に上書きされるため、その時点から対象になる）。
+
+    【2026-09-10 返信不要ボタンとの連動】返品・キャンセル等のトラブル対応中で
+    メッセージのやり取りがある取引は、条件Aによって既にitemsに含まれているのが
+    通常だが、ユーザーが「返信不要」ボタンを押すと最新メッセージのreply_skippedが
+    Trueになり、条件Aから外れる。この関数はitemsに含まれていない注文を到着日基準で
+    無条件に強制表示するため、何もしなければ返信不要が効かず毎回再表示されてしまう。
+    そのためここでも、対象注文の最新メッセージのreply_skippedがTrueの場合は強制表示
+    しない。メッセージが1件も無い「無言発送」のケース（latestがNone）は従来どおり
+    対象にする。新しい出品者メッセージが届くと、その行はreply_skipped=Falseの新しい
+    行になるため（既存のreply_skipped機構と同じ仕組み）、自動的に再び対象へ戻る。
+    フリマ取引中自体は変更しない（返信不要ボタンはreply_skippedのみを更新する既存の
+    /api/messages/skipの仕組みをそのまま使う）。
+
+    itemsはこの関数の呼び出し元が持つリストをin-placeに変更する（新規追加・既存要素への
+    arrival_date_text/days_since_arrival付与の両方）。戻り値なし。
+    """
+    candidates = {
+        oid: info for oid, info in active_orders.items()
+        if info["vendor_name"] in TARGET_VENDOR_NAMES
+        and info.get("arrival_date")
+        and info.get("ebay_status") != ESTIMATED_ARRIVAL_STATUS
+    }
+    if not candidates:
+        return
+
+    today = date.today()
+    items_by_key = {(it["vendor_name"], it["vendor_item_id"]): it for it in items}
+
+    # 新規に一覧へ追加する必要がある注文（まだitemsに含まれておらず、かつ強制表示の
+    # 閾値に達しているもの）だけ、メッセージ履歴を追加取得する。
+    threshold_new_order_ids = [
+        oid for oid, info in candidates.items()
+        if (info["vendor_name"], oid) not in items_by_key
+        and (today - info["arrival_date"]).days >= ARRIVAL_REMINDER_THRESHOLD_DAYS
+    ]
+
+    if threshold_new_order_ids:
+        history_by_key = _fetch_histories_for_orders(sql_conn, threshold_new_order_ids)
+
+        for oid in threshold_new_order_ids:
+            info = candidates[oid]
+            vendor_name = info["vendor_name"]
+
+            history = history_by_key.get((vendor_name, oid), [])
+            latest = history[-1] if history else None
+
+            # 「返信不要」ボタンで最新メッセージがreply_skipped=Trueにされている
+            # 取引は、到着日からの経過日数に関わらず強制表示しない。
+            if latest and latest["reply_skipped"]:
+                continue
+
+            is_shipped = is_shipped_status(info["ebay_status"])
+            suggested_reply = determine_suggested_reply(history, is_shipped)
+
+            new_item = _build_message_item(
+                vendor_name, oid, info["product_names"], is_shipped, history, suggested_reply
+            )
+            items.append(new_item)
+            items_by_key[(vendor_name, oid)] = new_item
+
+    # 到着日情報は、新規追加分・既にitemsにあった分の両方へ付与する
+    # （強制表示の閾値未満でも、参考情報として表示できるようにする）。
+    for oid, info in candidates.items():
+        it = items_by_key.get((info["vendor_name"], oid))
+        if it is None:
+            continue
+        it["arrival_date_text"] = info["arrival_date"].strftime("%Y/%m/%d")
+        it["days_since_arrival"] = (today - info["arrival_date"]).days
 
 
 # ------------------------------------------------------------
@@ -637,17 +858,41 @@ def fetch_active_orders(access_conn) -> dict:
 # ------------------------------------------------------------
 def fetch_pending_seller_messages(sql_conn, access_frontend_conn):
     """
-    対象抽出は次の順序で絞り込む（trx.vendor_messageの蓄積量に対象件数が
-    連動して増え続けないようにするため、Access「到着日入力」の現在の対象を起点にする）:
-      ① Access「到着日入力」に現在表示される注文ID（= trx.vendor_messageのvendor_item_id）
-         と、そのeBayステータス・商品名・店舗（=vendor_name）を取得
+    対象抽出は次の順序で絞り込む:
+      ① Access「日常」でフリマ取引中=True（各サイトの直近の巡回で現在取引中と
+         確認できた注文。sync_flema_active_orders()が更新する）の注文IDと、
+         そのeBayステータス・商品名・店舗（=vendor_name）・到着日を取得
+         【2026-09-10 trx.vendor_purchase廃止に伴い変更】従来はAccess「到着日入力」と
+         同じ条件（発送日IS NULL等、こちらの再出品作業の進捗基準）で母集団を決めて
+         いたが、実サイトの「現在取引中」とは無関係で、既に取引完了した注文が
+         いつまでも一覧に残る不具合があった（実例: m17393213750）。母集団は
+         各サイトのメイン取得処理が実際に確認した「現在取引中」一覧だけに限定する。
       ② 店舗がTARGET_VENDOR_NAMESの注文IDについて、対応する trx.vendor_message の
          メッセージ履歴を取得する（履歴が1件も無い＝一度もメッセージが交換されて
          いない「無言発送」の注文IDも、店舗からvendor_nameが分かるため対象に含める）
       ③ 次のいずれかに該当する取引だけを対象にする（人が「返信不要」にした対象は除く）
            A. 最新メッセージが出品者（sender_type='出品者'）
-           B. 発送済み（is_shipped_status）で、まだ返信2相当を送っていない
+           B. 発送済み（is_shipped）で、まだ返信2相当を送っていない
               （無言発送も対象に含まれる。最新メッセージが誰からでも良い）
+      ④ classify_post_shipping_seller_message()が「発送後の単純なお礼・了承・挨拶」
+         (NO_REPLY_CANDIDATE)と判定した場合でも、現段階（1st step）では対象から
+         除外しない（suggested_reply["ai_no_reply_candidate"]を画面上のバッジ表示に
+         のみ使う）。除外はユーザーが「返信不要」ボタンを押した場合（reply_skipped）
+         のみで行う。
+      ⑤ 配達後の受取評価忘れアラート:上記①〜④とは別に、_apply_arrival_reminders()が、
+         ①で既にフリマ取引中=Trueに絞られた注文のうち、Access「日常」の到着日から
+         ARRIVAL_REMINDER_THRESHOLD_DAYS日（既定3日、日付単位）以上経過している
+         ものを、未返信メッセージの有無や最新送信者に関係なく強制的に追加する
+         （取引完了になればフリマ取引中=Trueから外れるため、母集団①の時点で
+         自動的に対象から消える。上限日数は設けない）。ただし最新メッセージの
+         reply_skippedがTrueの場合（返品・キャンセル等のトラブル対応中の案件を
+         ユーザーが「返信不要」ボタンで一時的に除外した場合）は、フリマ取引中を
+         変更せずとも強制表示しない。新しい出品者メッセージが届けば自動的に
+         再び対象になる（メッセージの無い「無言発送」のケースは従来どおり対象）。
+
+    is_shippedの根拠（発送済みの肯定的証拠）は全サイト共通でAccess日常.eBayステータス
+    （is_shipped_status()）。メルカリも含め、trx.vendor_purchase.statusは参照しない
+    （trx.vendor_purchase廃止に伴い統一）。
 
     戻り値: [
         {
@@ -658,24 +903,46 @@ def fetch_pending_seller_messages(sql_conn, access_frontend_conn):
             "seller_name": str,             # 履歴中の出品者メッセージの sender_name（無ければNone）
             "latest_message": {同形式の辞書}|None,
             "history": [同形式の辞書, ...],  # message_no昇順
-            "suggested_reply": {"text": str, "source": str|None, "template_key": str|None},
+            "suggested_reply": {"text": str, "source": str|None, "template_key": str|None,
+                                 "ai_no_reply_candidate": bool},  # AIが「発送後の単純なお礼・了承・挨拶」と判定した印（1st step。一覧からの除外には使わず、画面上のバッジ表示にのみ使う）
             "can_skip": bool,               # 「返信不要」ボタンを表示してよいか
+            "arrival_date_text": str|None,  # "YYYY/MM/DD"（Access日常.到着日が分かる場合のみ）
+            "days_since_arrival": int|None, # 到着日からの経過日数（日付単位）。3以上で受取評価忘れアラート対象
         },
         ...
     ]
     最新メッセージが新しい順（updated_atが無いものは末尾）で返す。
     """
     active_orders = fetch_active_orders(access_frontend_conn)
-    if not active_orders:
-        return []
 
     target_order_ids = [
         oid for oid, info in active_orders.items()
         if info["vendor_name"] in TARGET_VENDOR_NAMES
     ]
-    if not target_order_ids:
-        return []
 
+    items = []
+
+    if target_order_ids:
+        items = _build_pending_seller_message_items(sql_conn, active_orders, target_order_ids)
+
+    _apply_arrival_reminders(sql_conn, active_orders, items)
+
+    items.sort(key=lambda it: it["latest_message"]["message_no"] if it["latest_message"] else -1, reverse=True)
+    return items
+
+
+def _build_pending_seller_message_items(sql_conn, active_orders, target_order_ids):
+    """
+    fetch_pending_seller_messages()の従来ロジック（対象抽出条件①〜⑤）本体。
+
+    【2026-09-10 trx.vendor_purchase廃止に伴い変更】target_order_ids自体が既に
+    「日常.フリマ取引中=True（各サイトの直近の巡回で現在取引中と確認できたもの）」に
+    限定されているため、ここでメルカリだけ別途「取引完了」を除外する必要が無くなった
+    （取引完了・キャンセル等でサイトの取引中一覧から外れた注文は、次回の
+    sync_flema_active_orders()でフラグがOFFになり、そもそもtarget_order_idsに
+    含まれなくなる）。is_shippedもメルカリ含め全サイト共通でAccess日常.eBayステータス
+    から判定する（trx.vendor_purchase.statusは参照しない）。
+    """
     history_by_key = _fetch_histories_for_orders(sql_conn, target_order_ids)
 
     # trx.vendor_messageに一度も履歴が無い「無言発送」の注文IDも、店舗（=vendor_name）から
@@ -684,24 +951,6 @@ def fetch_pending_seller_messages(sql_conn, access_frontend_conn):
         key = (active_orders[oid]["vendor_name"], oid)
         history_by_key.setdefault(key, [])
 
-    # Mercariの「無言発送」判定（条件B）専用のガード。
-    # 【2026-09-05】別Mercariアカウントで購入した注文（Access日常には正常に存在するが、
-    # 現在の自動取得アカウントの取引一覧には一度も現れない）が、Access日常の
-    # eBayステータスだけを根拠に無言発送扱いされ、/messagesへ誤って表示される
-    # 不具合が発生したための対応。trx.vendor_purchaseは現在の自動取得アカウントが
-    # 実際に取引一覧上でその注文を見つけた場合にのみ行が作られるため、
-    # 一度もその行が無い注文は「現在のアカウントで一度も捕捉したことがない注文」
-    # とみなせる（単発の取得漏れとは異なり、行が完全に無い点で区別できる）。
-    # PayPay/Rakumaはtrx.vendor_purchaseへのUPSERT自体を行っていないため対象外
-    # （条件Aには広げない。条件Aはtrx.vendor_messageの実データに基づくため対象外）。
-    mercari_order_ids = [
-        oid for oid in target_order_ids
-        if active_orders[oid]["vendor_name"] == MERCARI_VENDOR_NAME
-    ]
-    mercari_status_by_id = _fetch_vendor_purchase_statuses(
-        sql_conn, MERCARI_VENDOR_NAME, mercari_order_ids
-    )
-
     items = []
     for (vendor_name, vendor_item_id), history in history_by_key.items():
         order_info = active_orders.get(vendor_item_id)
@@ -709,6 +958,7 @@ def fetch_pending_seller_messages(sql_conn, access_frontend_conn):
             continue
 
         is_shipped = is_shipped_status(order_info["ebay_status"])
+
         latest = history[-1] if history else None
         suggested_reply = determine_suggested_reply(history, is_shipped)
 
@@ -724,48 +974,78 @@ def fetch_pending_seller_messages(sql_conn, access_frontend_conn):
         # 条件B: 発送済みで、まだ返信2相当を送っていない（無言発送も含む）。
         # メッセージが1件も無いことがあるため、reply_skippedを乗せる行が無く、
         # このケースは「返信不要」を保存しない（ボタン自体を表示しない）。
-        # Mercariに限り、trx.vendor_purchaseに一度も行が無い注文（＝現在の自動取得
-        # アカウントで一度も取引として捕捉していない注文）はここで除外する。
-        if is_shipped and suggested_reply["template_key"] == "shipped_2":
-            if vendor_name != MERCARI_VENDOR_NAME or vendor_item_id in mercari_status_by_id:
-                include = True
+        if suggested_reply["template_key"] == "shipped_2":
+            include = True
 
-        # Mercariに限り、取引ページ自体が既に「取引が完了しました」と確認できている
-        # 取引（trx.vendor_purchase.status == MERCARI_COMPLETED_STATUS）は、
-        # 条件A・条件Bのどちらに該当していても対象外にする（取引完了後は返信不要のため）。
-        # 個別IDでの除外ではなく、mercari_mark_transaction_completed()が記録した
-        # 汎用ステータス値による判定。
-        if vendor_name == MERCARI_VENDOR_NAME and mercari_status_by_id.get(vendor_item_id) == MERCARI_COMPLETED_STATUS:
+        # 【2026-09-15 2nd stepへ変更】AI判定「返信不要候補」
+        # （suggested_reply["ai_no_reply_candidate"]）の取引は、対応一覧から自動的に
+        # 除外する。これは表示条件（include）だけの変更であり、
+        # trx.vendor_message.reply_skippedは一切更新しない（DBは変更しない）。
+        # メッセージ送信も行わない。ai_no_reply_candidateはdetermine_suggested_reply()が
+        # 最新の出品者メッセージ本文から毎回計算する値のため、新しい出品者メッセージが
+        # 届けば最新メッセージが変わり、その新しい内容で改めてAI判定される
+        # （人による確認が必要な内容と判定されればFalseに戻り、自然に一覧へ再表示される）。
+        # ai_no_reply_candidateはtemplate_key=="shipped_2"（条件B）とは同時に成立しない
+        # （determine_suggested_reply()の設計上、shipped_2はai_no_reply_candidate=Falseで
+        # しか返らない）ため、条件Bで含めた取引を誤って除外することはない。
+        # 【2026-09-10 1st stepへ戻す】から方針転換。「配達後の受取評価忘れアラート」
+        # （_apply_arrival_reminders()の強制表示）はこの除外の対象外
+        # （到着後の受取評価忘れは、メッセージ内容やAI判定に関係なく引き続き表示する）。
+        if suggested_reply["ai_no_reply_candidate"]:
             include = False
+            print(f"[messages] AI判定NO_REPLY_CANDIDATEのため一覧から除外: "
+                  f"vendor_name={vendor_name} vendor_item_id={vendor_item_id}")
 
         if not include:
             continue
 
-        # 返信不要ボタンは、実際にフラグを立てられる対象（条件Aで、かつ既に
-        # 返信不要済みでない出品者メッセージが存在する場合）にのみ表示する。
-        can_skip = bool(latest and latest["sender_type"] == "出品者" and not latest["reply_skipped"])
+        items.append(_build_message_item(
+            vendor_name, vendor_item_id, order_info["product_names"], is_shipped, history, suggested_reply
+        ))
 
-        seller_messages = [m for m in history if m["sender_type"] == "出品者"]
-        items.append({
-            "vendor_name": vendor_name,
-            "vendor_item_id": vendor_item_id,
-            "product_names": order_info["product_names"],
-            "transaction_url": _build_transaction_url(vendor_name, vendor_item_id),
-            "seller_name": seller_messages[-1]["sender_name"] if seller_messages else None,
-            "is_shipped": is_shipped,
-            "latest_message": latest,
-            "history": history,
-            "suggested_reply": suggested_reply,
-            "can_skip": can_skip,
-        })
-
-    items.sort(key=lambda it: it["latest_message"]["message_no"] if it["latest_message"] else -1, reverse=True)
     return items
 
 
 def _build_transaction_url(vendor_name, vendor_item_id):
     builder = TRANSACTION_URL_BUILDERS.get(vendor_name)
     return builder(vendor_item_id) if builder else None
+
+
+def _build_message_item(vendor_name, vendor_item_id, product_names, is_shipped, history, suggested_reply):
+    """
+    /messages表示用のitem辞書を1件分組み立てる。
+
+    【2026-09-11 重複除去】_build_pending_seller_message_items()と
+    _apply_arrival_reminders()の両方に、can_skipの算出式とitem辞書の各フィールド
+    組み立てが一字一句同一のコードとして重複していたため、挙動を一切変えずに
+    ここへ統合した（ステージ2）。latest_message・can_skip・seller_nameはhistoryから
+    ここで計算する（呼び出し元は渡す必要が無い）。呼び出し元が別の目的（含めるか
+    どうかの判定・reply_skippedによる強制表示スキップの判定）でhistory[-1]を
+    先に参照していても、ここでの再計算は同じ入力から同じ結果を返すだけなので
+    問題ない。arrival_date_text/days_since_arrivalは常にNoneで初期化する
+    （到着日情報はfetch_pending_seller_messages()経由で_apply_arrival_reminders()が
+    新規追加分・既存分の両方へ後から一括付与するため、ここでは関与しない）。
+    """
+    latest = history[-1] if history else None
+    # 返信不要ボタンは、実際にフラグを立てられる対象（最新メッセージが出品者で、
+    # まだ「返信不要」にされていない場合）にのみ表示する。
+    can_skip = bool(latest and latest["sender_type"] == "出品者" and not latest["reply_skipped"])
+    seller_messages = [m for m in history if m["sender_type"] == "出品者"]
+
+    return {
+        "vendor_name": vendor_name,
+        "vendor_item_id": vendor_item_id,
+        "product_names": product_names,
+        "transaction_url": _build_transaction_url(vendor_name, vendor_item_id),
+        "seller_name": seller_messages[-1]["sender_name"] if seller_messages else None,
+        "is_shipped": is_shipped,
+        "latest_message": latest,
+        "history": history,
+        "suggested_reply": suggested_reply,
+        "can_skip": can_skip,
+        "arrival_date_text": None,
+        "days_since_arrival": None,
+    }
 
 
 def _fetch_histories_for_orders(sql_conn, order_ids):
@@ -814,28 +1094,6 @@ def _fetch_histories_for_orders(sql_conn, order_ids):
     return history_by_key
 
 
-def _fetch_vendor_purchase_statuses(sql_conn, vendor_name, order_ids):
-    """
-    trx.vendor_purchaseに存在する、指定vendor_nameかつorder_ids中の
-    vendor_item_idの行について、{vendor_item_id: status} を返す
-    （行が無いものは辞書に含まれない＝「現在の自動取得アカウントが、この注文を
-    取引一覧上で一度も見つけて登録したことがない」ことを意味する）。
-    fetch_pending_seller_messagesのMercari専用判定
-    （無言発送のガード・取引完了の除外）で使う。
-    """
-    order_ids = list(order_ids)
-    if not order_ids:
-        return {}
-
-    order_id_placeholders = ", ".join(["?"] * len(order_ids))
-    with sql_conn.cursor() as cur:
-        cur.execute(f"""
-            SELECT vendor_item_id, status FROM trx.vendor_purchase
-            WHERE vendor_name = ? AND vendor_item_id IN ({order_id_placeholders})
-        """, [vendor_name] + order_ids)
-        return {row[0]: row[1] for row in cur.fetchall()}
-
-
 # ------------------------------------------------------------
 # 「返信不要」の永続化（trx.vendor_message.reply_skipped）
 # ------------------------------------------------------------
@@ -877,37 +1135,316 @@ TEMPLATE_SHIPPED = (
     "仕事等の事情により、少し遅くなる場合もございます。\n"
     "恐縮ですが、お待ちいただけますと助かります。"
 )
-# 既にこの趣旨の返信を送信済みかどうかの判定に使うキーワード（部分一致）。
-_TEMPLATE_SHIPPED_DETECT_RE = re.compile("到着を楽しみに|受取通知")
+# 既にこの趣旨の返信を送信済みかどうかの判定に使うキーワード（両方を含む場合のみ一致）。
+# 【2026-09-11修正（段階B）】従来はOR（いずれか一方でも部分一致）だったため、無関係な
+# メッセージが偶然どちらか一方のキーワードだけ含む場合に誤って「送信済み」と判定される
+# リスクがあった（例: 「到着を楽しみに待ってます」とだけ書かれた、テンプレ由来ではない
+# 独立したメッセージ）。TEMPLATE_SHIPPEDは元々両方のフレーズを含む文面のため、AND
+# （両方とも含む場合のみ一致）へ厳格化しても、テンプレそのもの・軽微な編集を含む送信は
+# 引き続き検出できる（実データ335件で検証済み、判定結果への影響なし）。2つのフレーズの
+# 順序は問わない（zero-widthの先読みのため、一致した位置の文字列は消費しない）。
+_TEMPLATE_SHIPPED_DETECT_RE = re.compile(r"(?=.*到着を楽しみに)(?=.*受取通知)", re.DOTALL)
 
-# 出品者からのメッセージが「発送完了」の連絡かどうかの判定。
-# 「発送」という文字を含むだけでは判定しない（「明日発送します」「発送予定です」
-# 「発送手続きする予定です」「まだ発送していません」「発送が遅れています」
-# 「発送できていません」等の未完了・予定・否定表現を誤検知しないため）。
-# 「発送(手配)?(いた)?しました」の形の完了表現（発送しました／発送いたしました／
-# 発送手配いたしました等）に加え、「発送手続き完了しました」も明確な発送完了表現の
-# positive evidenceとして追加する（実例m95550121828で実際に出品者から届いた文言。
-# 2026-09-01追加）。negative/未来表現の除外リストは追加せず、あくまで確認できた
-# 完了表現を列挙する方式を維持する。
-# ただし「発送手続き完了しましたら」（「〜たら」＝未来の条件節。実例m95550121828の
-# message_no=1「発送手続き完了しましたらまたご連絡いたします」＝まだ発送していない
-# 時点の予告文）は完了報告ではないため、直後に「ら」が続く場合は除外する
-# （否定語の列挙ではなく、追加した完了表現そのものの精度を上げるための否定先読み）。
-# メルカリ側の配送ステータス反映には時間差があるため（例: ゆうパケットポストの
-# 投函直後など）、出品者が発送完了を明言した時点で発送のお礼を出したい、という
-# 実運用上の要望に基づく。実際に発送済みかどうかの追跡はこの判定の責任範囲外
-# （既存の通常の配送ステータス取得処理に任せる）。
-# 「発送」に加え「出荷」も同じ発送完了の言い回しとして扱う（実例m0443821001
-# 「本日出荷済みです。到着までしばらくお待ちください。」が「発送」表現しか
-# 見ていなかったため候補なしになっていた。2026-09-03追加）。また「済み」
-# （「出荷済みです」等、「しました」ではない完了の言い切り形）も完了表現として
-# 追加する。「準備」「予定」「遅れ」等の未完了表現は「発送/出荷」の直後に
-# 続かないため、これらのpositive evidenceを追加しても誤検知しない
-# （「発送準備中です」「出荷予定です」等は「発送」「出荷」の直後がこの alternation
-# のいずれにも一致しないため対象外のまま）。
-_SHIPPED_COMPLETE_MESSAGE_RE = re.compile(
-    "(?:発送|出荷)(?:(?:手配)?(?:いた)?しました|手続き完了しました(?!ら)|済み(?:です)?)"
-)
+# 出品者の最新メッセージの「意味」による分類（AI・gpt-4o-mini）。
+# 【2026-09-08】以前は「発送完了の連絡かどうか」を正規表現（_SHIPPED_COMPLETE_MESSAGE_RE）
+# で判定していたが、実例が出るたびに表現の追加・調整が必要になり
+# （m37241994132「発送（投函）いたしました」、m50492038090「発送しましたら」等）、
+# 個別の言い回しを列挙し続ける保守負債になっていた。また「商品状態の追加説明＋
+# 問題なければ発送する」といった、購入者の確認・判断が必要な内容（実例
+# m96926753890）を機械的なキーワード列挙だけで安全に見分けるのは困難なため、
+# 正規表現ではなくメッセージ全体の意味をAIに分類させる方式に変更した。
+# apps/etc/fetch_messages_ebay.py の analyze_price_negotiation()/_extract_offer() と
+# 同じ gpt-4o-mini・JSON応答・例外時は安全側にフォールバックするパターンを踏襲する。
+#
+# 将来的に「フリマ情報取得」実行時、安全に定型返信できるものだけを自動送信し、
+# それ以外は/messagesに残して人間が判断する運用を見据えているため、
+# 「自動返信しても安全か」を最優先の基準とする。分類に自信が持てない場合・
+# API呼び出し自体が失敗した場合は、必ずHUMAN_REVIEW（定型文なし）にする
+# （本来定型文でよいものを人間判断に回す誤りは許容するが、本来人間が確認すべき
+# ものに定型文をセットする誤りは避ける、という優先順位）。
+MERCARI_REPLY_CLASSIFICATION_MODEL = "gpt-4o-mini"
+MERCARI_REPLY_CATEGORIES = ("SAFE_GREETING", "SHIPPED", "HUMAN_REVIEW")
+
+# メッセージ本文(str)→分類結果(str)。/messages画面はGETのたびに未返信の全取引を
+# 再分類していたため、送信直後のlocation.reload()等で同じ本文へ何度もAPI課金・
+# 待ち時間（実測1件あたり約1〜1.5秒）が発生していた。本文が変わらない限り結果も
+# 変わらない前提でプロセス内メモリにキャッシュする（プロセス再起動でクリアされる想定）。
+# API例外時のフォールバック（HUMAN_REVIEW）は「その時点でAPIが呼べなかった」だけの
+# 結果のため、キャッシュしない（次回呼び出し時に再度APIを試みられるようにする）。
+_MERCARI_REPLY_CLASSIFICATION_CACHE_MAX_SIZE = 500
+_mercari_reply_classification_cache: dict = {}
+
+
+def classify_mercari_seller_message(message_body: str) -> str:
+    """
+    出品者の最新メッセージ本文をAIで分類する。戻り値はMERCARI_REPLY_CATEGORIESのいずれか。
+      - SAFE_GREETING: 単純な挨拶・お礼・発送予定等、購入者の確認や判断を必要としない
+      - SHIPPED: 発送完了の連絡
+      - HUMAN_REVIEW: 質問・確認依頼・商品状態の追加説明・説明との相違・欠品や傷等の
+        問題・キャンセルや変更の相談・購入者の了承や判断が必要な内容、その他判断に
+        迷うもの全般
+    """
+    if message_body in _mercari_reply_classification_cache:
+        return _mercari_reply_classification_cache[message_body]
+
+    from openai import OpenAI
+
+    client = OpenAI()
+    try:
+        resp = client.chat.completions.create(
+            model=MERCARI_REPLY_CLASSIFICATION_MODEL,
+            max_tokens=50,
+            messages=[{"role": "user", "content":
+                "Classify this Japanese message from a Mercari (フリマ) seller to a buyer into "
+                "exactly one category:\n"
+                '- "SAFE_GREETING": a simple greeting, thanks, or shipping-schedule notice that '
+                "requires no confirmation, decision, or answer from the buyer.\n"
+                '- "SHIPPED": the seller states the item has already been shipped/handed to a carrier. '
+                "This still counts as SHIPPED even if the message also includes the routine standard "
+                "closing asking the buyer to leave a receipt rating once the item arrives "
+                "(e.g. \"到着後にご確認・受け取り評価をお願いいたします\") — that is a boilerplate "
+                "closing on almost every shipping notice, not a decision the buyer must make now. "
+                "IMPORTANT: only use SHIPPED when the seller states the item has ALREADY been "
+                "shipped/handed to a carrier (past tense, e.g. \"発送しました\", \"発送済みです\", "
+                "\"本日発送完了しました\"). A future-tense promise to ship later "
+                "(e.g. \"今夜発送します\", \"今夜発送させて頂きます\", \"明日発送予定です\", "
+                "\"発送準備中です\") is NOT shipped yet — classify those as SAFE_GREETING "
+                "(a shipping-schedule notice), never SHIPPED.\n"
+                '- "HUMAN_REVIEW": anything that asks the buyer a question, requests confirmation or '
+                "approval about something OTHER than the routine post-arrival rating, describes an "
+                "additional item condition/defect/discrepancy from the listing, offers or discusses a "
+                "cancellation or change, or is otherwise not a plain greeting or shipping notice.\n\n"
+                'If you are not confident, always answer "HUMAN_REVIEW".\n'
+                'Reply JSON only: {"category": "SAFE_GREETING"|"SHIPPED"|"HUMAN_REVIEW"}\n\n'
+                f"Message: {message_body}"
+            }]
+        )
+        raw = resp.choices[0].message.content
+        try:
+            data = json.loads(raw or "{}")
+        except Exception:
+            data = {}
+        category = data.get("category") if isinstance(data, dict) else None
+        result = category if category in MERCARI_REPLY_CATEGORIES else "HUMAN_REVIEW"
+    except Exception:
+        return "HUMAN_REVIEW"
+
+    if len(_mercari_reply_classification_cache) >= _MERCARI_REPLY_CLASSIFICATION_CACHE_MAX_SIZE:
+        _mercari_reply_classification_cache.pop(next(iter(_mercari_reply_classification_cache)))
+    _mercari_reply_classification_cache[message_body] = result
+    return result
+
+
+# ------------------------------------------------------------
+# 発送後メッセージの「AI返信不要候補」判定（確認運用）
+# ------------------------------------------------------------
+# 【2026-09-10 確認運用として追加】発送お礼(shipped_2)を送信済みの後、出品者から
+# 追加で届いたメッセージ（受取評価の催促・単純なお礼への返信・無言の追加連絡等）は、
+# 従来determine_suggested_reply()のどの分岐にも該当せず、常に「候補なし」（人が
+# 内容を読んで都度判断）になっていた。ここでは既存の一覧・除外の仕組みには一切
+# 手を加えず、あくまで「AIが単純なお礼・了承・挨拶と判定した」という印を
+# suggested_replyへ付加するだけにとどめる（DBスキーマ変更なし。この印は
+# messages_blueprint.py の /api/messages/send 等には一切使われず、
+# 「返信不要」ボタン（trx.vendor_message.reply_skipped）を人が押した場合のみ、
+# 従来どおり対象から除外される）。
+POST_SHIPPING_NO_REPLY_MODEL = "gpt-4o-mini"
+POST_SHIPPING_NO_REPLY_CATEGORIES = ("NO_REPLY_CANDIDATE", "HUMAN_REVIEW")
+
+# 【2026-09-15 プロンプトv2】実機不具合m54422719245・m83916728734を受けて修正。
+# 旧プロンプトは「受取評価への言及があれば理由を問わず一律HUMAN_REVIEW」だったため、
+# 「評価は急がなくてよい／期限内でよい」という、購入者へのプレッシャーを解除する
+# だけの言い回し（催促の逆）まで、単に"評価"という単語に触れているというだけで
+# HUMAN_REVIEWに巻き込んでいた。プロンプトv2では、催促（急かす・依頼するニュアンス）
+# と、催促の否定（急がなくてよい旨の許容表現）を明確に区別する。
+
+# 【2026-09-15 プロンプトv3】v2ではm83916728734（純粋な許容表現のみ）は解消したが、
+# m54422719245（「ゆっくりで構いません」＋「ご確認でき次第受取評価していただけたら
+# と思います」のように、急がせない表現に加えて“受取評価そのものへの軽い依頼”が
+# 伴うケース）はHUMAN_REVIEWのままだった。v3では、この特定の組み合わせ
+# （①急がせない表現があり、②依頼内容が「到着・商品確認後の受取評価」だけに限定され、
+# ③それ以外の質問・別の依頼・催促・期限を強調する表現・苦情・配送や商品のトラブルが
+# 一切無い）場合に限り、NO_REPLY_CANDIDATEに含める。「お願いします」等の依頼表現を
+# 全般的に返信不要へ広げるものではなく、あくまで受取評価１点への軽い依頼＋急がせない
+# 表現の組み合わせだけを対象にする（実データ98件でのバックテストで、この組み合わせに
+# 該当しない依頼系メッセージ（例:「こちらのご評価もお願い致します。」等）が
+# NO_REPLY_CANDIDATE化しないことを確認済み）。
+# それ以外の分岐（質問・別の依頼・トラブル・返品・苦情・期限を強調する催促・判断に
+# 迷う場合は必ずHUMAN_REVIEW、API失敗時もHUMAN_REVIEW）は変更しない。
+#
+# プロンプト文面の作成過程で、次の2つの過剰一般化（危険な誤判定）を検出し、明示的な
+# 禁止例をプロンプトへ追記して修正済み（実データ98件のバックテストで再検証済み）。
+#   - 「ご確認いただければと思います」のように"評価"という語を含まない一般的な
+#     "確認"依頼まで、文脈から受取評価だと推測して誤って対象に含めてしまう挙動
+#     → (ii)の適用には「評価」「受取評価」等の語を本文が明示していることを必須化した。
+#   - 「お待ちしております」のように、急かさない旨の明示的な言い回しを伴わずに
+#     「（評価を）待っている」と述べるだけの文を、許容表現(i)と誤認する挙動
+#     → 「お待ちしております」単体は許容表現に当たらない旨を明記した。
+#
+# 【2026-09-15 プロンプトv4】v3を実データ98件でバックテストした結果、単純な
+# 「よろしくお願いします」「了解しました」等（他に一切内容を伴わない）14件までもが
+# HUMAN_REVIEW側へ巻き戻ってしまっていた（v3のcase(a)の説明が短く、モデルが自信を
+# 持てなかったとみられる）。v4ではcase(a)の記述を具体化し、お礼・了承・結び言葉を
+# 組み合わせただけの文面（他に新情報・依頼・状況報告を一切伴わない）の実例を明示して
+# 復元した。一方、次の4種は依然としてHUMAN_REVIEW対象であることを明示的に固定した
+# （実データで人の確認が必要と判断した7件のうち、発送状況の連絡・独自の値引き提案・
+# トラブルへの言及・対象不明な「お手隙の際」等がこれに該当）：
+#   - 発送・配達状況の連絡（例:「発送完了しております」）→ 発送状況バーとshipped_2の
+#     送信状況によって返信要否が変わるため、常にHUMAN_REVIEW
+#   - 迷惑・不手際・過去の行き違いへの言及や謝罪
+#   - 値引き等の新たな申し出・約束（単純なお礼・了承ではない）
+#   - 「お手隙の際で大丈夫です」等、対象が本文中に明示されない「急がなくてよい」表現
+#
+# 【2026-09-15 決定的セーフガード追加】「受け取り」「受領」「受取」を含みながら直後に
+# 「評価」と続かない（＝受取評価そのものと確実には言い切れない）曖昧な文面は、
+# AIがNO_REPLY_CANDIDATEと分類した場合でも実行時にHUMAN_REVIEWへ強制的に倒す。
+# 本番はAIの1回の判定結果でtrx.vendor_messageの当該メッセージが一覧から除外され、
+# しかもその結果はプロンプトバージョン単位でプロセス内キャッシュされるため、
+# プロンプト調整だけでは「稀にNO_REPLY_CANDIDATEに揺れた結果がそのままキャッシュ
+# され続ける」リスクを完全には排除できない（実機検証で、この種の曖昧な文言について
+# 3〜5回に1回程度、AIの判定が割れることを確認済み）。正規表現によるこのガードは
+# AIの応答を受け取った直後・キャッシュに保存する前に適用するため、ゆれた結果が
+# キャッシュされること自体を防げる。「受取評価」「受け取り評価」「受領評価」等、
+# 直後に「評価」と続く場合はこのガードの対象外（曖昧ではないため）。
+_AMBIGUOUS_RECEIPT_WORDING_RE = re.compile(r"受(?:け取り|領|取)(?!評価)")
+#
+# プロンプトを変更すると同じ本文でも過去のキャッシュ結果（旧プロンプトでの判定）が
+# 混在してしまうため、キャッシュキーにプロンプトバージョンを含め、旧バージョンの
+# キャッシュ内容とは独立させる。
+POST_SHIPPING_NO_REPLY_PROMPT_VERSION = "v9-2026-09-15"
+
+# classify_mercari_seller_message()と同じ理由（同じ本文への再判定・API課金を防ぐ）で
+# 別キャッシュを持つ（判定基準・プロンプトが異なるため、既存キャッシュとは共有しない）。
+# キーは(プロンプトバージョン, message_body)のタプル。
+_POST_SHIPPING_NO_REPLY_CACHE_MAX_SIZE = 500
+_post_shipping_no_reply_cache: dict = {}
+
+
+def classify_post_shipping_seller_message(message_body: str) -> str:
+    """
+    発送お礼を送信済みの取引で、出品者から追加で届いた最新メッセージをAIで分類する。
+    戻り値はPOST_SHIPPING_NO_REPLY_CATEGORIESのいずれか。
+      - NO_REPLY_CANDIDATE:
+          (a) 単純なお礼・了承・挨拶のみ、
+          (b) 「評価は急がなくてよい・期限内でよい」という購入者へのプレッシャーを
+              解除するだけの連絡（他の内容を一切伴わない）、
+          (c) 急がせない表現があり、かつ依頼内容が「到着・商品確認後の受取評価」
+              だけに限定され、それ以外の質問・別の依頼・催促・期限を強調する表現・
+              苦情・配送や商品のトラブルが一切無いもの
+        のいずれか。(c)は「お願いします」等の依頼表現全般を対象にするものではなく、
+        受取評価１点への軽い依頼＋急がせない表現の組み合わせだけに限定する。
+      - HUMAN_REVIEW: 質問、受取評価以外の依頼、期限を強調する催促、発送トラブル、
+        返送、未着、住所の問題、苦情・不満、その他判断が曖昧なもの全般。分類に
+        自信が持てない場合・API呼び出し失敗時も必ずこちらにする（本来HUMAN_REVIEWで
+        良いものをNO_REPLY_CANDIDATEに誤判定する方を避ける、という優先順位は
+        classify_mercari_seller_message()と同じ）。
+
+    【決定的セーフガード】AIがNO_REPLY_CANDIDATEと判定した場合でも、本文に「受け取り」
+    「受領」「受取」を含み、かつ直後に「評価」と続かない（＝受取評価そのものと確実には
+    言い切れない）場合は、この関数がAI応答を受け取った直後・キャッシュへ保存する前に
+    強制的にHUMAN_REVIEWへ上書きする（_AMBIGUOUS_RECEIPT_WORDING_RE）。AIの1回の判定が
+    稀に揺れてNO_REPLY_CANDIDATE側に倒れても、それがそのままキャッシュされて一覧除外に
+    使われる事態を防ぐための正規表現ベースの安全側固定であり、HUMAN_REVIEW→
+    NO_REPLY_CANDIDATEへの上書きは行わない（安全側にしか倒さない）。
+    """
+    cache_key = (POST_SHIPPING_NO_REPLY_PROMPT_VERSION, message_body)
+    if cache_key in _post_shipping_no_reply_cache:
+        return _post_shipping_no_reply_cache[cache_key]
+
+    from openai import OpenAI
+
+    client = OpenAI()
+    try:
+        resp = client.chat.completions.create(
+            model=POST_SHIPPING_NO_REPLY_MODEL,
+            max_tokens=50,
+            messages=[{"role": "user", "content":
+                "This is a Japanese flea-market (フリマ) transaction. The seller has already "
+                "shipped the item and the buyer has already sent the routine shipping "
+                "acknowledgement reply. Classify this ADDITIONAL message the seller sent "
+                "afterward into exactly one category:\n"
+                '- "NO_REPLY_CANDIDATE": ONLY one of these three cases:\n'
+                "  (a) The message consists ENTIRELY of thanks, a simple acknowledgement/agreement "
+                "(了解しました/承知いたしました/かしこまりました), and/or a closing goodwill phrase "
+                "(よろしくお願いします系) — alone or combined with each other and/or with a brief "
+                "generic personal remark that adds no new information, request, or status "
+                "(e.g. \"心配性ですので助かります\") — with NOTHING else added. Being longer or "
+                "combining several such elements does not disqualify it. Examples of case (a): "
+                "\"よろしくお願いします。\", \"了解しました。\", \"かしこまりました、よろしくお願いいたし"
+                "ます。\", \"ご丁寧にありがとうございます。承知いたしました。引き続きよろしくお願いいた"
+                "します。\", \"了解しました。こちらもなにかあれば対応させて頂きますので取引終了までよろ"
+                "しくお願いします。\", \"丁寧にご連絡頂き有難うございます。心配性ですので助かります。承"
+                "知致しました。\".\n"
+                "  (b) The seller reassures the buyer that leaving the receipt rating/evaluation "
+                "late, within the deadline, or whenever convenient is completely fine and there "
+                "is no need to rush, using an EXPLICIT no-rush/no-need-to-hurry phrase (e.g. "
+                "\"評価は期限内にいただければ全く構いません\", \"受取評価はゆっくりで大丈夫です\", \"急が"
+                "なくて結構です\", \"無理なさらず\"), with nothing else asked, requested, or "
+                "mentioned.\n"
+                "  (c) A no-rush / take-your-time expression (e.g. \"ゆっくりで構いません\") is "
+                "combined with a request that EXPLICITLY names the receipt rating/evaluation "
+                "itself using a word that contains 評価 (e.g. 評価, 受け取り評価, 受取評価) — plain "
+                "\"受け取り\"/\"受領\" WITHOUT 評価, or a generic \"ご確認ください\"/\"確認していただけ"
+                "れば\", do NOT count as naming it (e.g. \"受け取りなどお願い致します\" does not "
+                "qualify — it never says 評価) — and asks "
+                "for NOTHING beyond that rating, after the item arrives and has been checked "
+                "(e.g. \"ゆっくりで構いませんので、ご確認でき次第受取評価していただけたらと思います\").\n"
+                '- "HUMAN_REVIEW": ANYTHING else. In particular, always answer HUMAN_REVIEW — '
+                "regardless of how friendly or polite the tone is, and even if it superficially "
+                "resembles (a)/(b)/(c) — when the message contains ANY of:\n"
+                "  * a statement about shipping/delivery status or timing (e.g. \"発送完了しており"
+                "ます\", \"もう少しで届くと思われます\", \"本日発送しました\") — this is status "
+                "information, not mere thanks;\n"
+                "  * an apology or reference to any inconvenience, mistake, complaint, or past "
+                "friction (e.g. \"ご迷惑をおかけし申し訳ありませんでした\", \"催促したみたいで申し訳あり"
+                "ません\");\n"
+                "  * a new offer, promise, discount, or any other substantive statement beyond "
+                "thanks/acknowledgement/closing (e.g. \"次回リピーター割引致します\");\n"
+                "  * a \"take your time\"/\"no rush\" expression whose grammatical target is NOT "
+                "explicitly the rating/evaluation itself — e.g. it refers to \"取引\" (the "
+                "transaction in general), an unspecified \"お手隙の際\"/\"ご都合\"/\"タイミング\", or "
+                "anything other than a word like 評価/受取評価/受け取り評価 (examples: \"お手隙の際で"
+                "大丈夫です\" alone, \"はい！お手隙の際によろしくお願いいたします✨\", \"取引急いでおり"
+                "ませんので、都合でご対応ください\") — none of these satisfy (b) or (c), which both "
+                "require the no-rush wording to explicitly attach to the rating/evaluation, not to "
+                "the transaction/timing/convenience in general;\n"
+                "  * a phrase that merely expresses the seller is waiting/looking forward to the "
+                "rating or receipt notification (e.g. \"お待ちしております\") WITHOUT an explicit "
+                "no-rush phrase — this is anticipation, not the reassurance required by (b);\n"
+                "  * a question, any request other than the narrow receipt-rating case in (c), a "
+                "rating request/reminder that lacks a clear no-rush qualifier (e.g. \"こちらのご評"
+                "価もお願い致します。\" alone), wording that presses/emphasizes a deadline (simply "
+                "stating a deadline is fine either way, as in (b), does not count as pressing "
+                "it), a return/refund discussion, the item not arriving, an address/delivery "
+                "problem, or anything else ambiguous or not confidently (a)/(b)/(c).\n\n"
+                'If you are not confident it clearly falls under NO_REPLY_CANDIDATE, always '
+                'answer "HUMAN_REVIEW".\n'
+                'Reply JSON only: {"category": "NO_REPLY_CANDIDATE"|"HUMAN_REVIEW"}\n\n'
+                f"Message: {message_body}"
+            }]
+        )
+        raw = resp.choices[0].message.content
+        try:
+            data = json.loads(raw or "{}")
+        except Exception:
+            data = {}
+        category = data.get("category") if isinstance(data, dict) else None
+        result = category if category in POST_SHIPPING_NO_REPLY_CATEGORIES else "HUMAN_REVIEW"
+    except Exception:
+        return "HUMAN_REVIEW"
+
+    # 決定的セーフガード（AIの応答直後・キャッシュ保存前に適用）。「受け取り」「受領」
+    # 「受取」を含みながら直後に「評価」と続かない曖昧な文面は、AIがNO_REPLY_CANDIDATEと
+    # 判定していても強制的にHUMAN_REVIEWへ倒す。これにより、ゆれた判定結果が
+    # キャッシュされること自体を防ぐ（HUMAN_REVIEW→NO_REPLY_CANDIDATEへの上書きは
+    # 行わない。安全側にしか倒さない）。
+    if result == "NO_REPLY_CANDIDATE" and _AMBIGUOUS_RECEIPT_WORDING_RE.search(message_body):
+        result = "HUMAN_REVIEW"
+
+    if len(_post_shipping_no_reply_cache) >= _POST_SHIPPING_NO_REPLY_CACHE_MAX_SIZE:
+        _post_shipping_no_reply_cache.pop(next(iter(_post_shipping_no_reply_cache)))
+    _post_shipping_no_reply_cache[cache_key] = result
+    return result
+
 
 # 出品者からの最初のメッセージに対する返信（まだ発送前・まだ一度も返信していない場合のみ）。
 TEMPLATE_FIRST_REPLY_ONEGAI = (
@@ -919,126 +1456,222 @@ TEMPLATE_FIRST_REPLY_PLAIN = (
     "お取引終了まで、何卒、よろしくお願いいたします。"
 )
 # 出品者の文言に「お願いします」系が含まれるかどうかの判定（1-1 / 1-2の分岐）。
-# 過剰な意味解析はせず、「お願い」の一般的な表記揺れ（します/いたします/致します）のみ拾う。
-_ONEGAI_RE = re.compile("お願いします|お願いいたします|お願い致します")
+# 過剰な意味解析はせず、「お願い」に続く一般的な表記揺れ（します/いたします/致します/
+# 申し上げます/申しあげます）のみ拾う。
+# 【2026-09-11修正】実機不具合m31821957285: 出品者メッセージ「よろしくお願い申し上げます」が
+# 旧regex（お願いします|お願いいたします|お願い致します の完全な単語単位の列挙）に
+# 一致せず、first_reply_onegai（「こちらこそ、お手数を…」）が選ばれるべきところ
+# first_reply_plainになっていた。個別の言い回しを都度追加し続ける保守負債を避けるため、
+# 「お願い」＋末尾の丁寧語バリエーションという構造でまとめて拾う形にした。
+_ONEGAI_RE = re.compile("お願い(?:します|いたします|致します|申し上げます|申しあげます)")
 
 
 def determine_suggested_reply(history: list, is_shipped: bool) -> dict:
     """
     history: message_no昇順の会話履歴（sender_type='出品者'|'購入者'）。空のこともある
              （無言発送で一度もメッセージが交換されていない場合）。
-    is_shipped: 既存の購入スクレイピングが取得した取引ステータス・配送状況から判定した
-                「発送済み以上」かどうか。無言発送（メッセージが一切無い発送）でも
-                「2」を提案できるよう、メッセージ本文とは別に必要な情報。
+    is_shipped: 呼び出し元が判定した「発送済みの肯定的証拠」（メッセージ本文以外）。
+                全サイト共通でAccess日常.eBayステータス（is_shipped_status()）由来
+                （2026-09-10 trx.vendor_purchase廃止に伴い統一）。
 
     優先順位:
-      1. 次のいずれかを満たせば「発送済み」とみなし、まだ返信2相当を送っていない
-         場合に限り「2」を提案する（履歴中に既に同趣旨の返信があれば、二重に提案しない）。
-           A. is_shipped（既存の配送ステータス取得処理が「発送済み」と確認済み）かつ、
-              出品者からの未返信の最新メッセージが発送完了を否定するような内容
-              （不明・発送予定・発送方法の相談等）になっていないこと。
-           B. 出品者からの最新メッセージが「発送しました」等の発送完了連絡
-              （_SHIPPED_COMPLETE_MESSAGE_RE。メルカリ側の配送ステータス反映の
-              時間差を待たず、出品者本人の発送完了連絡を優先する）。
-      2. 上記に該当しなければ、出品者からのメッセージがこれまでにちょうど1件だけあり、
-         かつその出品者メッセージより後に自分からの返信がまだ無い場合に限り
-         「1-1」または「1-2」を提案する（出品者からのメッセージが今回で初めてのケース。
-         出品者メッセージが既に2件以上ある取引には提案しない＝人が判断する）。
-         出品者のそのメッセージに「お願いします」系が含まれれば1-1、それ以外は1-2。
-         購入直後に買い手自身が送る挨拶（出品者メッセージより前に存在する自分の
-         メッセージ）は「返信済み」の判定に使わない（実データm11655754962で、
-         購入直後の挨拶のせいで本来出すべき初回提案が出ない不具合があったため）。
-      3. それ以外は自動提案しない（人が判断する。「返信不要」の対象になりうる）。
+      1. is_shipped（ステータス由来の発送済みの肯定的証拠）があり、まだ発送のお礼
+         (shipped_2)を送っていなければ「shipped_2」を提案する。ここではメッセージ
+         内容は見ない（ステータスだけで確定できるため、AI分類を呼ぶまでもない）。
+         shipped_2はこのステップでのみ発行する（下記ステップ2ではAIがSHIPPEDと
+         分類しても発行しない）。
+      2. 上記に該当せず（＝is_shippedがFalse。サイトの詳細画面はまだ発送前と
+         判定している）、出品者から最初の取引メッセージを受けた後、まだこちらが
+         返信していない場合は、その出品者の最新メッセージをclassify_mercari_seller_message()
+         でAI分類する。
+           - SAFE_GREETING: 初回挨拶（「お願いします」系の有無で1-1/1-2に分岐）
+           - SHIPPED／HUMAN_REVIEW（分類失敗・不明含む）: 定型文なし（人が判断する）
+         【2026-09-11修正】以前はここでAIがSHIPPEDと分類した場合もshipped_2を
+         発行していたが、AI判定はメッセージ本文の意味解釈にすぎず、サイトの詳細
+         画面の配送状態（is_shipped）と食い違うことがある。実機不具合z613953926
+         （出品者の「今夜発送させて頂きます」という未来形メッセージをAIがSHIPPEDと
+         誤判定し、実際は発送前なのにshipped_2＝発送済みのお礼文が提案されていた）
+         を受けて廃止した。shipped_2は詳細画面で発送済み・配送中・配達済みを
+         確認できた場合（ステップ1）だけで使う。AI判定よりサイトの配送ステータスを
+         優先し、判断不能・食い違いの場合も発送済みには倒さない。
+         【2026-09-08】以前は正規表現（_SHIPPED_COMPLETE_MESSAGE_RE）で発送完了の
+         連絡かどうかを判定し、それ以外は無条件で初回挨拶を出していたが、実例
+         m96926753890「商品状態の追加説明＋問題なければ発送します＋気になるなら
+         キャンセル可能です」のような、購入者の確認・判断が必要な内容にまで初回挨拶
+         （「よろしくお願いします」）を自動セットしてしまう問題があった。将来
+         「フリマ情報取得」実行時に安全な相手だけ自動返信する運用を見据え、
+         個別キーワードの列挙ではなくメッセージ全体の意味をAIに分類させ、
+         「自動返信しても安全か」を最優先の基準にする。分類に自信が持てない場合・
+         API呼び出し失敗時は必ずHUMAN_REVIEW（定型文なし）にフォールバックする。
+      3. 上記いずれにも該当しない場合（既に最初のメッセージへ返信済みで、その後も
+         出品者から新しいメッセージが届いている状態）は候補なし（人が判断する）が、
+         is_shipped かつ 発送お礼を送信済み の場合のみ、その最新メッセージを
+         classify_post_shipping_seller_message()で追加分類する（確認運用、
+         2026-09-10追加）。
+           - NO_REPLY_CANDIDATE: suggested_reply["ai_no_reply_candidate"]をTrueにする
+             （一覧からは除外しない。画面上に「AI判定：返信不要候補」の印を出すだけ）。
+           - HUMAN_REVIEW（分類失敗・不明含む）: 通常表示（印を付けない）。
+      4. 出品者からの実質メッセージが無ければ候補なし（人が判断する）。
 
-    【2026-08-30 発送済み誤判定の修正】is_shippedはAccess「日常」のeBayステータスに
-    由来するが、write_ebay_status_if_advancing()は状態が後退する更新を行わない設計のため、
-    過去に（既に修正済みの）get_raw_status()の不具合等で誤って一度「発送済み」以上へ
-    書き込まれてしまった値は、その後に正しいステータスが取れるようになっても訂正されず
-    残り続けることがある（実例: ラクマ ab9e1ed4354125c5aecd60b37a47c82c。実際には
-    出品者が「宅急便コンパクトに変更させてほしい」と発送前の相談をしてきているのに、
-    stale化したis_shipped=Trueだけでshipped_2を誤提案していた）。
-    このため、出品者からの最新メッセージが未返信のまま残っている場合は、その内容が
-    発送完了を明確に確認できるもの（_SHIPPED_COMPLETE_MESSAGE_RE）でない限り、
-    is_shippedだけでは発送済み扱いにしない（サイト別のraw_status取得処理は変更せず、
-    3サイト共通のこの判定関数だけで対応する）。無言発送（履歴が空）や、既に自分が
-    返信済みで最新メッセージが自分のものである場合は、この制約の対象外（従来通り
-    is_shippedのみで判定できる）。
+    出品者の最初の実質メッセージより前に買い手自身が送ったメッセージ（値引き交渉・
+    購入完了のお礼等）は、取引開始後の初回挨拶への返信としては数えない
+    （実例m50492038090）。
 
-    【2026-09-01 スタンプによる誤判定の修正】メルカリのスタンプメッセージは実際の
+    【2026-09-01 スタンプによる誤判定対策】メルカリのスタンプメッセージは実際の
     絵柄・文言を取得できないため、mercari_get_messages()が固定のプレースホルダー
-    文字列"スタンプ"を本文として保存する（推測ではなく既存コードの既知の仕様）。
-    このプレースホルダーは出品者からの通常のテキストメッセージと同じ
-    sender_type='出品者'の1行としてhistoryに残るため、実際のテキストの後にスタンプが
-    届いただけで「出品者からのメッセージが2件になった」「最新の出品者メッセージが
-    スタンプになった」と誤認し、本来出すべき提案（1-1/1-2やshipped_2）が出なくなる
-    不具合があった（実例: m95550121828。出品者の本文1件の直後にスタンプが届いた
-    ことで、優先順位2の「ちょうど1件」判定が崩れ候補なしになっていた）。
-    このため、優先順位2の件数判定・優先順位1Bの「最新の出品者メッセージ」判定では、
-    本文が"スタンプ"のプレースホルダーと完全一致するメッセージだけを対象から除外する
-    （空メッセージ・絵文字・短文等の推測による除外は行わない）。history自体・
-    replied_after等の他の判定は変更せず、全メッセージをそのまま使う。
+    文字列"スタンプ"を本文として保存する（既存コードの既知の仕様）。このプレースホルダーは
+    出品者からの通常のテキストメッセージと同じsender_type='出品者'の1行として
+    historyに残るため、実質的な出品者メッセージとしては数えない
+    （本文が"スタンプ"と完全一致するものだけを除外し、推測による除外は行わない）。
+
+    【2026-09-11 3層分離（ステージ3）】上記の優先順位（判定結果）は一切変更せず、
+    内部実装のみを「①取引状態の判定(_assess_shipment_state)」「②会話順序の判定
+    (_assess_conversation_progress)」「③文章分類と定型文選択
+    (_classify_first_contact_message / _classify_post_shipping_message)」の3層へ
+    分離した。この関数自体は3層の結果を組み合わせて優先順位どおりに分岐するだけの
+    orchestratorとする。
+    """
+    state = _assess_shipment_state(history, is_shipped)
+    conversation = _assess_conversation_progress(history)
+
+    # ステップ1: 発送済みの肯定的証拠（ステータス由来）
+    if state["is_shipped"] and not state["already_sent_shipped_thanks"]:
+        return {"text": TEMPLATE_SHIPPED, "source": "template", "template_key": "shipped_2",
+                "ai_no_reply_candidate": False}
+
+    # ステップ2: 出品者から最初の実質メッセージを受けた後、まだこちらが返信していない
+    # 場合のみ、その最新メッセージをAI分類する（出品者の最初の実質メッセージより前に
+    # 買い手自身が送ったメッセージは、初回挨拶への返信としては数えない）。
+    # 【2026-09-11修正】ただし、既に発送お礼(shipped_2)を送信済み(already_sent_shipped_thanks)
+    # の場合は、たとえ出品者の最初の実質メッセージより後に購入者発言が見当たらなくても
+    # このステップに入らない（下のステップ3の発送後フローに進ませる）。実機不具合
+    # l1244030615・m93160436190で確認: 無言発送でこちらがshipped_2を先に送信済み
+    # （message_no=1）で、出品者のメッセージ（message_no=2、shipped_2への単なる了承の
+    # 返礼）が唯一の出品者メッセージだった場合、「shipped_2より後に購入者発言が無い」＝
+    # 「初回メッセージにまだ返信していない」と誤判定され、本来は発送後の
+    # classify_post_shipping_seller_message()（ステップ3、NO_REPLY_CANDIDATE）で
+    # 拾うべきところを、取引開始直後の初回挨拶用AI分類(classify_mercari_seller_message)
+    # が誤って適用され、first_reply_onegai/first_reply_plainが提案されていた。
+    # already_sent_shipped_thanksは「発送お礼を既に送ったかどうか」そのものであり、
+    # message_noの前後関係に依存しないため、この条件を優先して先に評価する。
+    if conversation["meaningful_seller_messages"]:
+        if (not conversation["replied_after_first_seller_message"]
+                and not state["already_sent_shipped_thanks"]):
+            seller_text = conversation["latest_seller_message"]["message_body"] or ""
+            return _classify_first_contact_message(seller_text)
+
+        # 【2026-09-10 確認運用として追加】既に最初のメッセージへ返信済み（＝発送お礼を
+        # 送信済みで、その後もやり取りが続いている）場合、まだ自分が返信していない
+        # 最新の出品者メッセージがあれば、それをAI判定する（対象一覧からは除外しない。
+        # あくまで「AI判定：返信不要候補」という印をsuggested_replyに付けるだけ）。
+        if state["is_shipped"] and state["already_sent_shipped_thanks"]:
+            if not conversation["replied_after_latest_seller_message"]:
+                seller_text = conversation["latest_seller_message"]["message_body"] or ""
+                return _classify_post_shipping_message(seller_text)
+
+    # ステップ3: それ以外は候補なし
+    return {"text": "", "source": None, "template_key": None, "ai_no_reply_candidate": False}
+
+
+def _assess_shipment_state(history: list, is_shipped: bool) -> dict:
+    """
+    ①取引状態の判定。会話の順序・メッセージの文章内容の分類には一切関与しない。
+
+    is_shippedは呼び出し元（Access日常.eBayステータス由来、is_shipped_status()）から
+    そのまま受け取ったものをそのまま返す。already_sent_shipped_thanksは、購入者(自分)の
+    過去メッセージのいずれかが発送お礼の定型文(TEMPLATE_SHIPPED)と同趣旨かどうかを、
+    _TEMPLATE_SHIPPED_DETECT_RE（"到着を楽しみに"と"受取通知"の両方を含むか、AND判定）で
+    判定したもの。
     """
     own_messages = [m for m in history if m["sender_type"] == "購入者"]
-    seller_messages = [m for m in history if m["sender_type"] == "出品者"]
-    latest_message = history[-1] if history else None
+    already_sent_shipped_thanks = any(
+        _TEMPLATE_SHIPPED_DETECT_RE.search(m["message_body"] or "") for m in own_messages
+    )
+    return {
+        "is_shipped": is_shipped,
+        "already_sent_shipped_thanks": already_sent_shipped_thanks,
+    }
 
-    # メルカリのスタンプメッセージのプレースホルダー（mercari_get_messages参照）。
-    # 返信内容の判断上は実質的な出品者メッセージとして数えない。
+
+def _assess_conversation_progress(history: list) -> dict:
+    """
+    ②会話順序の判定。取引状態(is_shipped等)・メッセージの文章内容の分類には一切関与しない。
+
+    meaningful_seller_messagesは、出品者メッセージのうちメルカリのスタンプ
+    プレースホルダー("スタンプ"と完全一致する本文)を除いたもの。
+    first/latest_seller_messageはその先頭/末尾（無ければNone）。
+    replied_after_first/latest_seller_messageは、対応するメッセージのmessage_noより
+    後に購入者(自分)発言があるかどうか（出品者の最初の実質メッセージより前に買い手自身が
+    送ったメッセージ=値引き交渉・購入完了のお礼等は、初回挨拶への返信としては数えない。
+    実例m50492038090）。meaningful_seller_messagesが空の場合はいずれもFalse
+    （呼び出し元はmeaningful_seller_messagesが空でない場合のみこれらの値を使う）。
+    """
+    seller_messages = [m for m in history if m["sender_type"] == "出品者"]
     meaningful_seller_messages = [
         m for m in seller_messages if (m["message_body"] or "") != "スタンプ"
     ]
 
-    # 発送のお礼(shipped_2)を過去に一度でも送信済みかどうか。優先順位1だけでなく
-    # 優先順位2の発動条件にも使う（下記2026-09-03の修正理由を参照）ため、関数の
-    # 先頭側で一度だけ判定する。
-    already_sent_shipped_thanks = any(
-        _TEMPLATE_SHIPPED_DETECT_RE.search(m["message_body"] or "") for m in own_messages
-    )
+    first_seller_message = meaningful_seller_messages[0] if meaningful_seller_messages else None
+    latest_seller_message = meaningful_seller_messages[-1] if meaningful_seller_messages else None
 
-    seller_announced_shipped = bool(
-        meaningful_seller_messages
-        and _SHIPPED_COMPLETE_MESSAGE_RE.search(meaningful_seller_messages[-1]["message_body"] or "")
-    )
-
-    # 出品者からの最新メッセージがまだ自分から返信されておらず（＝会話全体の最新が
-    # 出品者のメッセージ）、かつそのメッセージ自体が発送完了を確認できる内容でない場合は、
-    # 「不明・発送予定・発送方法の相談」等の可能性があるため、is_shippedが立っていても
-    # 発送済み扱いにしない（stale化したis_shippedによる誤判定を防ぐ）。
-    seller_pending_unconfirmed = bool(
-        latest_message
-        and latest_message["sender_type"] == "出品者"
-        and not seller_announced_shipped
-    )
-
-    if seller_announced_shipped or (is_shipped and not seller_pending_unconfirmed):
-        if not already_sent_shipped_thanks:
-            return {"text": TEMPLATE_SHIPPED, "source": "template", "template_key": "shipped_2"}
-        return {"text": "", "source": None, "template_key": None}
-
-    # 【2026-09-03 会話段階の後退を防ぐ修正】無言発送等で自分から先にshipped_2を
-    # 送信した後、出品者が「ありがとうございます。宜しくお願い致します。」のような
-    # 発送完了の明言を含まない簡単な返礼だけを送ってくると、その返礼が
-    # meaningful_seller_messagesの1件目・かつ最新の出品者メッセージになる。
-    # 従来はこの状態で下のreplied_after判定に入ってしまい、自分のshipped_2
-    # メッセージがその出品者メッセージより前（message_noが小さい）にあるという
-    # 理由だけで「まだ返信していない」と誤認し、初回提案(first_reply_onegai等)へ
-    # 後退していた（実例: m68660410032）。shipped_2を送信済みの場合は、以降の
-    # 出品者メッセージの内容によらず初回提案を出さない（already_sent_shipped_thanksで
-    # ガードする）。m11655754962対応（出品者メッセージより前の自分の挨拶を
-    # 「返信済み」の判定に使わない＝下のreplied_after自体の仕様）はそのまま維持する。
-    if len(meaningful_seller_messages) == 1 and not already_sent_shipped_thanks:
-        first_seller_message = meaningful_seller_messages[0]
-        replied_after = any(
-            m["sender_type"] == "購入者" and m["message_no"] > first_seller_message["message_no"]
-            for m in history
+    def _replied_after(seller_message):
+        if seller_message is None:
+            return False
+        return any(
+            own["sender_type"] == "購入者" and own["message_no"] > seller_message["message_no"]
+            for own in history
         )
-        if not replied_after:
-            seller_text = first_seller_message["message_body"] or ""
-            if _ONEGAI_RE.search(seller_text):
-                return {"text": TEMPLATE_FIRST_REPLY_ONEGAI, "source": "template", "template_key": "first_reply_onegai"}
-            return {"text": TEMPLATE_FIRST_REPLY_PLAIN, "source": "template", "template_key": "first_reply_plain"}
 
-    return {"text": "", "source": None, "template_key": None}
+    return {
+        "meaningful_seller_messages": meaningful_seller_messages,
+        "first_seller_message": first_seller_message,
+        "latest_seller_message": latest_seller_message,
+        "replied_after_first_seller_message": _replied_after(first_seller_message),
+        "replied_after_latest_seller_message": _replied_after(latest_seller_message),
+    }
+
+
+def _classify_first_contact_message(seller_text: str) -> dict:
+    """
+    ③文章分類と定型文選択（取引開始直後の初回挨拶用）。
+
+    出品者からの最初の実質メッセージに、まだこちらが返信していない場合の返信案を、
+    classify_mercari_seller_message()の分類結果から決定する。
+      - SAFE_GREETING: 初回挨拶（「お願いします」系の有無でonegai/plainに分岐）
+      - SHIPPED／HUMAN_REVIEW（分類失敗・不明含む）: 定型文なし（人が判断する）
+    【2026-09-11修正】ここでAIがSHIPPEDと分類しても、shipped_2は発行しない
+    （呼び出し元はis_shippedがFalseか、既に発送お礼を送信済みの場合しかこの関数を
+    呼ばない。AI判定よりサイトの配送ステータスを優先する。実機不具合z613953926
+    「今夜発送させて頂きます」という未来形メッセージをAIがSHIPPEDと誤判定した件を参照）。
+    """
+    category = classify_mercari_seller_message(seller_text)
+
+    if category == "SAFE_GREETING":
+        if _ONEGAI_RE.search(seller_text):
+            return {"text": TEMPLATE_FIRST_REPLY_ONEGAI, "source": "template", "template_key": "first_reply_onegai",
+                    "ai_no_reply_candidate": False}
+        return {"text": TEMPLATE_FIRST_REPLY_PLAIN, "source": "template", "template_key": "first_reply_plain",
+                "ai_no_reply_candidate": False}
+
+    # HUMAN_REVIEW、またはSHIPPED（サイトはまだ発送前と判定しているため採用しない）: 定型文なし
+    return {"text": "", "source": None, "template_key": None, "ai_no_reply_candidate": False}
+
+
+def _classify_post_shipping_message(seller_text: str) -> dict:
+    """
+    ③文章分類と定型文選択（発送お礼送信済み後の追加メッセージ用、確認運用）。
+
+    発送お礼(shipped_2)を送信済み後、出品者から追加で届いた最新メッセージに、まだ
+    こちらが返信していない場合の判定を、classify_post_shipping_seller_message()の
+    分類結果から決定する（2026-09-10追加。1st step＝一覧からの除外はせず、画面上の
+    「AI返信不要候補」バッジ表示のみに使う）。
+      - NO_REPLY_CANDIDATE: ai_no_reply_candidateをTrueにする
+      - HUMAN_REVIEW（分類失敗・不明含む）: 通常表示（印を付けない）
+    """
+    category = classify_post_shipping_seller_message(seller_text)
+    if category == "NO_REPLY_CANDIDATE":
+        return {"text": "", "source": None, "template_key": None, "ai_no_reply_candidate": True}
+    return {"text": "", "source": None, "template_key": None, "ai_no_reply_candidate": False}
 
 
 # ============================================================================
@@ -1121,40 +1754,12 @@ MERCARI_TARGET_URL = "https://jp.mercari.com/mypage/purchases"
 MERCARI_CURRENT_URL_RETRY_COUNT = 5
 MERCARI_CURRENT_URL_RETRY_INTERVAL_SEC = 1
 
-# trx.vendor_purchase / trx.vendor_message / trx.vendor_purchase_unregistered の
-# vendor_name。既存システムで使われている表記に合わせる。
+# trx.vendor_message の vendor_name。既存システムで使われている表記に合わせる。
+# 【2026-09-10 trx.vendor_purchase廃止に伴い変更】以前はtrx.vendor_purchase /
+# trx.vendor_purchase_unregisteredでも使っていたが、この2テーブルへの書き込みは
+# 廃止した（Access日常「フリマ取引中」フラグへ統合。詳細はsync_flema_active_orders()
+# 参照）。trx.vendor_purchase_unregisteredテーブル自体はまだ削除していない。
 MERCARI_VENDOR_NAME = "メルカリ"
-
-# status が以下の場合は人手入力とみなして上書きしない
-MERCARI_STATUS_NO_OVERWRITE = ("GA鑑定待ち", "出荷済み", "◎有在庫")
-
-MERCARI_SQL_UPSERT_VENDOR_PURCHASE = """
-MERGE INTO trx.vendor_purchase WITH (HOLDLOCK) AS tgt
-USING (VALUES (?, ?, ?, ?, ?, ?)) AS src
-    (vendor_name, vendor_item_id, purchase_datetime, purchase_price, status, item_name)
-ON (tgt.vendor_name = src.vendor_name AND tgt.vendor_item_id = src.vendor_item_id)
-WHEN MATCHED THEN
-    UPDATE SET
-        purchase_datetime = src.purchase_datetime,
-        purchase_price    = src.purchase_price,
-        status            = CASE
-                                WHEN tgt.status IN (N'GA鑑定待ち', N'出荷済み', N'◎有在庫') THEN tgt.status
-                                ELSE src.status
-                            END,
-        item_name         = src.item_name,
-        arrival_datetime  = CASE
-                                WHEN src.status = N'☆出荷可能' AND tgt.arrival_datetime IS NULL THEN CAST(GETDATE() AS DATE)
-                                ELSE tgt.arrival_datetime
-                            END,
-        updated_at        = GETDATE()
-WHEN NOT MATCHED THEN
-    INSERT (vendor_name, vendor_item_id, purchase_datetime, purchase_price, status, item_name, arrival_datetime, updated_at)
-    VALUES (
-        src.vendor_name, src.vendor_item_id, src.purchase_datetime, src.purchase_price, src.status, src.item_name,
-        CASE WHEN src.status = N'☆出荷可能' THEN CAST(GETDATE() AS DATE) ELSE NULL END,
-        GETDATE()
-    );
-"""
 
 MERCARI_SQL_UPSERT_VENDOR_MESSAGE_BY_ID = """
 MERGE INTO trx.vendor_message WITH (HOLDLOCK) AS tgt
@@ -1350,99 +1955,13 @@ def _collect_transaction_urls(driver, retries: int = LINK_COLLECTION_RETRY_COUNT
 # ------------------------------------------------------------
 # Access（日常テーブル）への同期
 # ------------------------------------------------------------
-def sync_arrival_status_to_access(sql_conn):
-    """
-    trx.vendor_purchase(vendor_name=MERCARI_VENDOR_NAME) の status / 到着日を、
-    日常テーブルの eBayステータス / 到着日 へ 注文ID(=vendor_item_id) をキーに反映する。
-    到着日は「日常.到着日が現在NULLのときだけ」arrival_datetime（メルカリのステータスから
-    到着を検知した日）で埋める。既に値がある場合は上書きしない
-    ——より正確な到着日は sync_carrier_tracking_to_daily() がヤマト運輸／日本郵便の
-    追跡結果から直接更新するため、ここで古い検知日に巻き戻さないようにするのが目的。
-    このため mercari_main() では本関数を sync_carrier_tracking_to_daily() の後に呼ぶこと。
-    status が到着済み（☆出荷可能）の場合のみ、日常.販売（eBay/amazon）に応じて
-    書き込む文言を分ける（販売がそれ以外の値の場合は想定外のため☆出荷可能のまま扱う）。
-    eBayステータスは write_ebay_status_if_advancing により、状態が後退する更新
-    （例: 到着予定→発送済み）は行わない（配送会社の追跡が既にmercari側の表示より
-    進んでいる場合に巻き戻さないため）。
-    """
-    with sql_conn.cursor() as cur:
-        cur.execute("""
-            SELECT vendor_item_id, status, arrival_datetime
-            FROM trx.vendor_purchase
-            WHERE vendor_name = ?
-        """, MERCARI_VENDOR_NAME)
-        rows = cur.fetchall()
-
-    access_conn = get_access_connection()
-    try:
-        access_cur = access_conn.cursor()
-        updated = 0
-        for vendor_item_id, status, arrival_datetime in rows:
-            access_status = status
-            if status == ARRIVED_STATUS:
-                sales_row = access_cur.execute(
-                    f"SELECT 販売 FROM {ACCESS_TABLE} WHERE 注文ID = ?", vendor_item_id
-                ).fetchone()
-                sales_channel = sales_row[0] if sales_row else None
-                access_status = ARRIVED_STATUS_BY_SALES_CHANNEL.get(sales_channel, ARRIVED_STATUS)
-
-            write_ebay_status_if_advancing(access_cur, vendor_item_id, access_status)
-            access_cur.execute(
-                f"UPDATE {ACCESS_TABLE} SET 到着日 = IIF(到着日 IS NULL, ?, 到着日) WHERE 注文ID = ?",
-                arrival_datetime, vendor_item_id
-            )
-            updated += access_cur.rowcount
-        access_conn.commit()
-        access_cur.close()
-    finally:
-        access_conn.close()
-
-    print(f"Access同期({ACCESS_TABLE}): {len(rows)}件中 {updated}行を更新")
-
-
-def sync_unregistered_daily_items(sql_conn):
-    """
-    trx.vendor_purchase(vendor_name=MERCARI_VENDOR_NAME) のうち、日常テーブルに対応する
-    注文IDのレコードが存在しないものを trx.vendor_purchase_unregistered に記録する。
-    （逆に日常にはあるがメルカリの取引中に無いケースは、日常側がカード履歴と突合して
-    いずれ判明するため対象外）
-    日常に登録されて解消されたものはリストから自動的に外す。
-    """
-    with sql_conn.cursor() as cur:
-        cur.execute("SELECT vendor_item_id FROM trx.vendor_purchase WHERE vendor_name = ?", MERCARI_VENDOR_NAME)
-        vendor_ids = {row[0] for row in cur.fetchall()}
-
-    access_conn = get_access_connection()
-    try:
-        access_cur = access_conn.cursor()
-        access_cur.execute(f"SELECT DISTINCT 注文ID FROM {ACCESS_TABLE} WHERE 注文ID IS NOT NULL")
-        daily_ids = {row[0] for row in access_cur.fetchall()}
-        access_cur.close()
-    finally:
-        access_conn.close()
-
-    missing = vendor_ids - daily_ids
-
-    with sql_conn.cursor() as cur:
-        cur.execute("SELECT vendor_item_id FROM trx.vendor_purchase_unregistered WHERE vendor_name = ?", MERCARI_VENDOR_NAME)
-        tracked = {row[0] for row in cur.fetchall()}
-
-        newly_missing = missing - tracked
-        resolved = tracked - missing
-
-        for vendor_item_id in newly_missing:
-            cur.execute(
-                "INSERT INTO trx.vendor_purchase_unregistered (vendor_name, vendor_item_id, detected_at) VALUES (?, ?, GETDATE())",
-                MERCARI_VENDOR_NAME, vendor_item_id
-            )
-        for vendor_item_id in resolved:
-            cur.execute(
-                "DELETE FROM trx.vendor_purchase_unregistered WHERE vendor_name = ? AND vendor_item_id = ?",
-                MERCARI_VENDOR_NAME, vendor_item_id
-            )
-    sql_conn.commit()
-
-    print(f"日常未登録チェック: 現在{len(missing)}件（新規{len(newly_missing)}件, 解消{len(resolved)}件）")
+# 【2026-09-10 trx.vendor_purchase廃止に伴い削除】sync_arrival_status_to_access()
+# （trx.vendor_purchase→日常への同期。到着日はメルカリ自身のステータス検知日への
+# フォールバックだったが、これは「配達済みを確認した日」であり実際の配達日ではない
+# ため廃止した。実際の配達日はsync_carrier_tracking_to_daily()が引き続き担当する）と
+# sync_unregistered_daily_items()（trx.vendor_purchase_unregisteredへ記録するだけで
+# 日常への自動追加は行わなかった）は、sync_flema_active_orders()に統合されたため
+# 削除した。trx.vendor_purchase_unregisteredテーブル自体はまだ削除していない。
 
 
 # ------------------------------------------------------------
@@ -1469,6 +1988,25 @@ ARRIVED_STEP_LABELS = ("配達済み", "受取")
 # [data-testid="status-heading"] に表示され、買い手側の受け取りが既に完了していることを示す見出し
 # （出品者評価待ち／取引完了のいずれも買い手側は到着済みで対応不要のため☆出荷可能扱い）
 STATUS_HEADING_ARRIVED_PREFIXES = ("受取評価をしました", "取引が完了しました")
+
+# 【2026-09-10 追加】上記のうち「受取評価をしました」（購入者側の対応完了）だけを
+# 区別して判定するための文言。出品者側がまだ評価していない・「取引が完了しました」に
+# なっていなくても、購入者側の対応は既に完了しているため、フリマ取引中の対象からは
+# 外してよい（is_shippedやAccessの他の列には影響しない、フラグだけの話）。
+MERCARI_RECEIPT_RATED_HEADING = "受取評価をしました"
+
+
+def mercari_is_receipt_rated(driver) -> bool:
+    """
+    現在表示中のMercari取引ページの見出し（[data-testid="status-heading"]）が
+    「受取評価をしました」で始まるかどうかを、完全な文言一致で判定する
+    （本文メッセージ等、曖昧な情報からは判定しない）。mercari_get_raw_status()と
+    同じ要素を見るが、「取引が完了しました」とは区別して判定する専用関数。
+    """
+    status_heading = driver.find_elements(By.CSS_SELECTOR, '[data-testid="status-heading"]')
+    if not status_heading:
+        return False
+    return status_heading[0].text.strip().startswith(MERCARI_RECEIPT_RATED_HEADING)
 
 
 def mercari_get_raw_status(driver, retries: int = GET_RAW_STATUS_RETRY_COUNT,
@@ -1615,50 +2153,13 @@ def get_purchase_info(driver):
     return purchase_datetime, purchase_price
 
 
-# 「/messages」候補になったが、既に「取引中の商品」一覧から外れているMercari取引を
-# 対象に、取引ページ自体が「取引が完了しました」を表示しているかを個別に確認するための
-# 専用処理。mercari_get_raw_status()は「受取評価をしました」と「取引が完了しました」を
-# 意図的に同じ"☆出荷可能"へ丸め込む設計（買い手側は対応不要という点で共通のため）なので、
-# ここでは流用せず区別する。mercari_main()の通常巡回（現在の取引一覧が対象）には
-# 組み込まず、/messages候補の事後確認としてのみ使う想定。
-MERCARI_TRANSACTION_COMPLETED_HEADING = "取引が完了しました"
-MERCARI_COMPLETED_STATUS = "取引完了"
-
-
-def mercari_is_transaction_completed(driver) -> bool:
-    """現在表示中のMercari取引ページの見出しが「取引が完了しました」で始まるか。"""
-    status_heading = driver.find_elements(By.CSS_SELECTOR, '[data-testid="status-heading"]')
-    if not status_heading:
-        return False
-    return status_heading[0].text.strip().startswith(MERCARI_TRANSACTION_COMPLETED_HEADING)
-
-
-def mercari_mark_transaction_completed(driver, conn, vendor_item_id: str) -> bool:
-    """
-    指定取引の個別ページへ1回だけアクセスし、「取引が完了しました」と確認できた場合のみ
-    trx.vendor_purchase.status を MERCARI_COMPLETED_STATUS として記録する
-    （既存のMERCARI_SQL_UPSERT_VENDOR_PURCHASEをそのまま使う。行が無ければ新規作成）。
-    確認できなかった場合は何も書き込まない。
-    戻り値: 取引完了と確認して記録できたか。
-    """
-    driver.get(f"https://jp.mercari.com/transaction/{vendor_item_id}")
-    _wait_for_transaction_page_ready(driver)
-
-    if not mercari_is_transaction_completed(driver):
-        return False
-
-    item_name = get_item_name(driver)
-    purchase_datetime, purchase_price = get_purchase_info(driver)
-
-    with conn.cursor() as cur:
-        cur.execute(
-            MERCARI_SQL_UPSERT_VENDOR_PURCHASE,
-            (MERCARI_VENDOR_NAME, vendor_item_id, purchase_datetime, purchase_price,
-             MERCARI_COMPLETED_STATUS, item_name)
-        )
-    conn.commit()
-    return True
-
+# 【2026-09-10 trx.vendor_purchase廃止に伴い削除】mercari_is_transaction_completed()/
+# mercari_mark_transaction_completed()（「取引が完了しました」の個別確認・
+# trx.vendor_purchase.statusへの記録）は、元々どこからも呼ばれていない未使用コード
+# だった（mercari_main()の通常巡回には組み込まれておらず、"/messages候補の事後確認
+# としてのみ使う想定"のまま実装されずにいた）。trx.vendor_purchase自体を廃止する
+# ため削除した。取引完了の判定は、現在は日常.フリマ取引中フラグ（各サイトの
+# 「取引中」一覧に無ければ自動的にOFFになる）で代替している。
 
 MESSAGES_API_URL_SUBSTR = "transaction_messages/get_messages"
 EVIDENCE_API_URL_SUBSTR = "transaction_evidences/get"
@@ -1833,6 +2334,17 @@ CHAT_SEND_BUTTON_SELECTOR = '[data-partner-id="send-chat"] button[type="submit"]
 
 MERCARI_SEND_RESPONSE_WAIT_SEC = 10.0
 
+# 【2026-09-15追加】送信前（本文入力・送信ボタンクリック前）の新着確認用メッセージ取得
+# （mercari_get_messages→_capture_mercari_api_responsesのCDP経由API捕捉）が稀に
+# タイムアウトする実機不具合を受けて追加（実例: m73359763614ほか計5件が
+# 「APIレスポンスの捕捉に失敗しました: ['transaction_messages/get_messages']」で
+# 自動送信エラーになった）。この時点ではまだ本文入力・送信ボタンクリックの
+# いずれも行っておらず実サイトへの送信は発生していないため、二重送信の心配なく
+# ページ再読み込みからやり直せる。本文入力・送信クリック後は絶対にリトライしない
+# （このブロックの外では一切リトライ処理を追加しない）。
+MERCARI_PRE_SEND_MESSAGE_FETCH_MAX_ATTEMPTS = 3
+MERCARI_PRE_SEND_MESSAGE_FETCH_RETRY_WAIT_SEC = 2.0
+
 
 def mercari_send_chat_message(driver, order_id: str, expected_count: int, reply_text: str,
                                expected_last_message_id=None) -> dict:
@@ -1892,7 +2404,33 @@ def mercari_send_chat_message(driver, order_id: str, expected_count: int, reply_
     driver.get(f"https://jp.mercari.com/transaction/{order_id}")
     time.sleep(4)
 
-    current_messages = mercari_get_messages(driver, order_id)
+    # 送信前（本文入力・送信ボタンクリックより前）の新着確認用メッセージ取得。
+    # まだ実サイトへの送信は一切発生していない段階のため、失敗してもページ再読み込みから
+    # 安全にやり直せる。最大MERCARI_PRE_SEND_MESSAGE_FETCH_MAX_ATTEMPTS回まで試行し、
+    # それでも失敗した場合のみ従来通り例外を送出する（この後の本文入力・送信ボタン
+    # クリック以降のリトライは一切行わない＝二重送信防止ロジックはここでは変更しない）。
+    current_messages = None
+    last_fetch_error = None
+    for attempt in range(1, MERCARI_PRE_SEND_MESSAGE_FETCH_MAX_ATTEMPTS + 1):
+        try:
+            current_messages = mercari_get_messages(driver, order_id)
+            break
+        except Exception as e:
+            last_fetch_error = e
+            print(f"[send] {order_id}: 送信前メッセージ取得に失敗しました"
+                  f"（{attempt}/{MERCARI_PRE_SEND_MESSAGE_FETCH_MAX_ATTEMPTS}回目、"
+                  f"送信前のためページ再読み込みしてリトライします）: {e}")
+            if attempt < MERCARI_PRE_SEND_MESSAGE_FETCH_MAX_ATTEMPTS:
+                time.sleep(MERCARI_PRE_SEND_MESSAGE_FETCH_RETRY_WAIT_SEC)
+                driver.get(f"https://jp.mercari.com/transaction/{order_id}")
+                time.sleep(4)
+
+    if current_messages is None:
+        raise RuntimeError(
+            f"送信前メッセージ取得に{MERCARI_PRE_SEND_MESSAGE_FETCH_MAX_ATTEMPTS}回失敗したため中断しました"
+            f"（本文入力・送信ボタンクリックのいずれも行っていません）: {last_fetch_error}"
+        )
+
     if len(current_messages) != expected_count:
         # 送信は中止するが、ここで既に取得できているmercari_get_messages()の結果
         # （通常scrapeと全く同じ形式・Mercari APIの正規データ）を呼び出し元へ渡す。
@@ -2045,16 +2583,9 @@ def mercari_send_chat_message(driver, order_id: str, expected_count: int, reply_
             "message_datetime": message_datetime}
 
 
-def determine_status(raw_status, messages):
-    """発送前の場合のみ出品者メッセージの有無で購入済/連絡あり に分岐する"""
-    if raw_status != "発送前":
-        return raw_status
-
-    if any(msg["is_from_seller"] for msg in messages):
-        return "連絡あり"
-
-    return "【購入済】"
-
+# 【2026-09-10 trx.vendor_purchase廃止に伴い削除】determine_status()（trx.vendor_purchase.
+# status用のメルカリ専用ステータス合成）は、全サイト共通のdetermine_access_status()に
+# 統合された（mercari_main()はupdate_daily_purchase_status()を直接呼ぶ）。
 
 MERCARI_TRACKING_NUMBER_RE = re.compile(r"\d{10,14}")
 
@@ -2124,12 +2655,19 @@ def mercari_get_tracking_info(driver):
 # ------------------------------------------------------------
 # メイン
 # ------------------------------------------------------------
-def mercari_main():
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--item-ids", nargs="*", default=None, help="注文ID(取引URL末尾)で対象を絞り込む（テスト用）")
-    args = parser.parse_args()
-    wanted_ids = set(args.item_ids) if args.item_ids else None
+def mercari_main(wanted_ids=None):
+    """
+    wanted_ids: 指定時は「注文ID(取引URL末尾)」の集合で対象を絞り込む（テスト用）。
+    Noneの場合（通常運用）は、直接の呼び出し元が明示的に絞り込みを指定していないため、
+    コマンドライン引数(--item-ids)からの指定を後方互換として受け付ける
+    （python furima_purchase.py --item-ids m12345 のような従来の直接手動実行用）。
+    """
+    if wanted_ids is None:
+        import argparse
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--item-ids", nargs="*", default=None, help="注文ID(取引URL末尾)で対象を絞り込む（テスト用）")
+        args = parser.parse_args()
+        wanted_ids = set(args.item_ids) if args.item_ids else None
 
     mercari_ensure_chrome_debugger()
 
@@ -2156,14 +2694,26 @@ def mercari_main():
 
         if "login" in current_url or "sign_in" in current_url or "signin" in current_url:
             print("NG: ログインされていない可能性あり")
-            return
+            # 【2026-09-14修正】チェックボックス操作失敗時(2026-09-10)と同じ理由でreturnを
+            # raiseへ変更。returnのままだと1件も処理していないのにmain()側で"success"と
+            # 記録されてしまう（自動送信フェーズが古いデータのまま実行されるリスクもある）。
+            raise RuntimeError("ログインされていない可能性があるため、処理を中断しました")
 
         try:
             _ensure_in_transaction_checkbox_checked(driver)
         except Exception as e:
             print(f"NG: 「取引中の商品」チェックボックスの操作に失敗しました: {e}")
             print("NG: 取得対象が確定できないため、今回の処理を中断します。")
-            return
+            # 【2026-09-10 実機不具合を受けて修正】旧実装はここでreturnしていたが、
+            # main()側はrun_func()が例外を出さなければ"success"と記録するため、
+            # 実際には1件も処理していないのに実行結果が成功扱いになっていた
+            # （実例: m85217087095が新規購入・メッセージ受信後の巡回で欠落したが、
+            # runner_statusはMercari=successのまま記録されていた）。呼び出し元で
+            # 正しくerrorとして記録されるよう、returnではなく例外を送出する。
+            raise RuntimeError(
+                "「取引中の商品」チェックボックスの操作に失敗したため、"
+                "取得対象を確定できず処理を中断しました"
+            ) from e
 
         if wanted_ids is not None:
             # 指定IDは「取引中の商品」一覧に既に出てこない（評価済み等で外れた）ことがあるため、
@@ -2175,66 +2725,115 @@ def mercari_main():
         print(f"取引URL数: {len(transaction_urls)}")
         print()
 
+        # 【2026-09-10 trx.vendor_purchase廃止に伴い追加】一覧取得が完全に成功した直後
+        # （＝ここまで例外なく到達できた時点）でのみ、日常.フリマ取引中を店舗単位で
+        # 一括更新する。--item-ids指定時（テスト用の絞り込み）は「現在取引中の全件」
+        # ではないため、フラグ更新は行わない（他の現在取引中の注文を誤ってOFFに
+        # してしまうため）。
+        if wanted_ids is None:
+            mercari_active_ids = [get_vendor_item_id(u) for u in transaction_urls]
+            sync_result = sync_flema_active_orders(access_conn, MERCARI_VENDOR_NAME, mercari_active_ids)
+            print(f"日常フリマ取引中フラグ更新: リセット{sync_result['reset']}行, "
+                  f"ON{sync_result['updated']}件, 新規追加{sync_result['created']}件")
+            print()
+
+        failed_ids = []
         for url in transaction_urls:
 
-            try:
+            # URLからの注文ID抽出は文字列操作のみで失敗しないため、リトライの外で1回だけ行う
+            # （2026-09-14追加のfailed_ids記録に使う）。
+            vendor_item_id = get_vendor_item_id(url)
 
-                driver.get(url)
-                _wait_for_transaction_page_ready(driver)
+            # 【2026-09-14追加】この取引だけをITEM_COLLECTION_MAX_ATTEMPTS回まで試行する。
+            last_error = None
+            for attempt in range(1, ITEM_COLLECTION_MAX_ATTEMPTS + 1):
+                try:
 
-                vendor_item_id   = get_vendor_item_id(url)
-                raw_status       = mercari_get_raw_status(driver)
-                item_name        = get_item_name(driver)
-                purchase_datetime, purchase_price = get_purchase_info(driver)
-                messages         = mercari_get_messages(driver, vendor_item_id)
-                status           = determine_status(raw_status, messages)
-                tracking_number, carrier = mercari_get_tracking_info(driver)
+                    driver.get(url)
+                    _wait_for_transaction_page_ready(driver)
 
-                with conn.cursor() as cur:
-                    cur.execute(
-                        MERCARI_SQL_UPSERT_VENDOR_PURCHASE,
-                        (MERCARI_VENDOR_NAME, vendor_item_id, purchase_datetime, purchase_price, status, item_name)
-                    )
-                    for msg in messages:
-                        cur.execute(
-                            MERCARI_SQL_UPSERT_VENDOR_MESSAGE_BY_ID,
-                            (
-                                MERCARI_VENDOR_NAME,
-                                vendor_item_id,
-                                msg["message_id"],
-                                msg["message_no"],
-                                msg["sender_name"],
-                                "出品者" if msg["is_from_seller"] else "購入者",
-                                msg["message_datetime"],
-                                msg["message_body"],
+                    # 【2026-09-10 追加】購入者側の対応（受取評価）が既に完了している場合、
+                    # 出品者側がまだ「取引が完了しました」にしておらず取引中の商品一覧に
+                    # 残っていても、フリマ取引中の対象からは外す。完全な文言一致
+                    # （status-headingの「受取評価をしました」）でのみ判定し、他のDOM要素・
+                    # 本文メッセージからは判定しない。フラグ以外（eBayステータス・到着日・
+                    # メッセージ履歴）は変更しないため、以降の更新処理はスキップする。
+                    if mercari_is_receipt_rated(driver):
+                        inactivated = mark_flema_inactive(access_conn, MERCARI_VENDOR_NAME, vendor_item_id)
+                        print(url)
+                        print(f"受取評価をしました（購入者側の対応完了）を検出。"
+                              f"日常のフリマ取引中をFalseにしました（{inactivated}行）。"
+                              "eBayステータス・到着日・メッセージ履歴は変更していません。")
+                        print()
+                        last_error = None
+                        break
+
+                    raw_status       = mercari_get_raw_status(driver)
+                    item_name        = get_item_name(driver)
+                    purchase_datetime, purchase_price = get_purchase_info(driver)
+                    messages         = mercari_get_messages(driver, vendor_item_id)
+                    has_seller_message = any(m["is_from_seller"] for m in messages)
+                    tracking_number, carrier = mercari_get_tracking_info(driver)
+
+                    with conn.cursor() as cur:
+                        for msg in messages:
+                            cur.execute(
+                                MERCARI_SQL_UPSERT_VENDOR_MESSAGE_BY_ID,
+                                (
+                                    MERCARI_VENDOR_NAME,
+                                    vendor_item_id,
+                                    msg["message_id"],
+                                    msg["message_no"],
+                                    msg["sender_name"],
+                                    "出品者" if msg["is_from_seller"] else "購入者",
+                                    msg["message_datetime"],
+                                    msg["message_body"],
+                                )
                             )
-                        )
-                conn.commit()
+                    conn.commit()
 
-                # 日常に注文IDのレコードが無い場合（仕入入力忘れ／私用購入で未入力）は新規追加する。
-                # 既存レコードがある場合は何もしない（以降の更新処理がそのまま担当する）。
-                created = ensure_daily_record(
-                    access_conn, MERCARI_VENDOR_NAME, vendor_item_id,
-                    item_name, purchase_datetime.date(), purchase_price
-                )
+                    # 日常に注文IDのレコードが無い場合（仕入入力忘れ／私用購入で未入力。
+                    # 通常はsync_flema_active_orders()が既に作成済みのはずだが、念のため）は
+                    # 新規追加する。既存レコードがある場合は何もしない。
+                    created = ensure_daily_record(
+                        access_conn, MERCARI_VENDOR_NAME, vendor_item_id,
+                        item_name, purchase_datetime.date(), purchase_price
+                    )
 
-                # 送り状番号・配送会社は日常テーブルへ直接保存する（trx.vendor_purchaseは中間テーブルのため経由しない）。
-                update_daily_tracking_info(access_conn, vendor_item_id, tracking_number, carrier)
+                    # eBayステータスは日常テーブルへ直接反映する（trx.vendor_purchase経由は廃止）。
+                    daily_updated = update_daily_purchase_status(access_conn, vendor_item_id, raw_status, has_seller_message)
 
+                    # 送り状番号・配送会社は日常テーブルへ直接保存する。
+                    update_daily_tracking_info(access_conn, vendor_item_id, tracking_number, carrier)
+
+                    print(url)
+                    print(f"raw_status={raw_status}  price={purchase_price}  messages={len(messages)}  "
+                          f"item={item_name[:30]}  日常更新={'OK' if daily_updated else '対象行なし'}")
+                    if created:
+                        print(f"日常: 新規レコード追加（注文ID={vendor_item_id}）")
+                    print()
+
+                    last_error = None
+                    break
+
+                except Exception as e:
+                    last_error = e
+                    if attempt < ITEM_COLLECTION_MAX_ATTEMPTS:
+                        print(f"WARN: {url} の処理に失敗しました（{attempt}/{ITEM_COLLECTION_MAX_ATTEMPTS}回目）。"
+                              f"リトライします: {e}")
+                        time.sleep(ITEM_COLLECTION_RETRY_WAIT_SEC)
+
+            if last_error is not None:
                 print(url)
-                print(f"status={status}  price={purchase_price}  messages={len(messages)}  item={item_name[:30]}")
-                if created:
-                    print(f"日常: 新規レコード追加（注文ID={vendor_item_id}）")
+                print(f"ERROR: {last_error}")
                 print()
-
-            except Exception as e:
-                print(url)
-                print(f"ERROR: {e}")
-                print()
+                failed_ids.append(vendor_item_id)
 
         sync_carrier_tracking_to_daily(access_conn)
-        sync_arrival_status_to_access(conn)
-        sync_unregistered_daily_items(conn)
+
+        # 【2026-09-14追加】リトライしても失敗した取引IDを呼び出し元へ返す
+        # （自動送信フェーズが、今回収集に失敗した取引を対象から除外するために使う）。
+        return failed_ids
 
     finally:
         access_conn.close()
@@ -2263,17 +2862,47 @@ PAYPAY_LAUNCH_TIMEOUT_SEC = 30
 
 PURCHASE_LIST_URL = "https://paypayfleamarket.yahoo.co.jp/my/purchase"
 
+# 【2026-09-09 実機確認済みで追加】購入一覧は最初の50件しか表示されず、
+# 「もっと見る」を押すごとに追加で読み込まれる（実機確認: 1回目クリックで50→100件）。
+# 購入日が古い（PURCHASE_LIST_HISTORY_DAYS日より前の）取引まで遡って展開する。
+PURCHASE_LIST_HISTORY_DAYS = 120
+# 安全弁（想定外の無限ループを防ぐ上限。実機では2回程度で全履歴の末尾に到達した）。
+PURCHASE_LIST_EXPAND_MAX_CLICKS = 30
+PURCHASE_LIST_EXPAND_WAIT_SEC = 10.0
+# 実機確認済み: 「もっと見る」は<span>要素（button/aタグではない）で、
+# JSのclick()で反応する（Selenium座標クリックは使わない、他サイトと同じ方針）。
+PURCHASE_LIST_MORE_BUTTON_XPATH = "//span[normalize-space(text())='もっと見る']"
+
 PAYPAY_ORDER_ID_RE = re.compile(r"/item/([A-Za-z0-9]+)/trade/buyer")
 
 # 一覧に表示されるステータス文言（実機確認済み）
-STATUS_COMPLETED = "取引完了"
 STATUS_BEFORE_SHIP = "発送待ち"
+STATUS_IN_TRANSIT = "商品が到着したら評価をしてください"
+
+# 【2026-09-09 実機確認済みで変更】一覧のscrape対象は、まだ追跡が必要な
+# 「発送待ち」「商品が到着したら評価をしてください」の2状態のみに限定する
+# （ホワイトリスト方式）。旧実装は「取引完了」という文字列を含む場合のみ除外する
+# 除外リスト方式だったため、「取引キャンセル」（"取引完了"という文字列を含まない）や
+# 「未評価の場合は評価してください」（到着済みで評価待ちのみ、追跡不要）が
+# 対象に紛れ込み、不要に個別取引ページを開いてしまっていた（実機確認済み、
+# 50件中: 取引完了30件・商品が到着したら評価をしてください12件・発送待ち5件・
+# 未評価の場合は評価してください2件・取引キャンセル1件）。
+# 未知の状態文言（将来サイト側の表示が変わった場合等）も、このリストに
+# 無ければ自動的に対象外になる（rakuma_get_raw_status()等と同じ「未確認の
+# 状態は安全側に倒す」方針に合わせた）。
+ACTIVE_LIST_STATUSES = (STATUS_BEFORE_SHIP, STATUS_IN_TRANSIT)
 
 # 個別取引ページ（詳細）で判定する。一覧の文言は「商品が到着したら評価をしてください」
 # 「未評価の場合は評価してください」など複数のバリエーションがあり一覧文言だけでは
 # 判定しきれないことを実機確認したため、詳細ページの共通見出しで判定する。
 DETAIL_ARRIVED_MARKER = "受取評価をして取引を完了してください"
 DETAIL_BEFORE_SHIP_MARKER = "出品者の発送をお待ちください"
+# 【2026-09-09 実機確認済みで追加】発送済み・配送中（まだ買い手が受取評価していない）
+# 状態の本文文言。この状態が未実装だったため、該当する取引はraw_status取得時に
+# 例外になり、update_daily_purchase_status()（Access更新）まで到達できず、
+# 日常.eBayステータスが空欄のまま更新されない不具合があった
+# （実例: z592951146, z653620242, z678003294, z618303236）。
+DETAIL_SHIPPED_MARKER = "商品の到着をお待ちください"
 
 CARRIER_BY_HOST = (
     ("kuronekoyamato.co.jp", "ヤマト"),
@@ -2323,17 +2952,84 @@ def paypay_ensure_chrome_debugger(port: int = PAYPAY_DEBUG_PORT, profile_dir: st
 # ------------------------------------------------------------
 # 購入一覧
 # ------------------------------------------------------------
+def _expand_purchase_list(driver) -> int:
+    """
+    購入一覧の「もっと見る」を、末尾の取引の購入日が PURCHASE_LIST_HISTORY_DAYS 日より
+    前に達するまで、またはこれ以上読み込めなくなるまでクリックする。
+    クリック回数を返す。
+
+    【2026-09-09 実機確認済み】「もっと見る」の<span>要素は、読み込める全履歴を
+    読み終えた後もDOM上に残り続け、is_displayed()もTrueのままだった（ボタンが
+    消える・disabledになる、といった見た目上の変化が無い）。そのため、ボタンの
+    表示有無ではなく「クリック後に実際にリンク数が増えたか」で終了判定する
+    （実機確認済み: このアカウントは全履歴107件で、2回目のクリック以降は
+    クリックしてもリンク数が増えなかった）。
+    """
+    cutoff = datetime.now() - timedelta(days=PURCHASE_LIST_HISTORY_DAYS)
+    clicks = 0
+
+    for _ in range(PURCHASE_LIST_EXPAND_MAX_CLICKS):
+        links = driver.find_elements(By.CSS_SELECTOR, "a[href*='/trade/buyer']")
+        if not links:
+            break
+
+        last_lines = (links[-1].text or "").split("\n")
+        if len(last_lines) >= 2:
+            try:
+                if parse_japanese_datetime(last_lines[1]) < cutoff:
+                    break  # 120日より前まで遡れた
+            except ValueError:
+                pass  # 日時をパースできない場合は無視し、件数増加の有無だけで判断する
+
+        more_els = [
+            el for el in driver.find_elements(By.XPATH, PURCHASE_LIST_MORE_BUTTON_XPATH)
+            if el.is_displayed()
+        ]
+        if not more_els:
+            break  # ボタン自体が無い（このアカウントでは通常発生しない想定だが念のため）
+
+        prev_count = len(links)
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", more_els[0])
+        driver.execute_script("arguments[0].click();", more_els[0])
+        clicks += 1
+
+        deadline = time.time() + PURCHASE_LIST_EXPAND_WAIT_SEC
+        grew = False
+        while time.time() < deadline:
+            if len(driver.find_elements(By.CSS_SELECTOR, "a[href*='/trade/buyer']")) > prev_count:
+                grew = True
+                break
+            time.sleep(0.3)
+        if not grew:
+            break  # クリックしても増えない＝全履歴を読み込み済み
+
+    return clicks
+
+
 def collect_active_transactions(driver, retries: int = 6, interval: float = 2.0):
     """
-    最初に表示されている範囲（「もっと見る」は押さない）から、
-    ステータスが「取引完了」以外の取引URL・生ステータス文言の一覧を返す。
+    「もっと見る」を購入日がPURCHASE_LIST_HISTORY_DAYS日前に達するまで展開したうえで、
+    ステータスが ACTIVE_LIST_STATUSES（発送待ち／商品が到着したら評価をしてください）の
+    いずれかに一致する取引URL・生ステータス文言の一覧を返す。
     戻り値: [(url, list_status_text), ...]
 
     【2026-08-31 メルカリの実機不具合を受けて共通の考え方を適用】retries回待っても
     フィルタ前の生リンクが1件も見つからない場合は、0件と決めつけず例外を送出する
-    （一覧ページの描画・読み込みに失敗している可能性があるため）。「取引完了」の
-    フィルタで結果的に0件になるのは正常な状態のため区別する（その場合は生リンクは
+    （一覧ページの描画・読み込みに失敗している可能性があるため）。ACTIVE_LIST_STATUSES
+    のフィルタで結果的に0件になるのは正常な状態のため区別する（その場合は生リンクは
     見つかっている）。
+
+    【2026-09-09 実機確認済みで方式変更】旧実装は「もっと見る」を押さず最初に
+    表示されている範囲だけを対象にしており、かつ「取引完了」という文字列を含む場合
+    のみ除外する除外リスト方式だったため、「取引キャンセル」（"取引完了"という文字列を
+    含まない）や「未評価の場合は評価してください」（到着済みで評価待ちのみ、追跡不要）
+    が対象に紛れ込み、不要に個別取引ページを開いてしまっていた（実機確認済み、50件中:
+    取引完了30件・商品が到着したら評価をしてください12件・発送待ち5件・
+    未評価の場合は評価してください2件・取引キャンセル1件）。
+    ACTIVE_LIST_STATUSESに明示的に含まれる状態だけを対象にするホワイトリスト方式に
+    変更し、あわせて_expand_purchase_list()で直近120日分まで一覧を展開してから
+    対象を抽出するようにした。判定は各カード（a要素）のテキストの最終行（状態文言）で
+    行う（class名はビルドごとに変わりうるハッシュ値のため使わない。実機確認済み）。
     """
     driver.get(PURCHASE_LIST_URL)
 
@@ -2350,6 +3046,10 @@ def collect_active_transactions(driver, retries: int = 6, interval: float = 2.0)
             "あるため、0件と決めつけず処理を中断します。"
         )
 
+    expand_clicks = _expand_purchase_list(driver)
+    links = driver.find_elements(By.CSS_SELECTOR, "a[href*='/trade/buyer']")
+    print(f"購入一覧展開: 「もっと見る」{expand_clicks}回クリック（展開後 生リンク{len(links)}件）")
+
     results = []
     seen = set()
     for link in links:
@@ -2357,8 +3057,9 @@ def collect_active_transactions(driver, retries: int = 6, interval: float = 2.0)
         text = link.text or ""
         if not href or href in seen:
             continue
-        if STATUS_COMPLETED in text:
-            continue  # 取引完了は対象外
+        list_status = text.strip().split("\n")[-1].strip() if text.strip() else ""
+        if list_status not in ACTIVE_LIST_STATUSES:
+            continue  # 取引完了・取引キャンセル・未評価の場合は評価してください・未知の状態は対象外
         seen.add(href)
         results.append((href, text.strip()))
 
@@ -2383,13 +3084,21 @@ def paypay_get_raw_status(driver) -> str:
     （mercari_get_raw_status()と同じ方針）。
     【2026-08-29修正】旧実装はいずれにも一致しない場合に無条件で"発送済み"を返して
     おり、ラクマで同種のパターンが実際に誤判定を起こしたことを受けて廃止した。
-    「発送済み・配送中」の実機未確認の文言を新たに推測して追加することはしない。
+
+    【2026-09-09 実機確認済みで追加】「発送済み・配送中」状態は本文の
+    DETAIL_SHIPPED_MARKER（「商品の到着をお待ちください」）で判定する。この状態が
+    未実装だったため、該当する取引はここで例外になり、paypay_main()側の
+    update_daily_purchase_status()（Access更新）まで到達できず、日常.eBayステータスが
+    空欄のまま更新されない不具合があった（実例: z592951146, z653620242, z678003294,
+    z618303236）。到着済み(DETAIL_ARRIVED_MARKER)が確認できる場合はそちらを優先する。
     """
     body_text = driver.find_element(By.TAG_NAME, "body").text
     if DETAIL_ARRIVED_MARKER in body_text:
         return "☆出荷可能"
     if DETAIL_BEFORE_SHIP_MARKER in body_text:
         return "発送前"
+    if DETAIL_SHIPPED_MARKER in body_text:
+        return "発送済み"
 
     raise RuntimeError(
         "配送状況を判定できませんでした。未確認の状態のため、"
@@ -2661,20 +3370,87 @@ def paypay_send_chat_message(driver, order_id: str, expected_count: int, reply_t
     finally:
         ws.close()
 
+    def _confirm_via_fresh_messages():
+        """
+        【2026-09-09 案A追加】クリック自体は既に実行済みのため、CDPでのレスポンス捕捉に
+        失敗しても実サイトへの送信自体は成功している場合がある（実機不具合 z677826054で
+        確認: 実際には送信済みなのに捕捉失敗によりok=False・DB保存スキップとなり、
+        trx.vendor_messageに反映されず画面からも消えなかった）。
+        再クリックはせず、paypay_get_messages()で現在のDOMを再取得し、送信前の件数から
+        ちょうど1件だけ増えていて、かつ最新メッセージが自分の発言で送信本文と完全一致する
+        場合のみ「実際には送信成功していた」とみなす（厳密一致・件数一致の両方を要求し、
+        既存の別メッセージを誤って成功と判定しないようにする）。
+        """
+        time.sleep(1.0)
+        fresh = paypay_get_messages(driver, seller_name)
+        if len(fresh) == expected_count + 1:
+            last = fresh[-1]
+            if last["sender_type"] == "購入者" and (last["message_body"] or "") == reply_text:
+                return fresh
+        return None
+
     if target_request_id is None:
+        fallback_messages = _confirm_via_fresh_messages()
+        if fallback_messages is not None:
+            return {"ok": True, "error": None, "reason": None, "new_messages": fallback_messages}
         return {"ok": False, "error": "送信リクエスト（POST .../message）の発生を確認できませんでした"
                                        "（クリックが反映されていない可能性があります）。再送信はせず、必ず状況を確認してください。",
                 "reason": None, "new_messages": None}
 
     if status != 200 or not body or "thread" not in body:
+        fallback_messages = _confirm_via_fresh_messages()
+        if fallback_messages is not None:
+            return {"ok": True, "error": None, "reason": None, "new_messages": fallback_messages}
         return {"ok": False, "error": f"PayPayフリマ側の実レスポンスで送信成功を確認できませんでした"
                                        f"（status={status}, body={body}）",
                 "reason": None, "new_messages": None}
 
     # 実送信成功。paypay_get_messages()を再実行し、送信分を含む最新の全件を返す
     # （通常scrapeと同じsave_vendor_messages()経路でDB保存できるようにするため）。
+    # 【2026-09-11追加】ここでの再取得はCDP（ChromeDriverセッション）経由のDOM操作であり、
+    # 実送信自体は直前のCDPレスポンス捕捉（status==200かつthread有）で既に確定済み。
+    # 実機不具合z676630458で確認: 送信直後にChromeDriverとの接続が切れ
+    # （ConnectionRefusedError等）、ここが例外を送出して/api/messages/send全体が
+    # 500エラーになった。実送信は成功しているため、ここで例外が起きても「送信失敗」
+    # として扱ってはならない（二重送信を誘発するため）。取得に失敗した場合は
+    # new_messages=NoneのままON=Trueを返し、呼び出し元でのDB保存はスキップさせる
+    # （次回の通常scrape、または手動確認で反映される）。
+    def _refetch_reflects_sent_message(messages):
+        return (len(messages) == expected_count + 1
+                and messages[-1]["sender_type"] == "購入者"
+                and (messages[-1]["message_body"] or "") == reply_text)
+
     time.sleep(1.0)
-    fresh_messages = paypay_get_messages(driver, seller_name)
+    try:
+        fresh_messages = paypay_get_messages(driver, seller_name)
+    except Exception as e:
+        return {"ok": True,
+                "error": f"実サイトへの送信は成功しましたが、送信後の最新メッセージ取得に失敗しました（{e}）。"
+                         "再送信はしないでください。内容は次回の自動取得または実サイト確認で反映されます。",
+                "reason": "post_send_refetch_failed", "new_messages": None}
+
+    # 【2026-09-14追加】再取得自体は例外なく完了しても、DOM更新がまだ間に合っておらず
+    # 送信分を含まない古い件数のまま返ってくることがある（実機不具合z640111984: 再取得
+    # 件数が送信前と変わらず、送信済みの購入者発言が欠落したままDBへ保存され、実際には
+    # 送信済みなのに/messagesにも送信ボタンが残ったままになっていた）。件数が+1件増えて
+    # いて最新が自分の送信文と完全一致することを確認できない場合は、もう少し待って
+    # 1回だけ再取得する（再クリックはしない、DOM再取得のみ）。それでも確認できなければ
+    # new_messages=Noneを返し、呼び出し元のフォールバック保存に委ねる。
+    if not _refetch_reflects_sent_message(fresh_messages):
+        time.sleep(2.0)
+        try:
+            fresh_messages = paypay_get_messages(driver, seller_name)
+        except Exception as e:
+            return {"ok": True,
+                    "error": f"実サイトへの送信は成功しましたが、送信後の最新メッセージ取得に失敗しました（{e}）。"
+                             "再送信はしないでください。内容は次回の自動取得または実サイト確認で反映されます。",
+                    "reason": "post_send_refetch_failed", "new_messages": None}
+        if not _refetch_reflects_sent_message(fresh_messages):
+            return {"ok": True,
+                    "error": "実サイトへの送信は成功しましたが、再取得したメッセージ一覧に送信分が"
+                             "まだ反映されていません。再送信はしないでください。内容は次回の自動取得"
+                             "または実サイト確認で反映されます。",
+                    "reason": "post_send_refetch_stale", "new_messages": None}
 
     return {"ok": True, "error": None, "reason": None, "new_messages": fresh_messages}
 
@@ -2682,7 +3458,8 @@ def paypay_send_chat_message(driver, order_id: str, expected_count: int, reply_t
 # ------------------------------------------------------------
 # メイン
 # ------------------------------------------------------------
-def paypay_main():
+def paypay_main(wanted_ids=None):
+    """wanted_ids: 指定時は注文IDの集合で対象を絞り込む（テスト用。mercari_main()と同じ考え方）。"""
     paypay_ensure_chrome_debugger()
 
     options = Options()
@@ -2698,58 +3475,99 @@ def paypay_main():
         # 実機確認済み）。既存タブは一切操作しない。
         tab_id = _create_processing_tab(driver)
 
-        transactions = collect_active_transactions(driver)
+        if wanted_ids is not None:
+            # 指定IDは一覧に出てこないことがあるため、一覧経由ではなく取引URLを
+            # 直接組み立てる（テスト用の絞り込み時のみ。mercari_main()と同じ方針）。
+            transactions = [
+                (f"https://paypayfleamarket.yahoo.co.jp/item/{iid}/trade/buyer", "(テストモード直接指定)")
+                for iid in wanted_ids
+            ]
+        else:
+            transactions = collect_active_transactions(driver)
         print(f"取引URL数(取引完了を除く): {len(transactions)}")
         print()
 
+        # 【2026-09-10 trx.vendor_purchase廃止に伴い追加】一覧取得が完全に成功した
+        # 直後（＝ここまで例外なく到達できた時点）でのみ、日常.フリマ取引中を
+        # 店舗単位で一括更新する。--item-ids指定時（テスト用の絞り込み）は
+        # 「現在取引中の全件」ではないため、フラグ更新は行わない（mercari_main()と
+        # 同じ理由。他の現在取引中の注文を誤ってOFFにしてしまうため）。
+        if wanted_ids is None:
+            paypay_active_ids = [paypay_get_order_id(u) for u, _status_text in transactions]
+            sync_result = sync_flema_active_orders(access_conn, PAYPAY_VENDOR_NAME, paypay_active_ids)
+            print(f"日常フリマ取引中フラグ更新: リセット{sync_result['reset']}行, "
+                  f"ON{sync_result['updated']}件, 新規追加{sync_result['created']}件")
+            print()
+
+        failed_ids = []
         for url, list_status_text in transactions:
-            try:
-                driver.get(url)
-                time.sleep(4)
+            # URLからの注文ID抽出は文字列操作のみで失敗しないため、リトライの外で1回だけ行う。
+            order_id = paypay_get_order_id(url)
 
-                order_id = paypay_get_order_id(url)
-                if not order_id:
+            # 【2026-09-14追加】この取引だけをITEM_COLLECTION_MAX_ATTEMPTS回まで試行する。
+            last_error = None
+            for attempt in range(1, ITEM_COLLECTION_MAX_ATTEMPTS + 1):
+                try:
+                    driver.get(url)
+                    time.sleep(4)
+
+                    if not order_id:
+                        print(url)
+                        print("ERROR: 注文IDを取得できませんでした")
+                        print()
+                        last_error = None
+                        break
+
+                    raw_status = paypay_get_raw_status(driver)
+                    tracking_number, carrier = paypay_get_tracking_info(driver)
+                    seller_name = paypay_get_seller_name(driver)
+                    messages = paypay_get_messages(driver, seller_name)
+                    has_seller_message = any(m["sender_type"] == "出品者" for m in messages)
+
+                    item_name = paypay_get_item_name(driver)
+                    purchase_datetime = paypay_get_purchase_date(driver)
+                    purchase_price = paypay_get_purchase_price(driver)
+
+                    # 日常に注文IDのレコードが無い場合（仕入入力忘れ等）は新規追加する。
+                    # Mercariと同じensure_daily_record()を使用する。既存レコードがある場合は何もしない。
+                    created = ensure_daily_record(
+                        access_conn, PAYPAY_VENDOR_NAME, order_id,
+                        item_name, purchase_datetime.date(), purchase_price
+                    )
+
+                    daily_updated = update_daily_purchase_status(access_conn, order_id, raw_status, has_seller_message)
+                    update_daily_tracking_info(access_conn, order_id, tracking_number, carrier)
+                    save_vendor_messages(sql_conn, PAYPAY_VENDOR_NAME, order_id, messages)
+
                     print(url)
-                    print("ERROR: 注文IDを取得できませんでした")
+                    print(f"order_id={order_id}  list_status={list_status_text!r}  raw_status={raw_status}  "
+                          f"item={item_name[:30]}  price={purchase_price}  "
+                          f"tracking={tracking_number}  carrier={carrier}  seller={seller_name}  "
+                          f"messages={len(messages)}  日常更新={'OK' if daily_updated else '対象行なし'}")
+                    if created:
+                        print(f"日常: 新規レコード追加（注文ID={order_id}）")
                     print()
-                    continue
 
-                raw_status = paypay_get_raw_status(driver)
-                tracking_number, carrier = paypay_get_tracking_info(driver)
-                seller_name = paypay_get_seller_name(driver)
-                messages = paypay_get_messages(driver, seller_name)
-                has_seller_message = any(m["sender_type"] == "出品者" for m in messages)
+                    last_error = None
+                    break
 
-                item_name = paypay_get_item_name(driver)
-                purchase_datetime = paypay_get_purchase_date(driver)
-                purchase_price = paypay_get_purchase_price(driver)
+                except Exception as e:
+                    last_error = e
+                    if attempt < ITEM_COLLECTION_MAX_ATTEMPTS:
+                        print(f"WARN: {url} の処理に失敗しました（{attempt}/{ITEM_COLLECTION_MAX_ATTEMPTS}回目）。"
+                              f"リトライします: {e}")
+                        time.sleep(ITEM_COLLECTION_RETRY_WAIT_SEC)
 
-                # 日常に注文IDのレコードが無い場合（仕入入力忘れ等）は新規追加する。
-                # Mercariと同じensure_daily_record()を使用する。既存レコードがある場合は何もしない。
-                created = ensure_daily_record(
-                    access_conn, PAYPAY_VENDOR_NAME, order_id,
-                    item_name, purchase_datetime.date(), purchase_price
-                )
-
-                daily_updated = update_daily_purchase_status(access_conn, order_id, raw_status, has_seller_message)
-                update_daily_tracking_info(access_conn, order_id, tracking_number, carrier)
-                save_vendor_messages(sql_conn, PAYPAY_VENDOR_NAME, order_id, messages)
-
+            if last_error is not None:
                 print(url)
-                print(f"order_id={order_id}  list_status={list_status_text!r}  raw_status={raw_status}  "
-                      f"item={item_name[:30]}  price={purchase_price}  "
-                      f"tracking={tracking_number}  carrier={carrier}  seller={seller_name}  "
-                      f"messages={len(messages)}  日常更新={'OK' if daily_updated else '対象行なし'}")
-                if created:
-                    print(f"日常: 新規レコード追加（注文ID={order_id}）")
+                print(f"ERROR: {last_error}")
                 print()
-
-            except Exception as e:
-                print(url)
-                print(f"ERROR: {e}")
-                print()
+                failed_ids.append(order_id)
 
         sync_carrier_tracking_to_daily(access_conn)
+
+        # 【2026-09-14追加】リトライしても失敗した取引IDを呼び出し元へ返す。
+        return failed_ids
 
     finally:
         access_conn.close()
@@ -2792,6 +3610,36 @@ ARRIVED_MARKER = "配達が完了しました"
 # （2026-08-29実機確認済み）。旧文言「出品者の発送をお待ちください」は実際のページと
 # 一致せず、未発送の取引を発送済みと誤判定する不具合の原因になっていたため修正。
 BEFORE_SHIP_MARKER = "商品発送までしばらくお待ちください"
+# 【2026-09-09 実機確認済み】発送済み・配送中（まだ買い手が受取確認していない）状態の
+# .status-title文言。ステータスが空欄のまま処理が中断されていた2件（実例:
+# f10489d4dfb3adc4feae232705f5d1b8, 547b7e5fcbb8c61e22af152317535045）はいずれも
+# この文言だった（実機確認済み）。ARRIVED_MARKER（配送会社側の配達完了）とは別の
+# 状態のため、判定順はARRIVED_MARKERの後（配達完了が確認できていれば到着済み優先）。
+SHIPPED_MARKER = "受取確認と評価をしてください"
+
+# 【2026-09-14追加】購入者側の受取評価は既に完了しており、出品者側の評価だけが
+# 残っている状態の.status-title文言（実機確認済み、実例:
+# 0b15ecb49ef103de0923a54623b7bbc7。「受取評価日：YYYY年M月D日」も併記される）。
+# mercari_is_receipt_rated()と同じ考え方: 購入者側の対応は既に完了しているため
+# 追跡不要とし、フリマ取引中の対象から外してよい（eBayステータス・到着日・
+# メッセージ履歴・受取評価日のAccessへの転記は一切行わない、フラグだけの話）。
+# 既存の他の状態判定（BEFORE_SHIP_MARKER・ARRIVED_MARKER・SHIPPED_MARKER）は変更しない。
+RAKUMA_SELLER_RATING_PENDING_MARKER = "出品者からの評価をお待ちください"
+
+
+def rakuma_is_buyer_response_complete(driver) -> bool:
+    """
+    現在表示中のラクマ取引ページの.status-title文言に
+    RAKUMA_SELLER_RATING_PENDING_MARKER（「出品者からの評価をお待ちください」）が
+    含まれるかどうかを判定する（rakuma_get_raw_status()の他のマーカー判定
+    ＝BEFORE_SHIP_MARKER/SHIPPED_MARKERと同じ部分一致方針。実機では「受取評価日：
+    YYYY年M月D日」等が同じ要素内に併記されることがあるため、完全一致ではなく
+    部分一致にする。本文メッセージ等、曖昧な情報からは判定しない）。
+    """
+    status_title_els = driver.find_elements(By.CSS_SELECTOR, ".status-title")
+    if not status_title_els:
+        return False
+    return RAKUMA_SELLER_RATING_PENDING_MARKER in status_title_els[0].text.strip()
 
 
 # ------------------------------------------------------------
@@ -2897,8 +3745,14 @@ def rakuma_get_raw_status(driver) -> str:
     表示と一致しなくなった際に、未発送の取引を発送済みと誤判定して自動返信の
     定型文（発送お礼）を誤送信する原因になった（実例: ddf616d4302a023f63171d864533675a）。
 
-    「発送済み・配送中」状態の.status-title文言は実機で未確認のため、
-    確認できるまでは実装しない（該当する取引は判定不能として例外になる）。
+    【2026-09-09 実機確認済みで追加】「発送済み・配送中」状態は.status-title=
+    SHIPPED_MARKER（「受取確認と評価をしてください」）で判定する。この状態が
+    未実装だったため、該当する取引はここで例外になり、rakuma_main()側の
+    update_daily_purchase_status()（Access「連絡あり」/「【購入済】」の反映）まで
+    到達できず、日常.eBayステータスが空欄のまま更新されない不具合があった
+    （実例: f10489d4dfb3adc4feae232705f5d1b8, 547b7e5fcbb8c61e22af152317535045）。
+    配送会社側の配達完了（ARRIVED_MARKER）が確認できる場合はそちらを優先する
+    （買い手がまだ「受取確認」操作をしていなくても、配達自体は完了しているため）。
     """
     status_title_els = driver.find_elements(By.CSS_SELECTOR, ".status-title")
     status_title_text = status_title_els[0].text.strip() if status_title_els else ""
@@ -2909,6 +3763,9 @@ def rakuma_get_raw_status(driver) -> str:
     body_text = driver.find_element(By.TAG_NAME, "body").text
     if ARRIVED_MARKER in body_text:
         return "☆出荷可能"
+
+    if SHIPPED_MARKER in status_title_text:
+        return "発送済み"
 
     raise RuntimeError(
         f"配送状況を判定できませんでした（.status-title={status_title_text!r}）。"
@@ -3180,20 +4037,80 @@ def rakuma_send_chat_message(driver, order_id: str, expected_count: int, reply_t
     finally:
         ws.close()
 
+    def _confirm_via_fresh_messages():
+        """
+        【2026-09-09 案A追加】クリック自体は既に実行済みのため、CDPでのレスポンス捕捉に
+        失敗しても実サイトへの送信自体は成功している場合がある（PayPayフリマ側の実機不具合
+        z677826054と同種の問題をラクマでも未然に防ぐため）。
+        再クリックはせず、rakuma_get_messages()で現在のDOMを再取得し、送信前の件数から
+        ちょうど1件だけ増えていて、かつ最新メッセージが自分の発言で送信本文と完全一致する
+        場合のみ「実際には送信成功していた」とみなす（厳密一致・件数一致の両方を要求し、
+        既存の別メッセージを誤って成功と判定しないようにする）。
+        """
+        time.sleep(1.0)
+        fresh = rakuma_get_messages(driver, self_name)
+        if len(fresh) == expected_count + 1:
+            last = fresh[-1]
+            if last["sender_type"] == "購入者" and (last["message_body"] or "") == reply_text:
+                return fresh
+        return None
+
     if target_request_id is None:
+        fallback_messages = _confirm_via_fresh_messages()
+        if fallback_messages is not None:
+            return {"ok": True, "error": None, "reason": None, "new_messages": fallback_messages}
         return {"ok": False, "error": "送信リクエスト（POST .../comment/add）の発生を確認できませんでした"
                                        "（クリックが反映されていない可能性があります）。再送信はせず、必ず状況を確認してください。",
                 "reason": None, "new_messages": None}
 
     if status != 200 or not isinstance(body, dict) or not body.get("result"):
+        fallback_messages = _confirm_via_fresh_messages()
+        if fallback_messages is not None:
+            return {"ok": True, "error": None, "reason": None, "new_messages": fallback_messages}
         return {"ok": False, "error": f"ラクマ側の実レスポンスで送信成功を確認できませんでした"
                                        f"（status={status}, body={body}）",
                 "reason": None, "new_messages": None}
 
     # 実送信成功。rakuma_get_messages()を再実行し、送信分を含む最新の全件を返す
     # （通常scrapeと同じsave_vendor_messages()経路でDB保存できるようにするため）。
+    # 【2026-09-14追加】ここでの再取得失敗時にも実送信成功(ok=True)を維持する
+    # （paypay_send_chat_message()の実機不具合z676630458と同じ理由。取得できなければ
+    # new_messages=Noneを返し、呼び出し元でのDB保存はスキップさせる）。
+    def _refetch_reflects_sent_message(messages):
+        return (len(messages) == expected_count + 1
+                and messages[-1]["sender_type"] == "購入者"
+                and (messages[-1]["message_body"] or "") == reply_text)
+
     time.sleep(1.0)
-    fresh_messages = rakuma_get_messages(driver, self_name)
+    try:
+        fresh_messages = rakuma_get_messages(driver, self_name)
+    except Exception as e:
+        return {"ok": True,
+                "error": f"実サイトへの送信は成功しましたが、送信後の最新メッセージ取得に失敗しました（{e}）。"
+                         "再送信はしないでください。内容は次回の自動取得または実サイト確認で反映されます。",
+                "reason": "post_send_refetch_failed", "new_messages": None}
+
+    # 【2026-09-14追加】再取得自体は例外なく完了しても、DOM更新がまだ間に合っておらず
+    # 送信分を含まない古い件数のまま返ってくることがある（PayPayフリマの実機不具合
+    # z640111984と同種の問題をラクマでも未然に防ぐため）。件数が+1件増えていて最新が
+    # 自分の送信文と完全一致することを確認できない場合は、もう少し待って1回だけ
+    # 再取得する（再クリックはしない、DOM再取得のみ）。それでも確認できなければ
+    # new_messages=Noneを返し、呼び出し元のフォールバック保存に委ねる。
+    if not _refetch_reflects_sent_message(fresh_messages):
+        time.sleep(2.0)
+        try:
+            fresh_messages = rakuma_get_messages(driver, self_name)
+        except Exception as e:
+            return {"ok": True,
+                    "error": f"実サイトへの送信は成功しましたが、送信後の最新メッセージ取得に失敗しました（{e}）。"
+                             "再送信はしないでください。内容は次回の自動取得または実サイト確認で反映されます。",
+                    "reason": "post_send_refetch_failed", "new_messages": None}
+        if not _refetch_reflects_sent_message(fresh_messages):
+            return {"ok": True,
+                    "error": "実サイトへの送信は成功しましたが、再取得したメッセージ一覧に送信分が"
+                             "まだ反映されていません。再送信はしないでください。内容は次回の自動取得"
+                             "または実サイト確認で反映されます。",
+                    "reason": "post_send_refetch_stale", "new_messages": None}
 
     return {"ok": True, "error": None, "reason": None, "new_messages": fresh_messages}
 
@@ -3201,7 +4118,8 @@ def rakuma_send_chat_message(driver, order_id: str, expected_count: int, reply_t
 # ------------------------------------------------------------
 # メイン
 # ------------------------------------------------------------
-def rakuma_main():
+def rakuma_main(wanted_ids=None):
+    """wanted_ids: 指定時は注文IDの集合で対象を絞り込む（テスト用。mercari_main()と同じ考え方）。"""
     rakuma_ensure_chrome_debugger()
 
     options = Options()
@@ -3217,45 +4135,98 @@ def rakuma_main():
         # 実機確認済み）。既存タブは一切操作しない。
         tab_id = _create_processing_tab(driver)
 
-        transaction_urls = collect_in_progress_transaction_urls(driver)
+        if wanted_ids is not None:
+            # 指定IDは一覧に出てこないことがあるため、一覧経由ではなく取引URLを
+            # 直接組み立てる（テスト用の絞り込み時のみ。mercari_main()と同じ方針）。
+            transaction_urls = [f"https://fril.jp/transaction?item_id={iid}" for iid in wanted_ids]
+        else:
+            transaction_urls = collect_in_progress_transaction_urls(driver)
         print(f"取引URL数(取引中のみ): {len(transaction_urls)}")
         print()
 
+        # 【2026-09-10 trx.vendor_purchase廃止に伴い追加】一覧取得が完全に成功した
+        # 直後（＝ここまで例外なく到達できた時点）でのみ、日常.フリマ取引中を
+        # 店舗単位で一括更新する。--item-ids指定時（テスト用の絞り込み）は
+        # 「現在取引中の全件」ではないため、フラグ更新は行わない（mercari_main()と
+        # 同じ理由。他の現在取引中の注文を誤ってOFFにしてしまうため）。
+        if wanted_ids is None:
+            rakuma_active_ids = [rakuma_get_order_id(u) for u in transaction_urls]
+            sync_result = sync_flema_active_orders(access_conn, RAKUMA_VENDOR_NAME, rakuma_active_ids)
+            print(f"日常フリマ取引中フラグ更新: リセット{sync_result['reset']}行, "
+                  f"ON{sync_result['updated']}件, 新規追加{sync_result['created']}件")
+            print()
+
+        failed_ids = []
         for url in transaction_urls:
-            try:
-                driver.get(url)
-                time.sleep(4)
+            # URLからの注文ID抽出は文字列操作のみで失敗しないため、リトライの外で1回だけ行う。
+            order_id = rakuma_get_order_id(url)
 
-                order_id = rakuma_get_order_id(url)
-                if not order_id:
+            # 【2026-09-14追加】この取引だけをITEM_COLLECTION_MAX_ATTEMPTS回まで試行する。
+            last_error = None
+            for attempt in range(1, ITEM_COLLECTION_MAX_ATTEMPTS + 1):
+                try:
+                    driver.get(url)
+                    time.sleep(4)
+
+                    if not order_id:
+                        print(url)
+                        print("ERROR: 注文ID(item_id)を取得できませんでした")
+                        print()
+                        last_error = None
+                        break
+
+                    # 【2026-09-14追加】購入者側の受取評価は既に完了しており、出品者側の
+                    # 評価だけが残っている状態（mercari_is_receipt_rated()と同じ考え方）。
+                    # rakuma_get_raw_status()はこの文言を認識できず例外を送出していた
+                    # （実例: 0b15ecb49ef103de0923a54623b7bbc7）。フリマ取引中の対象からは
+                    # 外すが、eBayステータス・到着日・メッセージ履歴は変更しない。
+                    if rakuma_is_buyer_response_complete(driver):
+                        inactivated = mark_flema_inactive(access_conn, RAKUMA_VENDOR_NAME, order_id)
+                        print(url)
+                        print(f"出品者からの評価をお待ちください（購入者側の対応完了）を検出。"
+                              f"日常のフリマ取引中をFalseにしました（{inactivated}行）。"
+                              "eBayステータス・到着日・メッセージ履歴は変更していません。")
+                        print()
+                        last_error = None
+                        break
+
+                    self_name = get_self_name(driver)
+                    raw_status = rakuma_get_raw_status(driver)
+                    tracking_number, carrier = rakuma_get_tracking_info(driver)
+                    seller_name = rakuma_get_seller_name(driver)
+                    messages = rakuma_get_messages(driver, self_name)
+                    has_seller_message = any(m["sender_type"] == "出品者" for m in messages)
+
+                    daily_updated = update_daily_purchase_status(access_conn, order_id, raw_status, has_seller_message)
+                    update_daily_tracking_info(access_conn, order_id, tracking_number, carrier)
+                    save_vendor_messages(sql_conn, RAKUMA_VENDOR_NAME, order_id, messages)
+
                     print(url)
-                    print("ERROR: 注文ID(item_id)を取得できませんでした")
+                    print(f"order_id={order_id}  raw_status={raw_status}  tracking={tracking_number}  "
+                          f"carrier={carrier}  seller={seller_name}  messages={len(messages)}  "
+                          f"日常更新={'OK' if daily_updated else '対象行なし'}")
                     print()
-                    continue
 
-                self_name = get_self_name(driver)
-                raw_status = rakuma_get_raw_status(driver)
-                tracking_number, carrier = rakuma_get_tracking_info(driver)
-                seller_name = rakuma_get_seller_name(driver)
-                messages = rakuma_get_messages(driver, self_name)
-                has_seller_message = any(m["sender_type"] == "出品者" for m in messages)
+                    last_error = None
+                    break
 
-                daily_updated = update_daily_purchase_status(access_conn, order_id, raw_status, has_seller_message)
-                update_daily_tracking_info(access_conn, order_id, tracking_number, carrier)
-                save_vendor_messages(sql_conn, RAKUMA_VENDOR_NAME, order_id, messages)
+                except Exception as e:
+                    last_error = e
+                    if attempt < ITEM_COLLECTION_MAX_ATTEMPTS:
+                        print(f"WARN: {url} の処理に失敗しました（{attempt}/{ITEM_COLLECTION_MAX_ATTEMPTS}回目）。"
+                              f"リトライします: {e}")
+                        time.sleep(ITEM_COLLECTION_RETRY_WAIT_SEC)
 
+            if last_error is not None:
                 print(url)
-                print(f"order_id={order_id}  raw_status={raw_status}  tracking={tracking_number}  "
-                      f"carrier={carrier}  seller={seller_name}  messages={len(messages)}  "
-                      f"日常更新={'OK' if daily_updated else '対象行なし'}")
+                print(f"ERROR: {last_error}")
                 print()
-
-            except Exception as e:
-                print(url)
-                print(f"ERROR: {e}")
-                print()
+                failed_ids.append(order_id)
 
         sync_carrier_tracking_to_daily(access_conn)
+
+        # 【2026-09-14追加】リトライしても失敗した取引IDを呼び出し元へ返す。
+        return failed_ids
 
     finally:
         access_conn.close()
@@ -3392,11 +4363,42 @@ def send_rakuma_reply(vendor_item_id: str, expected_count: int, reply_text: str)
 #   state=running のまま1時間以上経過した場合は自動解除せず、異常終了の疑いとして
 #   人間の確認を促すメッセージを表示するに留める（古いrunningの自動解除はしない）。
 #
-# 状態ファイル(Y:\furima_purchase_runner_status.txt)に running/done/error、
+# 状態ファイル(Y:\furima_purchase_runner_status.txt)に running/requested/done/error、
 # 実行元(hostname)・PID（排他制御には使わない。調査用）、開始/終了時刻、
 # サイトごとの結果(success/error)を書き込む。Access側のフォームタイマーが
 # これをポーリングして表示更新・Requeryに使う。VBA側にJSONパーサーを新設
 # せずに読めるよう、あえてJSONではなく1行1個の"key=value"形式にしている。
+#
+# 【2026-09-13変更】収集実行ホストの一本化（Pythonはmouseだけで動かす方式）:
+#   Selenium/Chromeによる実収集は、各フリマサイトへログイン済みのChromeプロファイルを
+#   持つmouseでしか正しく動作しない。従来はAccess「到着日入力」フォームの
+#   「フリマ情報取得」ボタンがVBA側のShell()呼び出しで
+#   `python.exe D:\apps_nostock\apps\etc\furima_purchase.py` を起動しており、
+#   これはmouse以外のPC（HP-PC・DELL-PC等）からもそのまま実行できてしまっていた。
+#
+#   【方針転換】mouse以外のPCにはPython自体を配置・実行しない。ボタンのVBA側で
+#   ローカルのpython.exeをShell()起動するのをやめ、共有状態ファイル
+#   （Y:\furima_purchase_runner_status.txt。以前からある二重起動防止・進捗表示用の
+#   ファイルをそのまま使う）へ直接 state=requested を書き込むだけにする
+#   （VBAのファイルI/Oのみで完結。Pythonの呼び出しは一切発生しない）。
+#
+#   mouse側は、Windowsタスクスケジューラの新規タスク(FurimaPurchaseCollectorWatcher)
+#   により `python.exe D:\apps_nostock\apps\etc\furima_purchase.py --poll-only` を
+#   1分間隔（mouseにログオン中のみ実行）で起動する。--poll-only起動時は
+#   state=requestedの場合のみ実収集(_run_collection())へ進み、それ以外
+#   （requestedでない）は何もせず即座に終了する（Chromeを毎分起動することはない）。
+#   Pythonはmouse以外では一切実行されない前提のため、ホスト名による分岐は
+#   もう不要（過去に導入したCOLLECTOR_HOSTNAMES方式は廃止した）。
+#
+#   【テストモード】status.get("test_site")・status.get("test_item_id")が指定されて
+#   いる場合、_run_collection()はSITESのうち指定サイトだけを、指定の注文ID1件だけに
+#   絞り込んで実行する（他の2サイトはスキップする。本番の全件収集ロジック自体は
+#   変更していない）。VBA側は「フリマ情報取得」ボタンとは別の操作（例:
+#   Shift+クリックやテスト専用ボタン）でこの2キーを追加で書き込む想定。
+#
+#   排他制御はこれまで通り状態ファイル1つによるベストエフォート方式のまま
+#   （読み取り→書き込みの間の競合を完全には防げない。人が手動で押す頻度を
+#   前提にした従来からの割り切りを維持し、新たな排他機構は導入しない）。
 # ============================================================================
 # ============================================================================
 STATUS_FILE = Path(r"Y:\furima_purchase_runner_status.txt")
@@ -3410,6 +4412,83 @@ SITES = [
     ("YahooFurima", paypay_main),
     ("Rakuma", rakuma_main),
 ]
+
+# 【2026-09-14追加】収集プロセスの異常終了検知（実機不具合PID 22052を受けて追加）。
+# state=runningのまま記録されたPIDが既に終了している場合、正常終了時の
+# finally節（状態ファイル更新）まで到達できなかったことを意味する
+# （実機不具合: DELL-PCから依頼した1件テストの収集プロセスが実行途中で応答なく
+# 終了し、状態ファイルがrunningのまま残り続け、Access側が「依頼中」の表示・
+# ボタン無効のまま戻らなくなった。Windowsのタスクスケジューラ履歴・イベントログ
+# （Application/System/Windows Defender）・実行ログのいずれにも、プロセスが
+# 異常終了したことを示す記録が無く、終了原因そのものは特定できていない）。
+# mouse上のタスクスケジューラ(--poll-only、1分間隔)が毎回この生死を確認し、
+# 既に終了していればstate=errorへ確定する。まだpendingのまま（着手前・未完了）の
+# サイトは、送信結果が不明な取引を誤って再送信しないよう"error"として記録するのみで、
+# 自動での再収集・再送信は一切行わない（次にボタンを押した時に改めて依頼できる）。
+def _is_pid_alive(pid: int) -> bool:
+    """
+    Windows専用: 指定PIDのプロセスが現在も存在するかどうかをtasklistコマンドで
+    確認する（新規の外部ライブラリ依存を増やさないため、既にimport済みのsubprocess
+    のみを使う）。tasklist自体の実行に失敗した場合は判定不能とみなし、Trueを返す
+    （安全側＝本当に動いているものを誤ってerror確定させないため）。
+    """
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            capture_output=True, text=True, timeout=10
+        )
+    except Exception:
+        return True
+    # プロセスが存在する場合はCSV1行（"python.exe","22052",...）が返る。
+    # 存在しない場合は「情報: 条件に一致するタスクは実行されていません。」等の
+    # メッセージ行（ダブルクオートで始まらない）になる。
+    return result.stdout.strip().startswith('"')
+
+
+def _reap_if_dead(status: dict) -> None:
+    """state=runningのPIDが既に終了していれば、state=errorへ確定する。生きている、
+    またはPIDが判定できない場合は何もしない（呼び出し元は--poll-only起動時、
+    state=runningの場合のみ呼ぶ）。"""
+    try:
+        pid = int(status.get("PID", ""))
+    except (TypeError, ValueError):
+        return
+    if pid <= 0 or _is_pid_alive(pid):
+        return
+
+    started_at = status.get("started_at", "")
+    # 状態ファイルの既存内容（requested_by・test_site・test_item_id・各サイトの
+    # 既知の結果等）を引き継ぐ。_write_status()が別途書き込むstate/hostname/PID/
+    # started_at/finished_atは重複させないよう取り除く。
+    results = dict(status)
+    for key in ("state", "hostname", "PID", "started_at", "finished_at"):
+        results.pop(key, None)
+
+    for name, _ in SITES:
+        if results.get(name) == "pending":
+            results[name] = "error"
+            results[f"{name}_error"] = (
+                "収集プロセスが応答なく終了したため、この取引の処理結果は確認できていません。"
+                "自動での再収集・再送信は行っていません。"
+            )
+
+    results["watcher_note"] = (
+        f"収集プロセス(PID {pid})が実行中に応答なく終了したため、"
+        "監視タスクが状態をerrorへ確定しました。"
+    )
+
+    _write_status("error", results, started_at, finished_at=datetime.now().isoformat())
+    print(f"[watcher] PID {pid} が終了していたため、state=errorへ確定しました。")
+
+
+# 状態ファイル上の表示名 → trx.vendor_message/日常.店舗のDB表記。
+# 【2026-09-14追加】自動送信フェーズが、各main()の戻り値(failed_ids)をDB表記の
+# 店舗名で突き合わせるために使う。
+SITE_DISPLAY_TO_VENDOR_NAME = {
+    "Mercari": MERCARI_VENDOR_NAME,
+    "YahooFurima": PAYPAY_VENDOR_NAME,
+    "Rakuma": RAKUMA_VENDOR_NAME,
+}
 
 
 def _write_status(state: str, results: dict, started_at: str, finished_at: str = "") -> None:
@@ -3437,13 +4516,61 @@ def _read_status() -> dict:
     return status
 
 
+# 【2026-09-14追加】--poll-only起動の最初の状態確認がハングして次の起動をブロックする
+# 不具合を受けて追加（実機不具合PID 24260: 17:59:16に起動した--poll-onlyが、CPU使用率
+# ほぼゼロ・ネットワーク接続なしのまま約10分間ブロックされ続けた。Y:\は共有ネットワーク
+# ドライブのため、_read_status()のファイルI/O自体が稀に長時間ブロックされることがある
+# と考えられる。タスクスケジューラの-MultipleInstances IgnoreNew設定により、この
+# ハングしたプロセスが終了しない限り後続の毎分の起動がすべて拒否され続け
+# （LastTaskResult=0x800710E0「オペレーターまたは管理者が要求を拒否しました」）、
+# DELL-PCからの依頼(state=requested)の検知が数分遅延した）。
+# --poll-only起動の最初の状態確認だけをデーモンスレッドで実行し、
+# POLL_STATUS_READ_TIMEOUT_SEC以内に完了しなければ今回のポーリングを諦めて
+# 即座に終了する（次の1分後の起動に委ねる）。デーモンスレッドはメインスレッドが
+# 終了すればOSに強制的に破棄されるため、ファイルI/Oが実際にどれだけ長くブロック
+# されていても、プロセス自体は速やかに終了できる。実収集フェーズ（Chrome操作・
+# DB書き込み等、数分〜十数分かかりうる）にはこのタイムアウトを適用しない
+# （_run_collection()自体は対象外）。
+POLL_STATUS_READ_TIMEOUT_SEC = 15.0
+
+
+def _read_status_with_timeout(timeout_sec: float = POLL_STATUS_READ_TIMEOUT_SEC):
+    """_read_status()をデーモンスレッドで実行し、timeout_sec以内に完了しなければ
+    Noneを返す（呼び出し元は今回のポーリングを諦めて即座に終了する）。"""
+    result = {}
+    errors = []
+
+    def _worker():
+        try:
+            result["status"] = _read_status()
+        except Exception as e:
+            errors.append(e)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout=timeout_sec)
+
+    if t.is_alive():
+        print(f"[watcher] 状態ファイルの読み込みが{timeout_sec:.0f}秒以内に完了しませんでした。"
+              "今回のポーリングは中断し、次回の起動に委ねます。", flush=True)
+        return None
+    if errors:
+        raise errors[0]
+    return result.get("status", {})
+
+
 def _running_guard_message(status: dict) -> str:
     """
-    state=running中に新規起動をブロックする際の表示文言を組み立てる。
-    started_atから現在までの経過時間を表示し、RUNNING_STALE_WARNING_SEC(1時間)
-    以上経過している場合は異常終了の疑いとして人間の確認を促す
+    state=running（または2026-09-13追加のstate=requested、mouseへ実行依頼済みで
+    まだ拾われていない状態）中に新規起動をブロックする際の表示文言を組み立てる。
+    running側はstarted_atから現在までの経過時間を表示し、RUNNING_STALE_WARNING_SEC
+    (1時間)以上経過している場合は異常終了の疑いとして人間の確認を促す
     （このファイル自身は古いrunningを自動解除しない）。
     """
+    if status.get("state") == "requested":
+        requested_by = status.get("requested_by", "?")
+        return f"フリマ情報取得は既にmouseへ依頼済みです（依頼元: {requested_by}）。\nmouse側の実行をお待ちください。"
+
     try:
         started_at = datetime.fromisoformat(status.get("started_at", ""))
         elapsed_sec = (datetime.now() - started_at).total_seconds()
@@ -3460,30 +4587,396 @@ def _running_guard_message(status: dict) -> str:
     return "フリマ情報取得は既に実行中です。"
 
 
-def main() -> None:
-    status = _read_status()
-    if status.get("state") == "running":
-        print(_running_guard_message(status))
+EXECUTION_LOG_FILE = Path(r"D:\apps_nostock\logs\furima_purchase_log.txt")
+
+
+class _StreamToLogger:
+    """print()等でのsys.stdout/stderr書き込みをloggingへ橋渡しする
+    （waitress_server_5097.py の _LoggerWriter と同じパターン）。"""
+
+    def __init__(self, logger: logging.Logger, level: int) -> None:
+        self._logger = logger
+        self._level = level
+
+    def write(self, message: str) -> None:
+        message = message.rstrip()
+        if message:
+            self._logger.log(self._level, message)
+
+    def flush(self) -> None:
+        pass
+
+    def isatty(self) -> bool:
+        return False
+
+
+def _setup_execution_logging() -> None:
+    """
+    【2026-09-10 実機不具合を受けて追加】Access VBAのShell()から起動される本スクリプト
+    （python.exe D:\\apps_nostock\\apps\\etc\\furima_purchase.py）の標準出力（処理件数・
+    ERROR行等）は、従来どこにも保存されておらず、実行時に何が起きたかを事後に確認する
+    手段が無かった（実例: m85217087095がrunner_status上"success"のまま欠落した際、
+    原因究明に使えるログが一切残っていなかった）。webapp側のwaitress_server_5097.pyと
+    同じRotatingFileHandlerパターンで標準出力・標準エラーをファイルへ保存する。
+    このスクリプトを直接実行した場合（__main__）にのみ有効化する
+    （messages_blueprint.py経由でWebアプリへimportされた場合は、Webアプリ側の
+    ロギング設定をそのまま使い、二重にリダイレクトしない）。
+    """
+    EXECUTION_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+    formatter = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    handler = RotatingFileHandler(
+        str(EXECUTION_LOG_FILE), maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+    )
+    handler.setFormatter(formatter)
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    root_logger.addHandler(handler)
+
+    sys.stdout = _StreamToLogger(root_logger, logging.INFO)
+    sys.stderr = _StreamToLogger(root_logger, logging.ERROR)
+
+
+# ------------------------------------------------------------
+# 自動送信（2026-09-14追加、第一段階: mouse上での実行のみ）
+# ------------------------------------------------------------
+# 本番の全件収集後、各取引の最新状態(is_shipped)・会話履歴からdetermine_suggested_reply()が
+# 提案する定型文のうち、この3種類だけを自動送信する。
+#   - shipped_2: 発送済みの肯定的証拠（Access日常.eBayステータス）で確定できる定型文
+#   - first_reply_onegai / first_reply_plain: 出品者の初回メッセージへの初回挨拶
+# AI返信不要候補(ai_no_reply_candidate)・定型文なし(template_key=None)・既に送信済み
+# （determine_suggested_reply()が上記いずれのステップにも該当せずtemplate_key=Noneを
+# 返すことで自然に除外される）は、determine_suggested_reply()自体の判定にすべて任せる
+# （ここで別途キーワード等の判定は行わない）。
+AUTO_SEND_TEMPLATE_KEYS = ("shipped_2", "first_reply_onegai", "first_reply_plain")
+
+
+def _auto_send_one_reply(sql_conn, vendor_name: str, vendor_item_id: str, history: list, suggested_reply: dict) -> dict:
+    """
+    1取引分の自動送信を行う。既存のsend_mercari_reply/send_paypay_reply/send_rakuma_reply
+    （実サイトへの送信＋実際のレスポンスによる送信確認、/messages画面の「送信」ボタンと
+    全く同じ処理）をそのまま使う。DB保存も、messages_blueprint.pyの手動送信時と同じ
+    ロジック（メルカリはMERCARI_SQL_UPSERT_VENDOR_MESSAGE_BY_ID、PayPayフリマ・ラクマは
+    save_vendor_messages()）でtrx.vendor_messageへ反映する。
+
+    戻り値: {"outcome": "sent"|"skipped_new_message"|"needs_review"|"error",
+             "detail": str, "sent_text": str|None}
+      - sent: 実際に送信し、DBへも反映した
+      - skipped_new_message: 送信前に新着メッセージを検出したため送信しなかった
+        （安全機構。取得済みの新着はDBへ反映済み。自動再送はしない）
+      - needs_review: 送信結果を実サイトのレスポンスで確認できなかった（「要確認」。
+        自動再送はしない。人が実サイトを確認する必要がある）
+      - error: 送信処理自体が例外で失敗した
+    """
+    expected_count = len(history)
+    reply_text = suggested_reply["text"]
+
+    try:
+        if vendor_name == MERCARI_VENDOR_NAME:
+            expected_last_message_id = history[-1]["message_id"] if history else None
+            result = send_mercari_reply(vendor_item_id, expected_count, reply_text,
+                                         expected_last_message_id=expected_last_message_id)
+        elif vendor_name == PAYPAY_VENDOR_NAME:
+            result = send_paypay_reply(vendor_item_id, expected_count, reply_text)
+        elif vendor_name == RAKUMA_VENDOR_NAME:
+            result = send_rakuma_reply(vendor_item_id, expected_count, reply_text)
+        else:
+            return {"outcome": "error", "detail": f"未対応の店舗です: {vendor_name}", "sent_text": None}
+    except Exception as e:
+        return {"outcome": "error", "detail": f"送信処理中に例外が発生しました: {e}", "sent_text": None}
+
+    if result.get("reason") == "new_message_detected":
+        new_messages = result.get("new_messages") or []
+        try:
+            if vendor_name == MERCARI_VENDOR_NAME:
+                with sql_conn.cursor() as cur:
+                    for msg in new_messages:
+                        cur.execute(
+                            MERCARI_SQL_UPSERT_VENDOR_MESSAGE_BY_ID,
+                            (
+                                vendor_name, vendor_item_id, msg["message_id"], msg["message_no"],
+                                msg["sender_name"], "出品者" if msg["is_from_seller"] else "購入者",
+                                msg["message_datetime"], msg["message_body"],
+                            )
+                        )
+                sql_conn.commit()
+            else:
+                save_vendor_messages(sql_conn, vendor_name, vendor_item_id, new_messages)
+        except Exception as e:
+            print(f"[auto_send] 新着メッセージのDB保存に失敗しました {vendor_item_id}: {e}")
+        return {"outcome": "skipped_new_message",
+                "detail": "送信前に新しいメッセージを検出したため送信しませんでした（自動再送はしません）",
+                "sent_text": None}
+
+    if not result.get("ok"):
+        # 【要確認】結果が確認できない（クリックは行ったが実レスポンスで成功を確認できない等）。
+        # 自動再送はしない。人が実サイトを確認する必要がある。
+        return {"outcome": "needs_review", "detail": result.get("error") or "送信結果を確認できませんでした",
+                "sent_text": None}
+
+    # 実送信成功。DBへ反映する（messages_blueprint.pyの手動送信成功時と同じロジック）。
+    try:
+        if vendor_name == MERCARI_VENDOR_NAME:
+            with sql_conn.cursor() as cur:
+                cur.execute(
+                    MERCARI_SQL_UPSERT_VENDOR_MESSAGE_BY_ID,
+                    (
+                        vendor_name, vendor_item_id, result["message_id"], result["message_no"],
+                        "自分", "購入者", result["message_datetime"], reply_text,
+                    )
+                )
+            sql_conn.commit()
+        else:
+            new_messages = result.get("new_messages")
+            if new_messages:
+                save_vendor_messages(sql_conn, vendor_name, vendor_item_id, new_messages)
+            else:
+                # 【2026-09-14追加、実機不具合z680665644/z680665936を受けて対応】
+                # 実サイトへの送信自体は成功済み（result["ok"]=True）だが、送信後の
+                # 最新メッセージ再取得に失敗し(post_send_refetch_failed等)、
+                # new_messagesが空のまま何も保存されない状態だった。このまま放置すると
+                # trx.vendor_messageに送信済みの事実が一切残らず、次回の自動送信サイクルで
+                # 同じ取引に再度同じ定型文が提案され、二重送信されるおそれがある。
+                # 実際に送信したことが分かっている本文だけを、暫定的に1行(message_no=
+                # expected_count+1)として自分で保存しておく（次回の通常巡回スクレイプが
+                # 実際の内容へ上書き・整合させる。save_vendor_messages()は
+                # (vendor_name, vendor_item_id, message_no)キーのMERGEのため上書き前提でも安全）。
+                fallback_message_no = expected_count + 1
+                save_vendor_messages(sql_conn, vendor_name, vendor_item_id, [{
+                    "message_no": fallback_message_no,
+                    "sender_name": "自分",
+                    "sender_type": "購入者",
+                    "message_datetime_text": "たった今",
+                    "message_body": reply_text,
+                }])
+                print(f"[auto_send] {vendor_item_id}: 送信後の最新メッセージ再取得に失敗したため、"
+                      f"送信文面を暫定的に1行だけ保存しました（次回の巡回で実際の内容に整合されます）。"
+                      f"詳細: {result.get('error')}")
+    except Exception as e:
+        # 実送信自体は成功済みのため"sent"のまま。DB保存の失敗だけログで検知する
+        # （次回の通常巡回スクレイプで反映される）。
+        print(f"[auto_send] 送信成功後のDB保存に失敗しました {vendor_item_id}: {e}")
+
+    detail = "送信しました"
+    if result.get("error"):
+        detail += f"（{result['error']}）"
+    return {"outcome": "sent", "detail": detail, "sent_text": reply_text}
+
+
+def _auto_send_replies(sql_conn, access_conn, exclude_ids_by_vendor: dict = None) -> None:
+    """
+    本番の全件収集後に呼ぶ。現在アクティブな全取引（Access日常.フリマ取引中=True、
+    TARGET_VENDOR_NAMES）について、determine_suggested_reply()の判定結果が
+    AUTO_SEND_TEMPLATE_KEYSのいずれかの取引だけを自動送信する。
+
+    exclude_ids_by_vendor: {vendor_name(DB表記): {vendor_item_id, ...}}。今回の収集で
+    リトライしても失敗した取引はここに含まれ、対象から除外する（「取得失敗の取引は
+    送信せず、成功した取引は続行する」ため）。
+    """
+    exclude_ids_by_vendor = exclude_ids_by_vendor or {}
+
+    active_orders = fetch_active_orders(access_conn)
+    target_ids = [oid for oid, info in active_orders.items() if info["vendor_name"] in TARGET_VENDOR_NAMES]
+    if not target_ids:
+        print("自動送信対象なし（アクティブな取引がありません）。")
         return
 
+    history_by_key = _fetch_histories_for_orders(sql_conn, target_ids)
+    for oid in target_ids:
+        key = (active_orders[oid]["vendor_name"], oid)
+        history_by_key.setdefault(key, [])
+
+    sent_count = 0
+    skipped_count = 0
+    review_count = 0
+    error_count = 0
+
+    for (vendor_name, vendor_item_id), history in sorted(history_by_key.items()):
+        order_info = active_orders.get(vendor_item_id)
+        if order_info is None:
+            continue
+
+        if vendor_item_id in exclude_ids_by_vendor.get(vendor_name, ()):
+            print(f"{vendor_name} {vendor_item_id}: 今回の収集に失敗したため自動送信の対象から除外しました。")
+            continue
+
+        is_shipped = is_shipped_status(order_info["ebay_status"])
+        suggested_reply = determine_suggested_reply(history, is_shipped)
+        template_key = suggested_reply["template_key"]
+
+        if template_key not in AUTO_SEND_TEMPLATE_KEYS:
+            continue
+
+        print(f"\n{vendor_name} {vendor_item_id}: template_key={template_key}")
+        print(f"  送信文面: {suggested_reply['text']!r}")
+
+        result = _auto_send_one_reply(sql_conn, vendor_name, vendor_item_id, history, suggested_reply)
+
+        print(f"  結果: {result['outcome']} - {result['detail']}")
+
+        if result["outcome"] == "sent":
+            sent_count += 1
+        elif result["outcome"] == "skipped_new_message":
+            skipped_count += 1
+        elif result["outcome"] == "needs_review":
+            review_count += 1
+        else:
+            error_count += 1
+
+    print(f"\n自動送信結果: 送信{sent_count}件, 新着検出でスキップ{skipped_count}件, "
+          f"要確認{review_count}件, エラー{error_count}件")
+
+
+def _run_collection(requested_by: str = "", test_site: str = "", test_item_id: str = "") -> None:
+    """
+    実収集本体（従来のmain()のループ部分）。mouse上でのみ呼び出される
+    （Pythonはmouse以外では実行しない方針のため、ホスト名チェックはしない）。
+
+    requested_by: VBA側が状態ファイルへ書き込んだ依頼元hostname（Access直押しの
+        通常運用では常にこれが入っている想定。空文字は開発時の直接手動実行のみ）。
+
+    test_site・test_item_id: 【2026-09-13追加】テストモード。ともに指定された場合、
+        SITESのうちtest_siteと一致するサイトだけを、test_item_id 1件だけに絞り込んで
+        実行し、他のサイトは完全にスキップする（本番の全件収集ロジック自体
+        ＝各サイトのmain()の中身は一切変更しない。絞り込みは各main()が既に
+        受け付けるwanted_ids引数に1件だけ渡すことで実現する）。
+        いずれか一方だけが指定された場合は無視し、通常の全件収集を行う
+        （中途半端な絞り込みで意図しない全件スキップ等を避けるため）。
+
+    【2026-09-13修正】失敗時、results[name]は従来通り"success"/"error"のいずれか
+    （既存のVBA側が文字列完全一致で判定している可能性があるため、この値自体は
+    変更しない）。原因が分かるエラーメッセージは別キー{name}_errorへ追加で書き込む
+    （改行はAccess側の1行1key=value形式を壊さないよう空白へ置換し、長さも制限する）。
+    """
     started_at = datetime.now().isoformat()
-    results = {name: "pending" for name, _ in SITES}
+
+    if test_site and test_item_id:
+        sites_to_run = [(name, func) for name, func in SITES if name == test_site]
+    else:
+        sites_to_run = SITES
+        test_site = ""
+        test_item_id = ""
+
+    results = {name: "pending" for name, _ in sites_to_run}
+    if requested_by:
+        results["requested_by"] = requested_by
+    if test_site:
+        results["test_site"] = test_site
+        results["test_item_id"] = test_item_id
     _write_status("running", results, started_at)
 
-    for name, run_func in SITES:
+    # 【2026-09-14追加】各main()がリトライしても失敗した取引IDを店舗(DB表記)単位で集約する。
+    # 自動送信フェーズが、今回の収集に失敗した取引を対象から除外するために使う。
+    failed_ids_by_vendor = {}
+
+    for name, run_func in sites_to_run:
         print(f"\n{'=' * 20} {name} {'=' * 20}", flush=True)
         try:
-            run_func()
+            if test_site == name:
+                run_func(wanted_ids={test_item_id})
+            else:
+                failed_ids = run_func()
+                vendor_name = SITE_DISPLAY_TO_VENDOR_NAME.get(name)
+                if vendor_name:
+                    failed_ids_by_vendor[vendor_name] = set(failed_ids or [])
             results[name] = "success"
         except Exception as e:
             print(f"[ERROR] {name} の実行中にエラーが発生しました: {e}", flush=True)
             results[name] = "error"
+            error_text = str(e).replace("\r", " ").replace("\n", " ").strip()
+            results[f"{name}_error"] = error_text[:300]
         # 1サイト終わるたびに書き込み、Access側が進捗を見られるようにする。
         _write_status("running", results, started_at)
 
-    overall_state = "done" if all(v == "success" for v in results.values()) else "error"
+    # resultsにはrequested_by・test_site・{name}_error等の補助キーも混在するため、
+    # overall_stateの判定は今回実行したサイト名の値だけを見る。
+    site_names = {name for name, _ in sites_to_run}
+    overall_state = "done" if all(results[name] == "success" for name in site_names) else "error"
+
+    if test_site:
+        # 1件テストモード（test_site指定時）では自動送信を一切行わないため、
+        # 収集完了時点でdone/errorを確定してよい。
+        _write_status(overall_state, results, started_at, finished_at=datetime.now().isoformat())
+        return
+
+    # 【2026-09-14修正】以前はここでstate=done/errorを書き込んでから自動送信していたため、
+    # 実際にはまだ自動送信（実サイトへの送信操作）が進行中なのに、Access側が「完了」と
+    # 表示し、ボタンも再度押せる状態になってしまっていた（実機で確認）。自動送信フェーズが
+    # 終わるまでstate=running のまま維持し（二重起動防止ガードも継続して有効にする）、
+    # 全て終わってから最終的なdone/errorを書き込む。
+    print(f"\n{'=' * 20} 自動送信 {'=' * 20}", flush=True)
+    try:
+        auto_send_sql_conn = get_sql_server_connection()
+        auto_send_access_conn = get_access_connection()
+        try:
+            _auto_send_replies(auto_send_sql_conn, auto_send_access_conn,
+                                exclude_ids_by_vendor=failed_ids_by_vendor)
+        finally:
+            auto_send_access_conn.close()
+            auto_send_sql_conn.close()
+    except Exception as e:
+        print(f"[ERROR] 自動送信処理全体でエラーが発生しました: {e}", flush=True)
+        overall_state = "error"
+        results["auto_send_error"] = str(e).replace("\r", " ").replace("\n", " ").strip()[:300]
+
     _write_status(overall_state, results, started_at, finished_at=datetime.now().isoformat())
 
 
+def main(poll_only: bool = False) -> None:
+    """
+    2026-09-13の方針転換後のエントリポイント。Pythonはmouse上でのみ実行される
+    （Access「フリマ情報取得」ボタンはVBA側のファイルI/Oのみでstate=requestedを
+    書き込むよう変更済みで、mouse以外のPCではpython.exe自体が起動されない）。
+
+      - poll_only=True（mouse上のタスクスケジューラ`FurimaPurchaseCollectorWatcher`
+        による1分間隔の定期起動）: 最初の状態確認は_read_status_with_timeout()で行う
+        （2026-09-14追加。POLL_STATUS_READ_TIMEOUT_SEC以内に読めなければ今回は諦めて
+        即座に終了し、次回に委ねる。実機不具合PID 24260の再発防止）。
+        state=requestedの場合のみ実収集へ進む。state=runningの場合は、記録された
+        PIDが既に終了していないか確認し（_reap_if_dead()、2026-09-14追加）、
+        終了していればstate=errorへ確定する。それ以外（requested・runningの
+        いずれでもない）は何もせず即座に終了する（毎分Chromeを起動することはない）。
+        状態ファイルのtest_site/test_item_idも引き継いで_run_collection()へ渡す。
+      - poll_only=False（mouseでの開発・保守用の直接手動実行）: running中でなければ
+        従来通り即座に実収集する（依頼状態を経由しない）。
+    """
+    if poll_only:
+        status = _read_status_with_timeout()
+        if status is None:
+            return  # 状態確認自体がタイムアウトした。今回は諦め、次回の起動に委ねる。
+        state = status.get("state")
+
+        if state == "running":
+            _reap_if_dead(status)
+            return
+        if state != "requested":
+            return  # 依頼が無ければChromeは起動しない。
+        _run_collection(
+            requested_by=status.get("requested_by", ""),
+            test_site=status.get("test_site", ""),
+            test_item_id=status.get("test_item_id", ""),
+        )
+        return
+
+    status = _read_status()
+    state = status.get("state")
+    if state == "running":
+        print(_running_guard_message(status))
+        return
+    _run_collection()
+
+
 if __name__ == "__main__":
-    main()
+    _setup_execution_logging()
+    # mercari_main()内部のargparse（--item-ids）が未知の引数として--poll-onlyを
+    # 拒否してしまう（parser.parse_args()がSystemExit(2)を送出し、_run_collection()の
+    # except Exceptionでは捕捉できずプロセスが状態ファイル更新前に落ちる）ため、
+    # ここで--poll-onlyを読み取った後、後続のどの引数解析にも渡らないようsys.argvから
+    # 取り除いておく。
+    _poll_only = "--poll-only" in sys.argv
+    if _poll_only:
+        sys.argv.remove("--poll-only")
+    main(poll_only=_poll_only)

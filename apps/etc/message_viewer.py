@@ -3,6 +3,59 @@ from pathlib import Path
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 import sys
+import logging
+from logging.handlers import RotatingFileHandler
+
+# pythonw.exe常駐下(タスクスケジューラ経由、コンソール無し)ではsys.stdout/sys.stderrが
+# Noneになり、直後のreconfigure()がAttributeErrorで即クラッシュするため、
+# waitress_server_5097.py / furimawatch_1scrape_daemon.pyと同じ方式で
+# reconfigure()より前にログファイルへの差し替えを済ませておく。
+_LOG_DIR = Path(r"D:\apps_nostock\logs")
+_LOG_FILE = _LOG_DIR / "message_viewer_log.txt"
+
+
+class _LoggerWriter:
+    """print()や未捕捉のトレースバック出力をログファイルへ流し込むための
+    sys.stdout/sys.stderr差し替え用(waitress_server_5097.pyと同じ方式)。"""
+
+    def __init__(self, logger: logging.Logger, level: int):
+        self._logger = logger
+        self._level = level
+
+    def write(self, message: str) -> None:
+        message = message.rstrip()
+        if message:
+            self._logger.log(self._level, message)
+
+    def flush(self) -> None:
+        pass
+
+    def reconfigure(self, *args, **kwargs) -> None:
+        pass
+
+    def isatty(self) -> bool:
+        return False
+
+
+def _setup_logging() -> None:
+    _LOG_DIR.mkdir(parents=True, exist_ok=True)
+    formatter = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    handler = RotatingFileHandler(
+        str(_LOG_FILE), maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+    )
+    handler.setFormatter(formatter)
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    root_logger.addHandler(handler)
+
+    sys.stdout = _LoggerWriter(root_logger, logging.INFO)
+    sys.stderr = _LoggerWriter(root_logger, logging.ERROR)
+
+
+_setup_logging()
 sys.stdout.reconfigure(encoding='utf-8')
 sys.stderr.reconfigure(encoding='utf-8')
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]

@@ -30,7 +30,9 @@ BEGIN
     CREATE TABLE trx.ebay_transactions (
         account              NVARCHAR(50)   NOT NULL,
         record_type          VARCHAR(20)    NOT NULL,   -- 'TRANSACTION' | 'PAYOUT'
-        record_id            VARCHAR(50)    NOT NULL,   -- transactionId または payoutId
+        record_id            VARCHAR(100)   NOT NULL,   -- transactionId または payoutId
+                                                          -- ※transactionIdはUUID付きの形式があり実測で最長54文字（例:
+                                                          --   FEE-xxxxxxxxxx-<uuid>f_42）。安全マージンを見て100に設定。
 
         transaction_date     DATETIME2(3)   NULL,       -- transactionDate / payoutDate
         transaction_type     VARCHAR(50)    NULL,       -- SALE / REFUND / NON_SALE_CHARGE / CREDIT /
