@@ -147,6 +147,12 @@ _STATUS_RANK = {
 # しまっていたため、明示的に保護対象とする。
 PROTECTED_EBAY_STATUSES = ("GA鑑定待ち", "出荷済み", "◎有在庫")
 
+# 【2026-09-23追加】キャンセル申請中／キャンセル済みの取引をAccess日常.eBayステータスへ
+# 正しく反映するための専用値。発送前〜到着済までの発送進捗（_STATUS_RANK）とは別次元の
+# 状態（進捗のどの段階でも起こりうる）のため、_STATUS_RANKには加えず、
+# write_ebay_status_if_advancing()内で個別に特別扱いする（下記参照）。
+CANCEL_PENDING_STATUS = "キャンセル申請中"
+
 
 def is_shipped_status(status: str) -> bool:
     """
@@ -174,6 +180,18 @@ def write_ebay_status_if_advancing(access_cur, order_id: str, new_status: str) -
     現在値がPROTECTED_EBAY_STATUSES（このプログラムの管理外・後工程の値）の場合は、
     ランク比較すら行わず一切上書きしない。それ以外でランク不明の現在値（人手入力など）は
     保護対象外とし、これまで通り上書きする。
+
+    【2026-09-23追加】CANCEL_PENDING_STATUS（「キャンセル申請中」）は発送進捗のランクに
+    属さない別次元の状態（発送前〜到着済のどの段階でも起こりうる）のため、通常のランク
+    比較には乗せず、次の2方向とも個別に特別扱いする（PROTECTED_EBAY_STATUSESによる保護は
+    従来通り優先する）。
+      - new_status=CANCEL_PENDING_STATUSの場合: 現在値のランクに関わらず常に上書きする
+        （キャンセルはどの発送段階でも起こりうるため、通常のランク比較で弾かれると
+        Accessに古い進捗状態が残ってしまう）。
+      - current_status=CANCEL_PENDING_STATUSで、new_statusがそれ以外（キャンセルが
+        解消され、収集した実際の発送進捗状態に戻す）場合も、常に上書きする
+        （CANCEL_PENDING_STATUS自体は進捗ランクを持たないため、通常のランク比較に
+        乗せると整合しない＝解消後も「キャンセル申請中」のまま残り続けてしまう）。
     戻り値: 該当行が存在し実際に更新できたか。
     """
     row = access_cur.execute(
@@ -186,10 +204,11 @@ def write_ebay_status_if_advancing(access_cur, order_id: str, new_status: str) -
     if current_status in PROTECTED_EBAY_STATUSES:
         return False
 
-    new_rank = _STATUS_RANK.get(new_status, 999)
-    current_rank = _STATUS_RANK.get(current_status, -1)
-    if new_rank < current_rank:
-        return False
+    if new_status != CANCEL_PENDING_STATUS and current_status != CANCEL_PENDING_STATUS:
+        new_rank = _STATUS_RANK.get(new_status, 999)
+        current_rank = _STATUS_RANK.get(current_status, -1)
+        if new_rank < current_rank:
+            return False
 
     access_cur.execute(
         f"UPDATE {ACCESS_TABLE} SET eBayステータス = ? WHERE 注文ID = ?",
@@ -331,7 +350,8 @@ def mark_flema_inactive(access_conn, vendor_name: str, order_id: str) -> int:
     return updated
 
 
-def update_daily_purchase_status(access_conn, order_id: str, raw_status: str, has_seller_message: bool) -> bool:
+def update_daily_purchase_status(access_conn, order_id: str, raw_status: str, has_seller_message: bool,
+                                  force_status: str = None) -> bool:
     """
     日常.eBayステータスを注文ID一致で更新する。到着日はここでは更新しない
     （到着日は sync_carrier_tracking_to_daily がヤマト／日本郵便の追跡結果から更新する）。
@@ -340,8 +360,15 @@ def update_daily_purchase_status(access_conn, order_id: str, raw_status: str, ha
     状態が後退する更新（例: 到着予定→発送済み）は行わない
     （サイト側の表示が配送会社の追跡結果に追いついていないだけの場合があるため）。
     戻り値: 該当する日常行が存在し更新できたか。
+
+    force_status: 【2026-09-23追加】指定した場合、raw_status/has_seller_messageから
+    通常計算する状態決定（determine_access_status）をスキップし、この値をそのまま
+    書き込み候補にする（CANCEL_PENDING_STATUS＝「キャンセル申請中」など、発送進捗とは
+    別種の状態をAccessへ正しく反映するために使う）。到着済み時の販売チャネル別分岐も
+    スキップする（force_status指定時はそのまま使う）。ランク保護の扱いは
+    write_ebay_status_if_advancing()の特別処理を参照。
     """
-    status = determine_access_status(raw_status, has_seller_message)
+    status = force_status if force_status is not None else determine_access_status(raw_status, has_seller_message)
 
     access_cur = access_conn.cursor()
     try:
@@ -381,6 +408,27 @@ def update_daily_tracking_info(access_conn, order_id: str, tracking_number, carr
         access_cur.close()
 
     return updated
+
+
+def _get_current_ebay_status(access_conn, order_id: str):
+    """
+    【2026-09-23追加】日常.eBayステータスの現在値を注文1件分だけ読む。
+
+    収集ループ内で収集直後に自動送信可否を判定する際、is_shipped_status()へ渡す値は
+    このヘルパーの戻り値を使う。update_daily_purchase_status()→write_ebay_status_if_advancing()は
+    状態が後退する場合は書き込まない（ランク保護）ため、同じ取引を処理した直後でも
+    「今回スクレイプしたraw_status」と「実際に日常へ反映されている値」は必ずしも一致しない
+    （保護により今回の書き込みがスキップされ、以前のより進んだ状態のままのことがある）。
+    /messages画面・従来の自動送信フェーズ(_auto_send_replies())はいずれもfetch_active_orders()
+    経由でこの列を読んで is_shipped を決めており、判定基準を完全に一致させるため、
+    収集直後の即時送信判定でもraw_statusではなく必ずこの関数で読み直した値を使う。
+    取引ページ（Selenium）へは一切アクセスしない、Accessへの軽い問い合わせのみ。
+    """
+    with access_conn.cursor() as cur:
+        row = cur.execute(
+            f"SELECT eBayステータス FROM {ACCESS_TABLE} WHERE 注文ID = ?", order_id
+        ).fetchone()
+    return row[0] if row else None
 
 
 # ------------------------------------------------------------
@@ -2085,6 +2133,43 @@ def mercari_get_raw_status(driver, retries: int = GET_RAW_STATUS_RETRY_COUNT,
     raise RuntimeError("配送ステータス要素が見つかりません")
 
 
+# 【2026-09-23追加、実機確認済み: m50880987245】キャンセル申請中／キャンセル済みの
+# 取引には、サイトを問わず自動返信しない（特定の商品IDでの例外登録はしない、文言ベースの
+# 一般判定）。
+# 実機不具合の経緯: mercari_get_raw_status()の「あんしん鑑定」バナー判定
+# （aside.merInformationBubble p.merText、上記kantei_banner）は、Mercariが同じUI部品を
+# 「キャンセル申請中です」バナーにも使い回しているため誤反応し、キャンセル申請中の
+# 取引を無条件で「発送済み」と誤判定していた（m50880987245で確認: 実際にはキャンセル
+# 申請中＝申請理由「商品が発送されない」にもかかわらずraw_status='発送済み'となり、
+# determine_suggested_reply()がshipped_2の自動送信候補にしてしまっていた）。
+# mercari_get_raw_status()自体の分類は変更しない（あんしん鑑定バナーの誤判定を
+# 個別に直すのではなく、この専用関数で「キャンセルが絡む取引には自動送信しない」を
+# 一律のガードとして収集ループ側に追加する）。
+MERCARI_CANCEL_KEYWORD = "キャンセル"
+
+
+def mercari_is_cancellation_pending(driver, evidence: dict = None) -> bool:
+    """
+    現在表示中のMercari取引ページが、キャンセル申請中／キャンセル済みかどうかを判定する。
+    2つの信号をOR条件で組み合わせる（どちらか一方でも該当すればTrue。安全側に倒す）。
+
+    1. DOM文言（実機確認済み: 「キャンセル申請中です」）: kantei_bannerと同じ要素
+       （aside.merInformationBubble p.merText）を見るが、ここでは文言に「キャンセル」を
+       含むかどうかで判定する（クラス名は鑑定バナーと共用されているため使わない）。
+    2. evidence（transaction_evidences/getの生JSON、mercari_get_messages(...,
+       return_evidence=True)で同じ収集から取得可能）のcancel_requestフィールド
+       （実機調査済み。mercari_get_cancel_request()参照）。DOM文言よりも構造化されて
+       おり、バナーのクラス名が別の意味で再利用される（今回のあんしん鑑定バナーとの
+       混同のような）事態の影響を受けないため、より信頼できる情報源として優先的に
+       参照する。evidence未指定（None）の場合はこの判定を行わない
+       （DOM文言のみでの判定に留める。呼び出し元がevidenceを持っていない場合の後方互換）。
+    """
+    els = driver.find_elements(By.CSS_SELECTOR, 'aside.merInformationBubble p.merText')
+    dom_based = any(MERCARI_CANCEL_KEYWORD in el.text for el in els)
+    json_based = evidence is not None and mercari_get_cancel_request(evidence) is not None
+    return dom_based or json_based
+
+
 TRANSACTION_PAGE_READY_RETRY_COUNT = 8
 TRANSACTION_PAGE_READY_RETRY_INTERVAL_SEC = 1.0
 
@@ -2260,7 +2345,7 @@ def _capture_mercari_api_responses(driver, order_id: str, port: int = MERCARI_DE
         ws.close()
 
 
-def mercari_get_messages(driver, order_id: str):
+def mercari_get_messages(driver, order_id: str, return_evidence: bool = False):
     """
     取引メッセージ全件を、DOM解析ではなくメルカリ内部APIから取得する
     （実機確認済み: transaction_messages/get_messagesがスレッド全件を1回で返すため、
@@ -2284,6 +2369,14 @@ def mercari_get_messages(driver, order_id: str):
         },
         ...
     ]
+
+    return_evidence: 【2026-09-23追加】Trueの場合、戻り値を(messages, evidence)のタプルにする。
+    evidenceはtransaction_evidences/getの生JSON全体（このメッセージ取得と同じ収集
+    ＝同じPage.reloadから得られるもので、追加のページアクセスは発生しない）。
+    呼び出し元がcancel_request（進行中のキャンセル申請情報。実機調査済み:
+    mercari_is_cancellation_pending()参照）等、メッセージ以外の情報も取り出せるように
+    するために追加した。デフォルトFalseでは従来通りmessagesのみを返す
+    （既存の呼び出し元・戻り値の形は一切変更しない）。
     """
     captured = _capture_mercari_api_responses(driver, order_id)
     evidence = captured["evidence"]
@@ -2317,7 +2410,33 @@ def mercari_get_messages(driver, order_id: str):
             "is_from_seller": is_from_seller,
         })
 
+    if return_evidence:
+        return messages, evidence
     return messages
+
+
+# 【2026-09-23追加、実機調査済み】transaction_evidences/get のJSONに含まれる
+# cancel_request フィールドで、キャンセル申請中の取引を判定する。
+#
+# 実機調査（m50880987245＝キャンセル申請中と、通常の取引4件を比較）で確認した結果:
+#   - m50880987245（キャンセル申請中、申請理由「商品が発送されない」）:
+#     status="wait_shipping"、cancel_requestは
+#     {"cancel_request_id":..., "status":"wait", "requested_by":"buyer",
+#      "reason_label":"商品が発送されない", ...} という辞書が存在。
+#   - m58393002975（発送済み）・m54461722708（到着済）・m96607889411（出荷可能）・
+#     m40737610277（発送前）: いずれもcancel_requestはNone（4件とも確認済み）。
+# statusフィールド（wait_shipping/wait_review/wait_done等）は発送前・発送済み・
+# 到着済みをまたいで同じ値になることがあり（wait_reviewが発送済み・出荷可能の両方で
+# 観測された）、既存のraw_status判定（発送前/発送済み/☆出荷可能の区別）を
+# 置き換えられるほど細かくは対応していない。そのため既存のmercari_get_raw_status()
+# （DOM解析）はそのまま維持し、cancel_requestの有無だけをキャンセル判定に使う。
+# cancel_requestが解消済み（取り消し・却下等）の場合にキーごと消えるか、statusが
+# 別の値に変わるだけで残り続けるかは未確認のため、キーの存在だけで判定する
+# （statusの値では絞り込まない＝安全側に倒す）。
+def mercari_get_cancel_request(evidence: dict):
+    """evidence（mercari_get_messages(..., return_evidence=True)で得た生JSON）から、
+    進行中のキャンセル申請情報を取り出す。申請が無ければNone。"""
+    return (evidence.get("data") or {}).get("cancel_request")
 
 
 # ------------------------------------------------------------
@@ -2347,7 +2466,8 @@ MERCARI_PRE_SEND_MESSAGE_FETCH_RETRY_WAIT_SEC = 2.0
 
 
 def mercari_send_chat_message(driver, order_id: str, expected_count: int, reply_text: str,
-                               expected_last_message_id=None) -> dict:
+                               expected_last_message_id=None, reuse_current_page: bool = False,
+                               check_cancellation: bool = False) -> dict:
     """
     メルカリの取引ページへ実際にメッセージを送信する（誤送信防止のため必ずこの手順で行う）。
 
@@ -2400,59 +2520,118 @@ def mercari_send_chat_message(driver, order_id: str, expected_count: int, reply_
         "message_no": int|None,       # 送信時点の会話内での位置（送信前のcurrent_messages件数+1）
         "message_datetime": datetime|None,  # レスポンスのcreated(unix time)をJSTに変換したもの
     }
+
+    reuse_current_page: 【2026-09-23再修正】Trueの場合、次の両方を省略する。
+      (a) 冒頭のdriver.get()（取引ページへの再ナビゲーション）
+      (b) 送信前メッセージ再取得（mercari_get_messages内部のCDP Page.reload、新着確認・
+          message_id照合による「新しいメッセージを受信したため送信を中止」判定）
+    呼び出し元（mercari_main()の収集ループ）が、この取引の収集で今まさに取得した
+    ばかりのmessages（expected_count・expected_last_message_idとして渡す）をそのまま
+    信頼し、直ちに同じページで送信する場合に使う。取引ページを開くのは収集時の1回だけに
+    し、収集→判定→送信を1回のページ読込で完結させるのが目的（2026-09-23ユーザー判断）。
+
+    【削らない安全策】reuse_current_page=Trueでも、次の2つはこの関数の他の部分と
+    _auto_send_one_reply()に元から独立して存在し、一切変更していない。
+      - 過去に同じ定型文（発送お礼等）を送信済みかどうかの判定
+        （determine_suggested_reply内のalready_sent_shipped_thanks。呼び出し元が
+        収集直後に持っているhistoryから判定済みの上でこの関数を呼ぶため、
+        ページアクセスは不要）
+      - 送信ボタンクリック後、実際のPOSTレスポンスで成功を確認できない場合に
+        自動再送しない仕組み（この関数の後半、クリック後のレスポンス捕捉・
+        ok判定はreuse_current_pageの値に関わらず完全に同一のロジック）
+
+    【許容するリスク】reuse_current_page=Trueの場合、収集直後から送信までの数秒間に
+    出品者から新着メッセージが届いても、この回では検知されない（次回の巡回で拾われる）。
+    これは新着検知のためだけにページを再読込していた分を省くための、明示的に許容された
+    トレードオフ（2026-09-23ユーザー判断）。
+
+    デフォルトFalse（従来通りdriver.get()＋送信前再取得を必ず行う）で、
+    /messages画面からの手動送信（send_mercari_reply経由、新規driver）の動作は変更しない。
+
+    check_cancellation: 【2026-09-23追加】Trueの場合、送信前メッセージ取得と同じ収集から
+    キャンセル申請中/キャンセル済みかどうかを判定し、該当すれば送信を中止する
+    （mercari_is_cancellation_pending()参照。reason="cancellation_detected"）。
+    このチェックは自動送信（_fallback_auto_send_for_vendor()、サイト収集自体が
+    完全に失敗し、直近の収集でキャンセル有無を確認できていない取引を対象にする
+    フォールバック経由）専用の安全策で、デフォルトFalse＝チェックしない
+    （2026-09-23ユーザー判断: 人が内容を確認したうえで/messages画面から手動送信する
+    経路まで、この自動判定で止めてしまわないようにするため。send_mercari_reply()の
+    check_cancellation引数がFalseのまま渡される限り、手動送信の動作は一切変更しない）。
+    reuse_current_page=True（収集直後の即時送信経路）では、この引数の値に関わらず
+    このチェックは行わない（収集ループ側で既にis_cancellation_pendingによってゲート
+    済みのため、二重実装を避けている）。
     """
-    driver.get(f"https://jp.mercari.com/transaction/{order_id}")
-    time.sleep(4)
+    if reuse_current_page:
+        # 収集直後の値をそのまま信頼する（再取得・件数比較・message_id照合はしない）。
+        next_message_no = expected_count + 1
+    else:
+        driver.get(f"https://jp.mercari.com/transaction/{order_id}")
+        time.sleep(4)
 
-    # 送信前（本文入力・送信ボタンクリックより前）の新着確認用メッセージ取得。
-    # まだ実サイトへの送信は一切発生していない段階のため、失敗してもページ再読み込みから
-    # 安全にやり直せる。最大MERCARI_PRE_SEND_MESSAGE_FETCH_MAX_ATTEMPTS回まで試行し、
-    # それでも失敗した場合のみ従来通り例外を送出する（この後の本文入力・送信ボタン
-    # クリック以降のリトライは一切行わない＝二重送信防止ロジックはここでは変更しない）。
-    current_messages = None
-    last_fetch_error = None
-    for attempt in range(1, MERCARI_PRE_SEND_MESSAGE_FETCH_MAX_ATTEMPTS + 1):
-        try:
-            current_messages = mercari_get_messages(driver, order_id)
-            break
-        except Exception as e:
-            last_fetch_error = e
-            print(f"[send] {order_id}: 送信前メッセージ取得に失敗しました"
-                  f"（{attempt}/{MERCARI_PRE_SEND_MESSAGE_FETCH_MAX_ATTEMPTS}回目、"
-                  f"送信前のためページ再読み込みしてリトライします）: {e}")
-            if attempt < MERCARI_PRE_SEND_MESSAGE_FETCH_MAX_ATTEMPTS:
-                time.sleep(MERCARI_PRE_SEND_MESSAGE_FETCH_RETRY_WAIT_SEC)
-                driver.get(f"https://jp.mercari.com/transaction/{order_id}")
-                time.sleep(4)
+        # 送信前（本文入力・送信ボタンクリックより前）の新着確認用メッセージ取得。
+        # まだ実サイトへの送信は一切発生していない段階のため、失敗してもページ再読み込みから
+        # 安全にやり直せる。最大MERCARI_PRE_SEND_MESSAGE_FETCH_MAX_ATTEMPTS回まで試行し、
+        # それでも失敗した場合のみ従来通り例外を送出する（この後の本文入力・送信ボタン
+        # クリック以降のリトライは一切行わない＝二重送信防止ロジックはここでは変更しない）。
+        current_messages = None
+        current_evidence = None
+        last_fetch_error = None
+        for attempt in range(1, MERCARI_PRE_SEND_MESSAGE_FETCH_MAX_ATTEMPTS + 1):
+            try:
+                current_messages, current_evidence = mercari_get_messages(driver, order_id, return_evidence=True)
+                break
+            except Exception as e:
+                last_fetch_error = e
+                print(f"[send] {order_id}: 送信前メッセージ取得に失敗しました"
+                      f"（{attempt}/{MERCARI_PRE_SEND_MESSAGE_FETCH_MAX_ATTEMPTS}回目、"
+                      f"送信前のためページ再読み込みしてリトライします）: {e}")
+                if attempt < MERCARI_PRE_SEND_MESSAGE_FETCH_MAX_ATTEMPTS:
+                    time.sleep(MERCARI_PRE_SEND_MESSAGE_FETCH_RETRY_WAIT_SEC)
+                    driver.get(f"https://jp.mercari.com/transaction/{order_id}")
+                    time.sleep(4)
 
-    if current_messages is None:
-        raise RuntimeError(
-            f"送信前メッセージ取得に{MERCARI_PRE_SEND_MESSAGE_FETCH_MAX_ATTEMPTS}回失敗したため中断しました"
-            f"（本文入力・送信ボタンクリックのいずれも行っていません）: {last_fetch_error}"
-        )
+        if current_messages is None:
+            # 【2026-09-23追加】最新状態（メッセージ・キャンセル有無を含む）を確認できない
+            # 場合は、安全側に倒して送信しない（例外を送出して中断する。既存の挙動を維持）。
+            raise RuntimeError(
+                f"送信前メッセージ取得に{MERCARI_PRE_SEND_MESSAGE_FETCH_MAX_ATTEMPTS}回失敗したため中断しました"
+                f"（本文入力・送信ボタンクリックのいずれも行っていません）: {last_fetch_error}"
+            )
 
-    if len(current_messages) != expected_count:
-        # 送信は中止するが、ここで既に取得できているmercari_get_messages()の結果
-        # （通常scrapeと全く同じ形式・Mercari APIの正規データ）を呼び出し元へ渡す。
-        # 呼び出し元(messages_blueprint.py)がこれを使ってtrx.vendor_messageへ保存し、
-        # 画面を最新化する（わざわざ再度APIを呼び直したり通常scrapeを起動したりしない）。
-        return {"ok": False, "error": "新しいメッセージを受信したため送信を中止しました",
-                "reason": "new_message_detected", "new_messages": current_messages,
-                "message_id": None, "message_no": None, "message_datetime": None}
-
-    if expected_count > 0:
-        # 既存メッセージがある場合のみ、従来のmessage_id一致確認を追加の安全確認として行う
-        # （件数が一致していても、万一メッセージが入れ替わっているケースを検知するため）。
-        if expected_last_message_id is None:
-            return {"ok": False, "error": "既存メッセージがあるため、message_idによる追加確認が必要です",
+        # 【2026-09-23再修正】check_cancellation=True（フォールバック自動送信専用。
+        # _fallback_auto_send_for_vendor()、サイト収集自体が完全に失敗し、直近の収集で
+        # キャンセル有無を確認できていない取引を対象にする）の場合のみ、キャンセル申請中/
+        # キャンセル済みの取引への送信を中止する。/messages画面からの手動送信
+        # （send_mercari_reply()経由、check_cancellation省略=False）は、この判定の
+        # 対象外のまま（人が内容を確認したうえでの送信は止めない）。
+        if check_cancellation and mercari_is_cancellation_pending(driver, evidence=current_evidence):
+            return {"ok": False,
+                    "error": "この取引はキャンセル申請中またはキャンセル済みのため送信を中止しました",
+                    "reason": "cancellation_detected", "new_messages": current_messages,
                     "message_id": None, "message_no": None, "message_datetime": None}
-        current_last_id = current_messages[-1]["message_id"]
-        if current_last_id != expected_last_message_id:
+
+        if len(current_messages) != expected_count:
+            # 送信は中止するが、ここで既に取得できているmercari_get_messages()の結果
+            # （通常scrapeと全く同じ形式・Mercari APIの正規データ）を呼び出し元へ渡す。
+            # 呼び出し元(messages_blueprint.py)がこれを使ってtrx.vendor_messageへ保存し、
+            # 画面を最新化する（わざわざ再度APIを呼び直したり通常scrapeを起動したりしない）。
             return {"ok": False, "error": "新しいメッセージを受信したため送信を中止しました",
                     "reason": "new_message_detected", "new_messages": current_messages,
                     "message_id": None, "message_no": None, "message_datetime": None}
 
-    next_message_no = len(current_messages) + 1
+        if expected_count > 0:
+            # 既存メッセージがある場合のみ、従来のmessage_id一致確認を追加の安全確認として行う
+            # （件数が一致していても、万一メッセージが入れ替わっているケースを検知するため）。
+            if expected_last_message_id is None:
+                return {"ok": False, "error": "既存メッセージがあるため、message_idによる追加確認が必要です",
+                        "message_id": None, "message_no": None, "message_datetime": None}
+            current_last_id = current_messages[-1]["message_id"]
+            if current_last_id != expected_last_message_id:
+                return {"ok": False, "error": "新しいメッセージを受信したため送信を中止しました",
+                        "reason": "new_message_detected", "new_messages": current_messages,
+                        "message_id": None, "message_no": None, "message_datetime": None}
+
+        next_message_no = len(current_messages) + 1
 
     textarea_els = driver.find_elements(By.CSS_SELECTOR, CHAT_TEXTAREA_SELECTOR)
     if not textarea_els:
@@ -2771,9 +2950,18 @@ def mercari_main(wanted_ids=None):
                     raw_status       = mercari_get_raw_status(driver)
                     item_name        = get_item_name(driver)
                     purchase_datetime, purchase_price = get_purchase_info(driver)
-                    messages         = mercari_get_messages(driver, vendor_item_id)
+                    # 【2026-09-23追加】return_evidence=Trueで、メッセージ取得と同じ収集
+                    # （同じPage.reload）からevidence（cancel_request判定に使う）も取り出す。
+                    # 追加のページアクセスは発生しない。
+                    messages, evidence = mercari_get_messages(driver, vendor_item_id, return_evidence=True)
                     has_seller_message = any(m["is_from_seller"] for m in messages)
                     tracking_number, carrier = mercari_get_tracking_info(driver)
+
+                    # 【2026-09-23追加】キャンセル申請中／キャンセル済みかどうかを一度だけ判定し、
+                    # 日常.eBayステータスの更新・自動送信の両方をこの結果でゲートする
+                    # （DOMバナー文言・evidenceのcancel_requestのOR条件。
+                    # mercari_is_cancellation_pending()参照）。
+                    is_cancellation_pending = mercari_is_cancellation_pending(driver, evidence=evidence)
 
                     with conn.cursor() as cur:
                         for msg in messages:
@@ -2801,7 +2989,23 @@ def mercari_main(wanted_ids=None):
                     )
 
                     # eBayステータスは日常テーブルへ直接反映する（trx.vendor_purchase経由は廃止）。
-                    daily_updated = update_daily_purchase_status(access_conn, vendor_item_id, raw_status, has_seller_message)
+                    # 【2026-09-23再修正】キャンセル申請中/キャンセル済みと判定できた場合、
+                    # raw_status（あんしん鑑定バナーとの混同等でDOM解析が誤判定しうる）を
+                    # そのまま「発送済み」等としてAccessへ書き込まず、代わりにCANCEL_PENDING_STATUS
+                    # （「キャンセル申請中」）を明示的に書き込む（単にスキップするだけだと、
+                    # 古い「発送済み」等が残ったままになるため。write_ebay_status_if_advancing()の
+                    # 特別処理により、通常の発送進捗ランクに関わらず反映され、かつ次回キャンセルが
+                    # 解消されて通常の状態に戻った際も正しく上書きされる）。
+                    if is_cancellation_pending:
+                        daily_updated = update_daily_purchase_status(
+                            access_conn, vendor_item_id, raw_status, has_seller_message,
+                            force_status=CANCEL_PENDING_STATUS,
+                        )
+                        print(f"[collect] {vendor_item_id}: キャンセル関連のバナー/cancel_requestを"
+                              f"検出したため、日常.eBayステータスを「{CANCEL_PENDING_STATUS}」として"
+                              f"反映しました（raw_status={raw_status!r}は使いません）。")
+                    else:
+                        daily_updated = update_daily_purchase_status(access_conn, vendor_item_id, raw_status, has_seller_message)
 
                     # 送り状番号・配送会社は日常テーブルへ直接保存する。
                     update_daily_tracking_info(access_conn, vendor_item_id, tracking_number, carrier)
@@ -2812,6 +3016,29 @@ def mercari_main(wanted_ids=None):
                     if created:
                         print(f"日常: 新規レコード追加（注文ID={vendor_item_id}）")
                     print()
+
+                    # 【2026-09-23追加】収集直後、同じdriver・同じ取引ページのまま自動送信の
+                    # 要否を判定し、対象であればその場で送信する（取引ページを開き直さない）。
+                    # 収集自体は既にDB保存まで成功しているため、ここでの失敗は収集のやり直し
+                    # （リトライ・failed_ids）にはしない。次回巡回時に改めて対象として拾われる。
+                    # wanted_ids指定時（1件テストモード）は、旧実装が自動送信フェーズ自体を
+                    # 一切呼ばなかったのと同じ挙動を維持するため、ここでも呼ばない。
+                    history = [
+                        {**m, "sender_type": "出品者" if m["is_from_seller"] else "購入者"}
+                        for m in messages
+                    ]
+                    try:
+                        if wanted_ids is None:
+                            if is_cancellation_pending:
+                                print(f"[auto_send] {vendor_item_id}: キャンセル関連のバナー/"
+                                      f"cancel_requestを検出したため、自動送信の対象から除外します。")
+                            else:
+                                _try_immediate_auto_send(driver, conn, access_conn, MERCARI_VENDOR_NAME,
+                                                          vendor_item_id, history)
+                    except Exception as e:
+                        print(f"[auto_send] {vendor_item_id}: 自動送信の判定・送信中にエラーが発生しました"
+                              f"（収集自体は成功済みのため、この取引の収集はやり直しません。"
+                              f"次回の巡回で改めて自動送信対象になります）: {e}")
 
                     last_error = None
                     break
@@ -3222,7 +3449,8 @@ PAYPAY_CHAT_SEND_BUTTON_TEXT = "取引メッセージを送る"
 PAYPAY_SEND_RESPONSE_WAIT_SEC = 15.0
 
 
-def paypay_send_chat_message(driver, order_id: str, expected_count: int, reply_text: str) -> dict:
+def paypay_send_chat_message(driver, order_id: str, expected_count: int, reply_text: str,
+                              reuse_current_page: bool = False) -> dict:
     """
     PayPayフリマの取引ページへ実際にメッセージを送信する（誤送信防止のため必ずこの手順で行う）。
 
@@ -3262,16 +3490,35 @@ def paypay_send_chat_message(driver, order_id: str, expected_count: int, reply_t
         "reason": "new_message_detected"|None,
         "new_messages": list|None,  # 成功時・新着検出時とも、paypay_get_messages()の戻り値そのもの
     }
-    """
-    url = f"https://paypayfleamarket-sec.yahoo.co.jp/item/{order_id}/trade/buyer"
-    driver.get(url)
-    time.sleep(4)
 
-    seller_name = paypay_get_seller_name(driver)
-    current_messages = paypay_get_messages(driver, seller_name)
-    if len(current_messages) != expected_count:
-        return {"ok": False, "error": "新しいメッセージを受信したため送信を中止しました",
-                "reason": "new_message_detected", "new_messages": current_messages}
+    reuse_current_page: 【2026-09-23再修正】Trueの場合、冒頭のdriver.get()と、送信前の
+    paypay_get_messages()再取得（新着確認）の両方を省略する（mercari_send_chat_message()の
+    reuse_current_page引数と同じ考え方・同じ理由。paypay_main()の収集ループが、収集直後に
+    取得済みのmessages（expected_count）をそのまま信頼し、同じdriver・同じページで
+    直ちに送信する場合に使う）。収集直後から送信までの数秒間の新着は検知されない
+    （2026-09-23ユーザー判断で許容）。過去に同じ定型文を送信済みかの判定・送信結果が
+    不明な場合に自動再送しない仕組みは、この引数の値に関わらず一切変更していない。
+    デフォルトFalseで従来の動作（/messages画面からの手動送信）は変更しない。
+    """
+    if reuse_current_page:
+        current_messages = None
+        # 【2026-09-23実機検証で発見・修正】seller_nameは送信後の再取得（この関数の後半、
+        # fresh = paypay_get_messages(driver, seller_name)等）で使うため、送信前の再取得を
+        # 省略するこの分岐でも必ず取得しておく必要がある（省略前はelse節でしか代入されず、
+        # reuse_current_page=Trueの実送信でUnboundLocalErrorになることを実機で確認した。
+        # 実送信自体は成功していたが、送信後の再取得だけが失敗し、DB保存が暫定の1行フォール
+        # バックになっていた＝実害は無かったが、正規の経路で直すべき不具合）。
+        seller_name = paypay_get_seller_name(driver)
+    else:
+        url = f"https://paypayfleamarket-sec.yahoo.co.jp/item/{order_id}/trade/buyer"
+        driver.get(url)
+        time.sleep(4)
+
+        seller_name = paypay_get_seller_name(driver)
+        current_messages = paypay_get_messages(driver, seller_name)
+        if len(current_messages) != expected_count:
+            return {"ok": False, "error": "新しいメッセージを受信したため送信を中止しました",
+                    "reason": "new_message_detected", "new_messages": current_messages}
 
     # 取引によっては評価コメント欄（placeholder="（必須）コメントを入力してください」等）が
     # 取引メッセージ欄より先にDOM上へ現れることが実機で確認された（例: z669802644）。
@@ -3547,6 +3794,20 @@ def paypay_main(wanted_ids=None):
                     if created:
                         print(f"日常: 新規レコード追加（注文ID={order_id}）")
                     print()
+
+                    # 【2026-09-23追加】収集直後、同じdriver・同じ取引ページのまま自動送信の
+                    # 要否を判定し、対象であればその場で送信する（mercari_main()と同じ考え方。
+                    # 収集自体は既にDB保存まで成功しているため、ここでの失敗は収集のやり直しに
+                    # しない。次回巡回時に改めて対象として拾われる）。
+                    # wanted_ids指定時（1件テストモード）は旧実装と同じく自動送信しない。
+                    try:
+                        if wanted_ids is None:
+                            _try_immediate_auto_send(driver, sql_conn, access_conn, PAYPAY_VENDOR_NAME,
+                                                      order_id, messages)
+                    except Exception as e:
+                        print(f"[auto_send] {order_id}: 自動送信の判定・送信中にエラーが発生しました"
+                              f"（収集自体は成功済みのため、この取引の収集はやり直しません。"
+                              f"次回の巡回で改めて自動送信対象になります）: {e}")
 
                     last_error = None
                     break
@@ -3883,7 +4144,8 @@ RAKUMA_SEND_MESSAGE_API_URL_SUBSTR = "/api/order/comment/add"
 RAKUMA_SEND_RESPONSE_WAIT_SEC = 15.0
 
 
-def rakuma_send_chat_message(driver, order_id: str, expected_count: int, reply_text: str) -> dict:
+def rakuma_send_chat_message(driver, order_id: str, expected_count: int, reply_text: str,
+                              reuse_current_page: bool = False) -> dict:
     """
     ラクマの取引ページへ実際にメッセージを送信する（誤送信防止のため必ずこの手順で行う）。
 
@@ -3925,16 +4187,32 @@ def rakuma_send_chat_message(driver, order_id: str, expected_count: int, reply_t
         "reason": "new_message_detected"|None,
         "new_messages": list|None,  # 成功時・新着検出時とも、rakuma_get_messages()の戻り値そのもの
     }
-    """
-    url = f"https://fril.jp/transaction?item_id={order_id}"
-    driver.get(url)
-    time.sleep(4)
 
-    self_name = get_self_name(driver)
-    current_messages = rakuma_get_messages(driver, self_name)
-    if len(current_messages) != expected_count:
-        return {"ok": False, "error": "新しいメッセージを受信したため送信を中止しました",
-                "reason": "new_message_detected", "new_messages": current_messages}
+    reuse_current_page: 【2026-09-23再修正】Trueの場合、冒頭のdriver.get()と、送信前の
+    rakuma_get_messages()再取得（新着確認）の両方を省略する（mercari_send_chat_message()の
+    reuse_current_page引数と同じ考え方・同じ理由。rakuma_main()の収集ループが、収集直後に
+    取得済みのmessages（expected_count）をそのまま信頼し、同じdriver・同じページで
+    直ちに送信する場合に使う）。収集直後から送信までの数秒間の新着は検知されない
+    （2026-09-23ユーザー判断で許容）。過去に同じ定型文を送信済みかの判定・送信結果が
+    不明な場合に自動再送しない仕組みは、この引数の値に関わらず一切変更していない。
+    デフォルトFalseで従来の動作（/messages画面からの手動送信）は変更しない。
+    """
+    if reuse_current_page:
+        current_messages = None
+        # 【2026-09-23実機検証で発見・修正】paypay_send_chat_message()と同じ不具合。
+        # self_nameは送信後の再取得（この関数の後半、fresh = rakuma_get_messages(driver,
+        # self_name)等）で使うため、送信前の再取得を省略するこの分岐でも必ず取得しておく。
+        self_name = get_self_name(driver)
+    else:
+        url = f"https://fril.jp/transaction?item_id={order_id}"
+        driver.get(url)
+        time.sleep(4)
+
+        self_name = get_self_name(driver)
+        current_messages = rakuma_get_messages(driver, self_name)
+        if len(current_messages) != expected_count:
+            return {"ok": False, "error": "新しいメッセージを受信したため送信を中止しました",
+                    "reason": "new_message_detected", "new_messages": current_messages}
 
     textarea_els = driver.find_elements(By.CSS_SELECTOR, "textarea#order-comment")
     if not textarea_els:
@@ -4207,6 +4485,20 @@ def rakuma_main(wanted_ids=None):
                           f"日常更新={'OK' if daily_updated else '対象行なし'}")
                     print()
 
+                    # 【2026-09-23追加】収集直後、同じdriver・同じ取引ページのまま自動送信の
+                    # 要否を判定し、対象であればその場で送信する（mercari_main()と同じ考え方。
+                    # 収集自体は既にDB保存まで成功しているため、ここでの失敗は収集のやり直しに
+                    # しない。次回巡回時に改めて対象として拾われる）。
+                    # wanted_ids指定時（1件テストモード）は旧実装と同じく自動送信しない。
+                    try:
+                        if wanted_ids is None:
+                            _try_immediate_auto_send(driver, sql_conn, access_conn, RAKUMA_VENDOR_NAME,
+                                                      order_id, messages)
+                    except Exception as e:
+                        print(f"[auto_send] {order_id}: 自動送信の判定・送信中にエラーが発生しました"
+                              f"（収集自体は成功済みのため、この取引の収集はやり直しません。"
+                              f"次回の巡回で改めて自動送信対象になります）: {e}")
+
                     last_error = None
                     break
 
@@ -4255,7 +4547,7 @@ def rakuma_main(wanted_ids=None):
 # ============================================================================
 # ============================================================================
 def send_mercari_reply(vendor_item_id: str, expected_count: int, reply_text: str,
-                        expected_last_message_id=None) -> dict:
+                        expected_last_message_id=None, check_cancellation: bool = False) -> dict:
     """
     expected_count: /messages画面表示時点のメッセージ件数（0以上の整数。メッセージが
     無い取引に初めて送る場合は0）。3サイト共通の新着確認基準。
@@ -4263,6 +4555,12 @@ def send_mercari_reply(vendor_item_id: str, expected_count: int, reply_text: str
     message_id（メルカリ内部の安定した一意ID）。件数一致に加えた追加の安全確認に使う
     （expected_count>0なのに省略した場合は安全のため送信しない）。
     戻り値: {"ok": bool, "error": str|None}
+
+    check_cancellation: 【2026-09-23追加】mercari_send_chat_message()のcheck_cancellation
+    引数をそのまま渡す。デフォルトFalse＝キャンセル申請中/キャンセル済みかどうかの
+    チェックをしない（/messages画面からの手動送信は、この関数を呼ぶ際に何も指定しなければ
+    従来通り動作する）。_auto_send_one_reply()のフォールバック経路（driver未指定時）だけが
+    明示的にTrueを渡す。
     """
     mercari_ensure_chrome_debugger()
 
@@ -4277,7 +4575,8 @@ def send_mercari_reply(vendor_item_id: str, expected_count: int, reply_text: str
         # 一時的に前面化する（これは引き続き必要なため維持する）。
         tab_id = _create_processing_tab(driver)
         result = mercari_send_chat_message(driver, vendor_item_id, expected_count, reply_text,
-                                            expected_last_message_id=expected_last_message_id)
+                                            expected_last_message_id=expected_last_message_id,
+                                            check_cancellation=check_cancellation)
     finally:
         _close_processing_tab(driver, tab_id)
         driver.quit()
@@ -4653,14 +4952,65 @@ def _setup_execution_logging() -> None:
 # （ここで別途キーワード等の判定は行わない）。
 AUTO_SEND_TEMPLATE_KEYS = ("shipped_2", "first_reply_onegai", "first_reply_plain")
 
+# 【2026-09-23追加、同日解除】収集ごとの「収集→判定→送信」方式（_try_immediate_auto_send()・
+# _fallback_auto_send_for_vendor()）を段階的に本番投入するための暫定的な安全策として
+# 1件/店舗の上限を設けていたが、実機（本番）での複数回の確認が完了したため解除した。
+# Noneなら無制限（収集は通常通り全件行い、対象になった送信候補はすべて試みる。
+# 収集直後・同じページからの判定→送信という処理自体、DB保存・自動送信対象の判定は
+# 変更していない）。機構自体（_auto_send_cap_reached()等）は残してあり、整数を設定
+# すれば即座に再度上限を設けられる。
+AUTO_SEND_MAX_PER_VENDOR_PER_RUN = None
 
-def _auto_send_one_reply(sql_conn, vendor_name: str, vendor_item_id: str, history: list, suggested_reply: dict) -> dict:
+# {vendor_name: 今回の巡回で実際に送信を試みた件数}。_run_collection()の先頭でリセットする
+# （このプロセスは巡回ごとに新規のpython.exeとして起動されるため、実運用上は常に空から
+# 始まるが、同一プロセス内で_run_collection()が複数回呼ばれる場合に備えて明示的にリセットする）。
+_auto_send_attempt_count_this_run = {}
+
+
+def _reset_auto_send_attempt_counts() -> None:
+    _auto_send_attempt_count_this_run.clear()
+
+
+def _auto_send_cap_reached(vendor_name: str) -> bool:
+    """AUTO_SEND_MAX_PER_VENDOR_PER_RUNが設定されている場合、その店舗が今回の巡回で
+    既に上限件数だけ送信を試みたかどうかを返す。Noneの場合は常にFalse（無制限）。"""
+    if AUTO_SEND_MAX_PER_VENDOR_PER_RUN is None:
+        return False
+    return _auto_send_attempt_count_this_run.get(vendor_name, 0) >= AUTO_SEND_MAX_PER_VENDOR_PER_RUN
+
+
+def _record_auto_send_attempt(vendor_name: str) -> None:
+    """送信を試みる直前に呼ぶ（結果（sent/skipped_new_message/needs_review/error）に
+    関わらず「試みた」ことを記録する。二重送信防止のためではなく、あくまで
+    「この巡回でこの店舗に実際にアクセスして送信操作を行った回数」を制限する目的のため、
+    結果を問わずカウントする）。"""
+    _auto_send_attempt_count_this_run[vendor_name] = _auto_send_attempt_count_this_run.get(vendor_name, 0) + 1
+
+
+def _auto_send_one_reply(sql_conn, vendor_name: str, vendor_item_id: str, history: list, suggested_reply: dict,
+                          driver=None) -> dict:
     """
     1取引分の自動送信を行う。既存のsend_mercari_reply/send_paypay_reply/send_rakuma_reply
     （実サイトへの送信＋実際のレスポンスによる送信確認、/messages画面の「送信」ボタンと
     全く同じ処理）をそのまま使う。DB保存も、messages_blueprint.pyの手動送信時と同じ
     ロジック（メルカリはMERCARI_SQL_UPSERT_VENDOR_MESSAGE_BY_ID、PayPayフリマ・ラクマは
     save_vendor_messages()）でtrx.vendor_messageへ反映する。
+
+    driver: 【2026-09-23追加、同日reuse_current_pageへ改称して再修正】呼び出し元
+    （各サイトのmain()の収集ループ）が、この取引の収集で使ったばかりのSelenium driverを
+    渡してきた場合、新しいdriver/タブを作らず、その場で（同じタブのまま）送信する。
+    send_mercari_reply等の外側ラッパーは新規driver作成・新規タブ作成・driver.quit()を
+    行うため、driver指定時はこれをスキップし、各サイトの*_send_chat_message(driver, ...,
+    reuse_current_page=True)を直接呼ぶ。reuse_current_page=Trueは、内部の最初の
+    driver.get()（再ナビゲーション）と、送信前メッセージ再取得（*_get_messages内部での
+    API再捕捉・新着確認）の両方を省略する（2026-09-23ユーザー判断：収集直後から送信までの
+    数秒間の新着検知は許容して省く。取引ページを開くのは収集時の1回だけにするのが目的）。
+    一方、次の2つは一切省略しない: (1)過去に同じ定型文を送信済みかの判定
+    （determine_suggested_reply内でhistoryから判定済み。呼び出し元がこの関数を呼ぶ前提と
+    してページアクセス不要）、(2)送信結果が実サイトのレスポンスで確認できない場合に
+    自動再送しない仕組み（下記のoutcome="needs_review"/"error"の扱い、変更なし）。
+    driver未指定時（/messages画面からの手動送信、またはこのdriverを渡さない呼び出し）は
+    従来通り外側ラッパーを使う（動作は一切変更しない）。
 
     戻り値: {"outcome": "sent"|"skipped_new_message"|"needs_review"|"error",
              "detail": str, "sent_text": str|None}
@@ -4677,12 +5027,32 @@ def _auto_send_one_reply(sql_conn, vendor_name: str, vendor_item_id: str, histor
     try:
         if vendor_name == MERCARI_VENDOR_NAME:
             expected_last_message_id = history[-1]["message_id"] if history else None
-            result = send_mercari_reply(vendor_item_id, expected_count, reply_text,
-                                         expected_last_message_id=expected_last_message_id)
+            if driver is not None:
+                result = mercari_send_chat_message(driver, vendor_item_id, expected_count, reply_text,
+                                                    expected_last_message_id=expected_last_message_id,
+                                                    reuse_current_page=True)
+            else:
+                # 【2026-09-23追加】driver未指定＝_fallback_auto_send_for_vendor()経由
+                # （このクラスの唯一のdriver未指定呼び出し元。messages_blueprint.pyの
+                # 手動送信はsend_mercari_reply()を直接呼び、この関数を経由しないため、
+                # ここでcheck_cancellation=Trueにしても手動送信には一切影響しない）。
+                # 直近の収集でキャンセル有無を確認できていない取引を対象にするため、
+                # 送信直前に最新状態からキャンセル有無を確認する。
+                result = send_mercari_reply(vendor_item_id, expected_count, reply_text,
+                                             expected_last_message_id=expected_last_message_id,
+                                             check_cancellation=True)
         elif vendor_name == PAYPAY_VENDOR_NAME:
-            result = send_paypay_reply(vendor_item_id, expected_count, reply_text)
+            if driver is not None:
+                result = paypay_send_chat_message(driver, vendor_item_id, expected_count, reply_text,
+                                                   reuse_current_page=True)
+            else:
+                result = send_paypay_reply(vendor_item_id, expected_count, reply_text)
         elif vendor_name == RAKUMA_VENDOR_NAME:
-            result = send_rakuma_reply(vendor_item_id, expected_count, reply_text)
+            if driver is not None:
+                result = rakuma_send_chat_message(driver, vendor_item_id, expected_count, reply_text,
+                                                   reuse_current_page=True)
+            else:
+                result = send_rakuma_reply(vendor_item_id, expected_count, reply_text)
         else:
             return {"outcome": "error", "detail": f"未対応の店舗です: {vendor_name}", "sent_text": None}
     except Exception as e:
@@ -4709,6 +5079,14 @@ def _auto_send_one_reply(sql_conn, vendor_name: str, vendor_item_id: str, histor
             print(f"[auto_send] 新着メッセージのDB保存に失敗しました {vendor_item_id}: {e}")
         return {"outcome": "skipped_new_message",
                 "detail": "送信前に新しいメッセージを検出したため送信しませんでした（自動再送はしません）",
+                "sent_text": None}
+
+    if result.get("reason") == "cancellation_detected":
+        # 【2026-09-23追加】キャンセル申請中/キャンセル済みと判定できたため送信しなかった
+        # （mercari_send_chat_message()参照）。needs_review/errorとは別の専用区分にして、
+        # ログ・報告で「結果不明」と混同しないようにする。自動再送はしない。
+        return {"outcome": "cancelled",
+                "detail": result.get("error") or "キャンセル関連のため送信しませんでした",
                 "sent_text": None}
 
     if not result.get("ok"):
@@ -4766,54 +5144,114 @@ def _auto_send_one_reply(sql_conn, vendor_name: str, vendor_item_id: str, histor
     return {"outcome": "sent", "detail": detail, "sent_text": reply_text}
 
 
-def _auto_send_replies(sql_conn, access_conn, exclude_ids_by_vendor: dict = None) -> None:
+def _try_immediate_auto_send(driver, sql_conn, access_conn, vendor_name: str, vendor_item_id: str,
+                              history: list) -> None:
     """
-    本番の全件収集後に呼ぶ。現在アクティブな全取引（Access日常.フリマ取引中=True、
-    TARGET_VENDOR_NAMES）について、determine_suggested_reply()の判定結果が
-    AUTO_SEND_TEMPLATE_KEYSのいずれかの取引だけを自動送信する。
+    【2026-09-23追加】収集ループが1取引分の収集（ステータス・メッセージ取得とDB保存）を
+    終えた直後、同じdriver・同じ取引ページのまま、その場で自動送信の要否を判定し、
+    対象であれば即座に送信する。目的は、対象取引のためだけに後で改めて取引ページを
+    開き直す（従来の_auto_send_replies()による全件収集後の一括送信フェーズ）のを
+    避けること。判定条件（determine_suggested_reply→AUTO_SEND_TEMPLATE_KEYSの3種類）・
+    送信直前の安全確認（新着メッセージ・件数/message_id一致確認、*_send_chat_message内部で
+    従来通り実施）・DB保存ロジック（_auto_send_one_reply、変更なし）は一切変更しない。
 
-    exclude_ids_by_vendor: {vendor_name(DB表記): {vendor_item_id, ...}}。今回の収集で
-    リトライしても失敗した取引はここに含まれ、対象から除外する（「取得失敗の取引は
-    送信せず、成功した取引は続行する」ため）。
+    呼び出し元（各サイトのmain()の収集ループ）が、この取引の収集に成功した場合のみ
+    この関数を呼ぶこと。収集が例外で失敗した取引はそもそも呼ばれないため、
+    「収集失敗した取引は自動送信対象から除外する」が自然に満たされる
+    （旧exclude_ids_by_vendorのような後段の除外処理は不要）。
+
+    history: この収集で今まさに取得したばかりのメッセージ一覧
+    （sender_type/message_no/message_bodyを持つ、determine_suggested_reply()が
+    期待する形式。メルカリはmessage_idも含む）。DBへは呼び出し元が既に保存済みの前提
+    （_auto_send_one_reply成功時のDB保存とは独立に、収集時点の保存は呼び出し元の責務のまま）。
+
+    戻り値なし（送信対象でなければ何もしない。結果はprint()でログへ出す。
+    _auto_send_replies()の従来のログ書式と揃えている）。
     """
-    exclude_ids_by_vendor = exclude_ids_by_vendor or {}
+    current_status = _get_current_ebay_status(access_conn, vendor_item_id)
+    is_shipped = is_shipped_status(current_status)
+    suggested_reply = determine_suggested_reply(history, is_shipped)
+    template_key = suggested_reply["template_key"]
+    if template_key not in AUTO_SEND_TEMPLATE_KEYS:
+        return
 
+    if _auto_send_cap_reached(vendor_name):
+        print(f"{vendor_name} {vendor_item_id}: template_key={template_key}だが、"
+              f"今回の巡回の送信上限（{AUTO_SEND_MAX_PER_VENDOR_PER_RUN}件/店舗）に達しているため、"
+              f"送信せず次回の巡回に残します。")
+        return
+
+    print(f"\n{vendor_name} {vendor_item_id}: template_key={template_key}")
+    print(f"  送信文面: {suggested_reply['text']!r}")
+
+    _record_auto_send_attempt(vendor_name)
+    result = _auto_send_one_reply(sql_conn, vendor_name, vendor_item_id, history, suggested_reply, driver=driver)
+
+    print(f"  結果: {result['outcome']} - {result['detail']}")
+
+
+def _fallback_auto_send_for_vendor(sql_conn, access_conn, vendor_name: str) -> None:
+    """
+    【2026-09-23追加】ある店舗の収集（各main()の一覧ページ取得〜フラグ同期）自体が
+    例外で完全に失敗し、収集ループが1件も回らなかった（＝_try_immediate_auto_send()が
+    その店舗について今回1件も呼ばれなかった）場合専用のフォールバック自動送信。
+
+    背景: 従来（全件収集→全件自動送信の2段階構成）は、収集後の自動送信フェーズが
+    Access日常.フリマ取引中=Trueの「現在アクティブな注文全件」を対象にしていたため、
+    特定サイトの収集がその回だけ丸ごと失敗しても、他サイトはもちろん、失敗した
+    サイト自身の注文も（前回までに確認済みの状態を使って）自動送信の対象になれた
+    （実機不具合実例2026-09-21: YahooFurima収集が"no such window"で全体失敗した回も、
+    旧実装ならPayPayフリマの既存アクティブ注文への自動送信は行えていた）。収集を
+    取引ごとの「収集→判定→送信」に一本化した新方式では、この「サイト一覧ページ
+    自体の取得失敗」のケースだけ、収集ループへ一度も入れないため自動送信の機会が
+    まったく無くなってしまう。取引単位の収集失敗（一覧取得は成功したが個別の
+    取引ページ取得だけがITEM_COLLECTION_MAX_ATTEMPTS回とも失敗したケース）は、
+    従来通りその取引だけ収集ループ内で自動的に自動送信の対象から外れる
+    （この関数の対象外。収集ループ自体は正常に完走しているため）。
+
+    _run_collection()から、該当店舗の収集が例外で完全に失敗した場合のみ呼ばれる。
+    通常サイクル（収集が正常に完走した場合）ではこの関数は呼ばれない。
+
+    今回の収集ができていない（＝この巡回で新しいメッセージ・ステータスを確認できて
+    いない）ため、Access・trx.vendor_messageに残っている最後に確認できた状態だけを
+    使う。driverは渡さない（既存の収集用driverは失敗時に既に破棄されているため）。
+    _auto_send_one_reply()はdriver未指定時、従来通り送信直前に新しいdriver・新しい
+    タブでその取引ページを開き直し、送信直前の新着メッセージ確認を必ず行う
+    （安全確認は一切省略しない）。
+    """
     active_orders = fetch_active_orders(access_conn)
-    target_ids = [oid for oid, info in active_orders.items() if info["vendor_name"] in TARGET_VENDOR_NAMES]
+    target_ids = [oid for oid, info in active_orders.items() if info["vendor_name"] == vendor_name]
     if not target_ids:
-        print("自動送信対象なし（アクティブな取引がありません）。")
+        print(f"[fallback_auto_send] {vendor_name}: 対象取引なし。")
         return
 
     history_by_key = _fetch_histories_for_orders(sql_conn, target_ids)
     for oid in target_ids:
-        key = (active_orders[oid]["vendor_name"], oid)
-        history_by_key.setdefault(key, [])
+        history_by_key.setdefault((vendor_name, oid), [])
 
-    sent_count = 0
-    skipped_count = 0
-    review_count = 0
-    error_count = 0
-
-    for (vendor_name, vendor_item_id), history in sorted(history_by_key.items()):
+    sent_count = skipped_count = review_count = error_count = cancelled_count = 0
+    for (vn, vendor_item_id), history in sorted(history_by_key.items()):
         order_info = active_orders.get(vendor_item_id)
         if order_info is None:
-            continue
-
-        if vendor_item_id in exclude_ids_by_vendor.get(vendor_name, ()):
-            print(f"{vendor_name} {vendor_item_id}: 今回の収集に失敗したため自動送信の対象から除外しました。")
             continue
 
         is_shipped = is_shipped_status(order_info["ebay_status"])
         suggested_reply = determine_suggested_reply(history, is_shipped)
         template_key = suggested_reply["template_key"]
-
         if template_key not in AUTO_SEND_TEMPLATE_KEYS:
             continue
 
-        print(f"\n{vendor_name} {vendor_item_id}: template_key={template_key}")
+        if _auto_send_cap_reached(vn):
+            print(f"[fallback_auto_send] {vn} {vendor_item_id}: template_key={template_key}だが、"
+                  f"今回の巡回の送信上限（{AUTO_SEND_MAX_PER_VENDOR_PER_RUN}件/店舗）に"
+                  f"達しているため、送信せず次回の巡回に残します。")
+            continue
+
+        print(f"\n[fallback_auto_send] {vn} {vendor_item_id}: template_key={template_key}")
         print(f"  送信文面: {suggested_reply['text']!r}")
 
-        result = _auto_send_one_reply(sql_conn, vendor_name, vendor_item_id, history, suggested_reply)
+        _record_auto_send_attempt(vn)
+        result = _auto_send_one_reply(sql_conn, vn, vendor_item_id, history, suggested_reply)
 
         print(f"  結果: {result['outcome']} - {result['detail']}")
 
@@ -4823,11 +5261,14 @@ def _auto_send_replies(sql_conn, access_conn, exclude_ids_by_vendor: dict = None
             skipped_count += 1
         elif result["outcome"] == "needs_review":
             review_count += 1
+        elif result["outcome"] == "cancelled":
+            cancelled_count += 1
         else:
             error_count += 1
 
-    print(f"\n自動送信結果: 送信{sent_count}件, 新着検出でスキップ{skipped_count}件, "
-          f"要確認{review_count}件, エラー{error_count}件")
+    print(f"\n[fallback_auto_send] {vendor_name} 結果: 送信{sent_count}件, "
+          f"新着検出でスキップ{skipped_count}件, 要確認{review_count}件, "
+          f"キャンセル関連で送信せず{cancelled_count}件, エラー{error_count}件")
 
 
 def _run_collection(requested_by: str = "", test_site: str = "", test_item_id: str = "") -> None:
@@ -4842,7 +5283,9 @@ def _run_collection(requested_by: str = "", test_site: str = "", test_item_id: s
         SITESのうちtest_siteと一致するサイトだけを、test_item_id 1件だけに絞り込んで
         実行し、他のサイトは完全にスキップする（本番の全件収集ロジック自体
         ＝各サイトのmain()の中身は一切変更しない。絞り込みは各main()が既に
-        受け付けるwanted_ids引数に1件だけ渡すことで実現する）。
+        受け付けるwanted_ids引数に1件だけ渡すことで実現する）。この場合、各main()内部の
+        「wanted_ids is Noneの時だけ自動送信する」判定により、自動送信は行われない
+        （従来通り。_try_immediate_auto_send()の呼び出し側ガード参照）。
         いずれか一方だけが指定された場合は無視し、通常の全件収集を行う
         （中途半端な絞り込みで意図しない全件スキップ等を避けるため）。
 
@@ -4850,7 +5293,32 @@ def _run_collection(requested_by: str = "", test_site: str = "", test_item_id: s
     （既存のVBA側が文字列完全一致で判定している可能性があるため、この値自体は
     変更しない）。原因が分かるエラーメッセージは別キー{name}_errorへ追加で書き込む
     （改行はAccess側の1行1key=value形式を壊さないよう空白へ置換し、長さも制限する）。
+
+    【2026-09-23変更】自動送信は、従来のような「全件収集→全件自動送信」という収集後の
+    別フェーズ（_auto_send_replies()）ではなく、各サイトのmain()の収集ループ内で、
+    取引ごとに収集した直後・同じdriver（同じ取引ページ）のまま行うようになった
+    （_try_immediate_auto_send()参照。取引ページを開き直さないのが目的）。これに伴い、
+    本関数からは収集後の別個の「自動送信」フェーズの呼び出しを削除した。取引単位の
+    収集失敗（個別ページ取得がITEM_COLLECTION_MAX_ATTEMPTS回とも失敗）は、収集ループが
+    その取引の_try_immediate_auto_send()呼び出し自体に到達しないため、自動的に
+    自動送信の対象から除外される（旧failed_ids_by_vendorによる後段除外の仕組みは
+    不要になったため削除した）。判定条件（AUTO_SEND_TEMPLATE_KEYSの3種類）・送信直前の
+    安全確認・DB保存ロジックは変更していない。
+
+    【2026-09-23追加】サイトの収集自体（一覧ページ取得〜フラグ同期）が例外で完全に
+    失敗した場合（results[name]=="error"）は、収集ループが1件も回らず
+    _try_immediate_auto_send()が一度も呼ばれない。この場合のみ、_fallback_auto_send_for_vendor()
+    が、その店舗の既存アクティブ注文（Access日常.フリマ取引中=True）へ、前回までに
+    確認できていたDB上の状態を使って自動送信を行う（旧_auto_send_replies()相当の
+    最終手段のフォールバック。実機不具合実例2026-09-21のYahooFurima全体失敗のような
+    ケースで、その店舗の自動送信機会が丸ごと失われるのを防ぐ）。1件テストモード
+    （test_site指定時）では行わない（従来通り）。
+
+    【2026-09-23追加】AUTO_SEND_MAX_PER_VENDOR_PER_RUNによる店舗ごとの送信上限
+    （_try_immediate_auto_send()・_fallback_auto_send_for_vendor()共通）は、
+    この関数の呼び出しごとにリセットする（1回の巡回＝1回のこの関数呼び出し単位で数える）。
     """
+    _reset_auto_send_attempt_counts()
     started_at = datetime.now().isoformat()
 
     if test_site and test_item_id:
@@ -4868,20 +5336,15 @@ def _run_collection(requested_by: str = "", test_site: str = "", test_item_id: s
         results["test_item_id"] = test_item_id
     _write_status("running", results, started_at)
 
-    # 【2026-09-14追加】各main()がリトライしても失敗した取引IDを店舗(DB表記)単位で集約する。
-    # 自動送信フェーズが、今回の収集に失敗した取引を対象から除外するために使う。
-    failed_ids_by_vendor = {}
-
     for name, run_func in sites_to_run:
         print(f"\n{'=' * 20} {name} {'=' * 20}", flush=True)
         try:
             if test_site == name:
                 run_func(wanted_ids={test_item_id})
             else:
-                failed_ids = run_func()
-                vendor_name = SITE_DISPLAY_TO_VENDOR_NAME.get(name)
-                if vendor_name:
-                    failed_ids_by_vendor[vendor_name] = set(failed_ids or [])
+                # 戻り値（今回収集に失敗した取引ID一覧）は、自動送信の除外判定が
+                # 収集ループ内へ移ったことで不要になったため使わない。
+                run_func()
             results[name] = "success"
         except Exception as e:
             print(f"[ERROR] {name} の実行中にエラーが発生しました: {e}", flush=True)
@@ -4896,31 +5359,29 @@ def _run_collection(requested_by: str = "", test_site: str = "", test_item_id: s
     site_names = {name for name, _ in sites_to_run}
     overall_state = "done" if all(results[name] == "success" for name in site_names) else "error"
 
-    if test_site:
-        # 1件テストモード（test_site指定時）では自動送信を一切行わないため、
-        # 収集完了時点でdone/errorを確定してよい。
-        _write_status(overall_state, results, started_at, finished_at=datetime.now().isoformat())
-        return
-
-    # 【2026-09-14修正】以前はここでstate=done/errorを書き込んでから自動送信していたため、
-    # 実際にはまだ自動送信（実サイトへの送信操作）が進行中なのに、Access側が「完了」と
-    # 表示し、ボタンも再度押せる状態になってしまっていた（実機で確認）。自動送信フェーズが
-    # 終わるまでstate=running のまま維持し（二重起動防止ガードも継続して有効にする）、
-    # 全て終わってから最終的なdone/errorを書き込む。
-    print(f"\n{'=' * 20} 自動送信 {'=' * 20}", flush=True)
-    try:
-        auto_send_sql_conn = get_sql_server_connection()
-        auto_send_access_conn = get_access_connection()
-        try:
-            _auto_send_replies(auto_send_sql_conn, auto_send_access_conn,
-                                exclude_ids_by_vendor=failed_ids_by_vendor)
-        finally:
-            auto_send_access_conn.close()
-            auto_send_sql_conn.close()
-    except Exception as e:
-        print(f"[ERROR] 自動送信処理全体でエラーが発生しました: {e}", flush=True)
-        overall_state = "error"
-        results["auto_send_error"] = str(e).replace("\r", " ").replace("\n", " ").strip()[:300]
+    # 【2026-09-23追加】サイトの収集自体が完全に失敗した（results[name]=="error"）場合、
+    # その店舗だけ収集ループが1件も回らず自動送信の機会が丸ごと失われるため、
+    # フォールバックで既存アクティブ注文への自動送信を試みる（1件テストモードでは行わない。
+    # test_siteが空文字の通常サイクルのみ）。
+    if not test_site:
+        for name, _run_func in sites_to_run:
+            if results.get(name) != "error":
+                continue
+            vendor_name = SITE_DISPLAY_TO_VENDOR_NAME.get(name)
+            if not vendor_name:
+                continue
+            print(f"\n{'=' * 20} {name} 収集が失敗したためフォールバック自動送信 {'=' * 20}", flush=True)
+            try:
+                fb_sql_conn = get_sql_server_connection()
+                fb_access_conn = get_access_connection()
+                try:
+                    _fallback_auto_send_for_vendor(fb_sql_conn, fb_access_conn, vendor_name)
+                finally:
+                    fb_access_conn.close()
+                    fb_sql_conn.close()
+            except Exception as e:
+                print(f"[ERROR] {name} のフォールバック自動送信中にエラーが発生しました: {e}", flush=True)
+                results[f"{name}_fallback_auto_send_error"] = str(e).replace("\r", " ").replace("\n", " ").strip()[:300]
 
     _write_status(overall_state, results, started_at, finished_at=datetime.now().isoformat())
 

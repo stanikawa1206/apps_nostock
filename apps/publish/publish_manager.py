@@ -29,6 +29,7 @@ import sys
 import os
 import time
 import traceback
+import pyodbc
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -91,6 +92,14 @@ LIMIT_CHECK_INTERVAL_SECONDS = 5
 
 # get_active_listings の完了待ちポーリング間隔（秒）
 ACTIVE_LISTINGS_WAIT_SECONDS = 5
+
+# ローカルget_active_listings.pyの完了待ちtimeout（秒）。
+# get_active_listings.py側のeBay API呼び出しがtimeout未設定で約11時間
+# ハングし続けた事象（2026-09-21発生）の再発防止として設定する。
+# get_active_listings.py単体の所要時間を計測したログがこれまで存在しないため、
+# 全アカウント直列処理を安全に収める見積もり値（90分）としている。
+# 実際の所要時間が判明次第、この値は見直すこと。
+GET_ACTIVE_LISTINGS_TIMEOUT_SECONDS = 90 * 60
 
 
 # ======================
@@ -541,6 +550,49 @@ def wait_for_active_listings_completion():
 
 
 # ======================
+# デッドロック時リトライ共通処理
+# ======================
+# SQL Serverのデッドロック(SQLSTATE '40001')は「トランザクションを再実行してください」
+# という一時的な事象であり、単純にリトライすれば解決することが多い
+# （2026-09-14 01:37頃、auto_fix_done_accounts()がデッドロックを1回受けて
+# publish_manager.py全体が異常終了し、daily_check.pyの次サイクルまで
+# 出品が止まった事象の再発防止）。
+# monitor_limit_accounts()の5秒ループから毎回呼ばれる get_limit_accounts()、
+# auto_fix_done_accounts()、is_all_accounts_finished() はいずれも保護が無く、
+# 同じ理由でプロセス全体を落としうるため、この3か所だけ本ヘルパーで包む。
+DEADLOCK_SQLSTATE = "40001"
+DEADLOCK_MAX_ATTEMPTS = 3
+DEADLOCK_RETRY_INTERVAL_SECONDS = 1
+
+
+def _run_with_deadlock_retry(operation_name, work_fn):
+    """
+    work_fn(conn) を実行し、SQLSTATE '40001'(デッドロック)の場合のみ
+    最大DEADLOCK_MAX_ATTEMPTS回・DEADLOCK_RETRY_INTERVAL_SECONDS秒間隔で
+    リトライする。それ以外の例外(pyodbc.Error含む)は従来どおり即座に
+    呼び出し元へ伝播させる。
+
+    毎回新しいコネクションを張り直す（デッドロックした接続を使い回さない）。
+    """
+    for attempt in range(1, DEADLOCK_MAX_ATTEMPTS + 1):
+        conn = get_sql_server_connection()
+        try:
+            return work_fn(conn)
+        except pyodbc.Error as e:
+            sqlstate = e.args[0] if e.args else None
+            if sqlstate == DEADLOCK_SQLSTATE and attempt < DEADLOCK_MAX_ATTEMPTS:
+                _pm_log(
+                    f"[{operation_name}] デッドロック検知(attempt={attempt}/{DEADLOCK_MAX_ATTEMPTS})。"
+                    f"{DEADLOCK_RETRY_INTERVAL_SECONDS}秒後にリトライします: {e}"
+                )
+                time.sleep(DEADLOCK_RETRY_INTERVAL_SECONDS)
+                continue
+            raise
+        finally:
+            conn.close()
+
+
+# ======================
 # LIMIT監視
 # ======================
 SQL_SELECT_LIMIT_ACCOUNTS = """
@@ -584,8 +636,7 @@ def get_limit_accounts():
         ]
     """
 
-    conn = get_sql_server_connection()
-    try:
+    def _work(conn):
         with conn.cursor() as cur:
             cur.execute(SQL_SELECT_LIMIT_ACCOUNTS)
             rows = cur.fetchall()
@@ -599,8 +650,7 @@ def get_limit_accounts():
 
         return limit_accounts
 
-    finally:
-        conn.close()
+    return _run_with_deadlock_retry("get_limit_accounts", _work)
 
 
 SQL_SELECT_TODAY_POSTED_COUNT = """
@@ -763,14 +813,14 @@ def auto_fix_done_accounts():
 
     _pm_log("[auto_fix_done_accounts] start")
 
-    conn = get_sql_server_connection()
-    try:
+    def _work(conn):
         with conn.cursor() as cur:
             cur.execute(SQL_AUTO_FIX_DONE_ACCOUNTS)
             fixed_accounts = [row[0] for row in cur.fetchall()]
         conn.commit()
-    finally:
-        conn.close()
+        return fixed_accounts
+
+    fixed_accounts = _run_with_deadlock_retry("auto_fix_done_accounts", _work)
 
     for account in fixed_accounts:
         print("INFO")
@@ -801,16 +851,15 @@ def is_all_accounts_finished():
 
     _pm_log("[is_all_accounts_finished] start")
 
-    conn = get_sql_server_connection()
-    try:
+    def _work(conn):
         with conn.cursor() as cur:
             cur.execute(SQL_SELECT_UNFINISHED_ACCOUNT)
             row = cur.fetchone()
         result = row is None
         _pm_log(f"[is_all_accounts_finished] result={result}")
         return result
-    finally:
-        conn.close()
+
+    return _run_with_deadlock_retry("is_all_accounts_finished", _work)
 
 
 # ======================
@@ -899,7 +948,33 @@ def main():
     # truncate_active_listings()
 
     local_proc = run_get_active_listings_local()
-    local_proc.wait()
+    try:
+        local_proc.wait(timeout=GET_ACTIVE_LISTINGS_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        # get_active_listings.py側がtimeout未設定のHTTP呼び出しでハングし続け、
+        # ここでの待機が無期限になっていた事象（2026-09-21発生）の再発防止。
+        # taskkill /T で、get_active_listings.py本体だけでなくその子孫プロセスも
+        # まとめて終了させ、孤立プロセスを残さないようにする。
+        _pm_log(
+            f"[get_active_listings] local_proc(pid={local_proc.pid}) が "
+            f"{GET_ACTIVE_LISTINGS_TIMEOUT_SECONDS}秒以内に終了しなかったためタイムアウトとして強制終了します"
+        )
+        print(
+            f"=== ⏱ get_active_listings がタイムアウト"
+            f"（{GET_ACTIVE_LISTINGS_TIMEOUT_SECONDS}秒）のため強制終了します ==="
+        )
+        subprocess.run(
+            ["taskkill", "/PID", str(local_proc.pid), "/T", "/F"],
+            capture_output=True,
+        )
+        try:
+            local_proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+        raise RuntimeError(
+            f"get_active_listings がtimeout（{GET_ACTIVE_LISTINGS_TIMEOUT_SECONDS}秒）"
+            f"のため強制終了しました"
+        )
 
     # 出品処理を開始する（VPS・ローカルとも常駐して出品を続ける）
     run_vps()

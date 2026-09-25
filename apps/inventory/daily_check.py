@@ -69,6 +69,16 @@ PUBLISH_MANAGER_SCRIPT = APPS_PUB / "publish_manager.py"
 
 WAIT_SECONDS = 3
 
+# publish_manager.py 完了待ちのtimeout（秒）。
+# publish_manager.py(さらにその子のget_active_listings.py)がtimeout未設定の
+# HTTP呼び出しでハングし、daily_check.pyが約11時間停止し続けた事象
+# （2026-09-21発生）の再発防止として設定する。
+# 過去のdaily_check_subprocess.logから、publish_manager.pyの正常時の所要時間は
+# 最長でも約9時間48分（2026-09-13分）だったため、十分な余裕を見て16時間とする。
+# fetch_active_ebay.py / fetch_sold_ebay.py / delete_ebay_daily.py 等、他の
+# run_script()呼び出しには影響しない（timeout未指定=Noneのまま、無期限待機を維持）。
+PUBLISH_MANAGER_TIMEOUT_SECONDS = 16 * 60 * 60
+
 # ======================
 # 運用方針: 「在庫管理 → delete_ebay_daily → 出品」を1サイクルとし、これを永久ループで繰り返す。
 # 停止するかどうかは SQL Server 側の mst.control テーブル（コントロールマスター）で判定する。
@@ -130,27 +140,45 @@ DEBUG_STOP_AFTER_FIRST_INVENTORY = False
 # ======================
 # 共通関数
 # ======================
-def run_script(path: Path) -> tuple[int, str]:
+def run_script(path: Path, timeout: float | None = None) -> tuple[int, str]:
     print(f"\n=== ▶ {path.name} 実行開始 ===")
 
     # capture_output=Trueにしない: 子スクリプトの標準出力・標準エラーを
     # 親（daily_check.py）のコンソールへそのまま継承させ、実行中の出力を
     # リアルタイムに表示させるため。
-    result = subprocess.run(
-        [PYTHON, str(path)],
-        cwd=str(BASE_DIR),
-        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
-    )
+    #
+    # timeout はデフォルトNone（＝従来どおり無期限待機）。呼び出し元が明示的に
+    # timeoutを渡した場合のみ有効になるため、他のrun_script()呼び出しの挙動は
+    # 変更しない。publish_manager.py がtimeout未設定のHTTP呼び出しでハングし、
+    # daily_check.py全体が約11時間停止し続けた事象（2026-09-21発生）の
+    # 再発防止として、publish_manager.py呼び出し側でのみtimeoutを指定している。
+    try:
+        result = subprocess.run(
+            [PYTHON, str(path)],
+            cwd=str(BASE_DIR),
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+            timeout=timeout,
+        )
+        returncode = result.returncode
+    except subprocess.TimeoutExpired:
+        # subprocess.run()はtimeout超過時に直接の子プロセス（path本体）を
+        # 自動的にkillして待機してから例外を送出する（孫プロセス以下の後始末は
+        # 各スクリプト自身の責務。publish_manager.py側は別途対応済み）。
+        # -1 は他のreturncodeと衝突しないtimeout専用の番兵値。
+        returncode = -1
+        print(f"=== ⏱ {path.name} タイムアウト（{timeout}秒）のため強制終了しました ===")
 
     # 次回再現時に停止地点を特定できるよう、returncodeをファイルへ記録する
-    _subprocess_trace_logger.debug(f"[run_script] script={path.name} returncode={result.returncode}")
+    _subprocess_trace_logger.debug(f"[run_script] script={path.name} returncode={returncode}")
 
-    if result.returncode == 0:
+    if returncode == 0:
         print(f"=== ✅ {path.name} 正常終了 ===")
+    elif returncode == -1:
+        pass  # 上でタイムアウトの旨は既に表示済み
     else:
-        print(f"=== ❌ {path.name} 異常終了（returncode={result.returncode}） ===")
+        print(f"=== ❌ {path.name} 異常終了（returncode={returncode}） ===")
 
-    return result.returncode, ""
+    return returncode, ""
 
 
 def format_trx_listings_count_by_account(conn) -> str:
@@ -1017,7 +1045,7 @@ def run_publish_manager(conn):
 
     # 開始時刻: publish_manager起動直前
     pub_start = datetime.now()
-    pub_code, _ = run_script(PUBLISH_MANAGER_SCRIPT)
+    pub_code, _ = run_script(PUBLISH_MANAGER_SCRIPT, timeout=PUBLISH_MANAGER_TIMEOUT_SECONDS)
     # 終了時刻: run_script()（publish_manager.py本体）から戻った直後
     pub_end = datetime.now()
 

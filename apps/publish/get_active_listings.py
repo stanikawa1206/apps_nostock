@@ -38,6 +38,7 @@ except Exception:
 
 import datetime
 import socket
+import time
 
 import requests
 import xml.etree.ElementTree as ET
@@ -49,6 +50,16 @@ from apps.common.utils import get_sql_server_connection
 # =========================
 # Trading API取得
 # =========================
+# eBay APIが無応答のまま返ってこない事象が発生し、timeout未設定のため
+# requests.post() が約11時間ハングし続けた（2026-09-21発生）。再発防止として
+# timeoutとリトライを設定する。(connect, read) のタプル形式。
+REQUEST_TIMEOUT = (10, 60)
+# 一時的な通信異常を考慮したリトライ回数（初回 + この回数だけ再試行）。
+REQUEST_MAX_RETRIES = 2
+# リトライ間の待機秒数。
+REQUEST_RETRY_WAIT_SECONDS = 3
+
+
 def get_active_listings(account: str):
 
     token = get_access_token_new(account)
@@ -85,7 +96,28 @@ def get_active_listings(account: str):
         </GetMyeBaySellingRequest>
         """
 
-        res = requests.post(url, headers=headers, data=body)
+        res = None
+        last_exc = None
+        for attempt in range(1, REQUEST_MAX_RETRIES + 2):
+            try:
+                res = requests.post(url, headers=headers, data=body, timeout=REQUEST_TIMEOUT)
+                break
+            except requests.exceptions.RequestException as e:
+                last_exc = e
+                print(f"    [WARN] account={account} page={page} attempt={attempt} "
+                      f"でHTTPタイムアウト/通信エラー: {e}")
+                if attempt <= REQUEST_MAX_RETRIES:
+                    time.sleep(REQUEST_RETRY_WAIT_SECONDS)
+
+        if res is None:
+            # リトライしても取得できなかった場合は無限待機せず例外を上位へ返す。
+            # 呼び出し元 fetch_and_store_active_listings_for_account() が
+            # このaccountだけ失敗としてスキップし、他accountの処理は継続する。
+            raise RuntimeError(
+                f"account={account} page={page} の取得に"
+                f"{REQUEST_MAX_RETRIES + 1}回試行しても失敗しました: {last_exc}"
+            ) from last_exc
+
         root = ET.fromstring(res.text)
 
         ns = {"e": "urn:ebay:apis:eBLBaseComponents"}
