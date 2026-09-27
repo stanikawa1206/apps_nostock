@@ -485,18 +485,18 @@ def refresh_presets_lookup(conn):
     cur.execute("TRUNCATE TABLE mst.presets_lookup;")
 
     vendors = cur.execute("""
-        SELECT vendor_code, vendor_name
+        SELECT vendor_code, vendor_name, vendor_group
         FROM mst.vendors
     """).fetchall()
 
     brands = cur.execute("""
-        SELECT brand_id, brand_name_ja, default_brand_en, is_active
+        SELECT brand_id, brand_name_ja, default_brand_en, is_active, brand_id_rkm
         FROM mst.presets_brand
         WHERE is_active = 1
     """).fetchall()
 
     categories = cur.execute("""
-        SELECT category_id, category_name_ja, type_ebay, category_id_ebay, department, brand_id
+        SELECT category_id, vendor_group, category_name_ja, type_ebay, category_id_ebay, department, brand_id
         FROM mst.presets_categories
     """).fetchall()
 
@@ -508,7 +508,7 @@ def refresh_presets_lookup(conn):
     """).fetchall()
 
     cgc_rows = cur.execute("""
-        SELECT category_group, category_id, is_brand_dependent
+        SELECT category_group, category_id, is_brand_dependent, vendor_group
         FROM mst.category_group_categories
     """).fetchall()
 
@@ -517,8 +517,21 @@ def refresh_presets_lookup(conn):
         FROM mst.brand_category_groups
     """).fetchall()
 
+    # ラクマ向けpresetでは、mst.presets_brand.brand_id（メルカリ側の採番）ではなく
+    # ラクマ側の採番であるbrand_id_rkmを使わないと、ラクマの検索APIに渡すbrand_idが
+    # 一致しない。vendor_groupに応じてどちらのbrand_idを使うかをここで切り替える。
+    RAKUMA_VENDOR_GROUP = "ラクマ"
+
+    def resolve_brand_id(brand, vendor_group):
+        """vendor_groupに対応する検索用brand_idを返す。未設定ならNone。"""
+        if vendor_group == RAKUMA_VENDOR_GROUP:
+            return brand.brand_id_rkm
+        return brand.brand_id
+
     brand_by_id = {r.brand_id: r for r in brands}
-    category_by_id = {r.category_id: r for r in categories}
+    # category_id はvendor_group（仕入先）ごとに別々の採番体系・定義を持ちうるため、
+    # (category_id, vendor_group) の組で引く
+    category_by_id = {(r.category_id, r.vendor_group): r for r in categories}
     group_by_name = {r.category_group: r for r in category_groups}
 
     cgc_by_group = {}
@@ -543,12 +556,22 @@ def refresh_presets_lookup(conn):
             if cgc.is_brand_dependent != 0:
                 continue
 
-            pc = category_by_id.get(cgc.category_id)
+            pc = category_by_id.get((cgc.category_id, cgc.vendor_group))
             cg = group_by_name.get(cgc.category_group)
             if not pc or not cg:
                 continue
 
             for v in vendors:
+                # category_group_categories側のvendor_groupと一致するvendorだけを対象にする
+                # （異なる仕入先のcategory_idが混ざるのを防ぐ）
+                if v.vendor_group != cgc.vendor_group:
+                    continue
+
+                out_brand_id = resolve_brand_id(brand, v.vendor_group)
+                if out_brand_id is None:
+                    # このvendor向けのbrand_id（例: brand_id_rkm）が未設定のためスキップ
+                    continue
+
                 preset = (
                     (brand.brand_name_ja or "")
                     + (pc.category_name_ja or "")
@@ -559,7 +582,7 @@ def refresh_presets_lookup(conn):
                 rows.append((
                     preset,
                     v.vendor_name,
-                    brand.brand_id,
+                    out_brand_id,
                     pc.category_id,
                     cg.mode,
                     cg.low_usd_target,
@@ -582,12 +605,15 @@ def refresh_presets_lookup(conn):
         if cgc.category_group in bcg_groups:
             continue
 
-        pc = category_by_id.get(cgc.category_id)
+        pc = category_by_id.get((cgc.category_id, cgc.vendor_group))
         cg = group_by_name.get(cgc.category_group)
         if not pc or not cg:
             continue
 
         for v in vendors:
+            if v.vendor_group != cgc.vendor_group:
+                continue
+
             preset = (
                 (pc.category_name_ja or "")
                 + ("men" if pc.department == "Men" else "")
@@ -622,11 +648,23 @@ def refresh_presets_lookup(conn):
             if cgc.is_brand_dependent != 1:
                 continue
 
+            # category_group_categories側のvendor_groupとcategoryのvendor_groupが
+            # 一致するものだけを対象にする（同一category_idが仕入先ごとに別定義でも混ざらない）
+            if cgc.vendor_group != pc.vendor_group:
+                continue
+
             cg = group_by_name.get(cgc.category_group)
             if not cg:
                 continue
 
             for v in vendors:
+                if v.vendor_group != pc.vendor_group:
+                    continue
+
+                out_brand_id = resolve_brand_id(brand, v.vendor_group)
+                if out_brand_id is None:
+                    continue
+
                 preset = (
                     (brand.brand_name_ja or "")
                     + (pc.category_name_ja or "")
@@ -637,7 +675,7 @@ def refresh_presets_lookup(conn):
                 rows.append((
                     preset,
                     v.vendor_name,
-                    brand.brand_id,
+                    out_brand_id,
                     pc.category_id,
                     cg.mode,
                     cg.low_usd_target,
