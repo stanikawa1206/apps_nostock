@@ -61,6 +61,7 @@ from apps.adapters.mercari_item_status import (
     mark_vendor_item_unavailable,
 )
 from apps.adapters.mercari_item_status import fetch_shops_api_data,fetch_mercari_api_data,_parse_status_from_res,detect_status_from_mercari_shops
+from apps.adapters.rakuma_item_status import parse_detail_rakuma, RakumaItemUnavailableError, is_rakuma_update_too_old
 from datetime import datetime
 
 # ========= 固定値／運用設定 =========
@@ -1023,15 +1024,29 @@ def heavy_check_detail(
         if vendor_name == "メルカリshops":
             # ★ ShopsもPlaywright化！
             rec = parse_detail_shops(page, item_url, preset, vendor_name, driver)
+        elif vendor_name == "ラクマ":
+            # HTTP GETのみ（Playwright/Selenium不使用）
+            rec = parse_detail_rakuma(item_url, preset, vendor_name)
         else:
             # 通常メルカリ
             rec = parse_detail_personal(page, item_url, preset, vendor_name)
- 
+
         if not isinstance(rec, dict):
             raise Exception(f"解析失敗（データが空です）: SKU={sku}")
         rec["vendor_item_id"] = sku
-        rec["item_condition_id"] = item_condition_id 
-        
+        if vendor_name != "ラクマ":
+            # メルカリ系は検索一覧由来のitem_condition_idで上書き（既存仕様）。
+            # ラクマは検索一覧からitem_condition_idを取得できないため、
+            # 商品詳細ページ解析側(parse_detail_rakuma)が設定した値をそのまま使う。
+            rec["item_condition_id"] = item_condition_id
+
+    except RakumaItemUnavailableError as e:
+        status = e.state
+        mark_vendor_item_unavailable(conn, vendor_name, sku, status)
+        writes_since_commit += 1
+        writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
+        return None, debug_unavailable_dump, writes_since_commit, 1, 0
+
     except MercariItemUnavailableError as e:
         status = e.state
 
@@ -1090,6 +1105,40 @@ def heavy_check_detail(
         writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
         return None, debug_unavailable_dump, writes_since_commit, 1, 0
 
+    # === ラクマ: 購入申請ありNG ===
+    # <span class="item__icon request-required">すぐに購入可</span> が存在しない場合、
+    # 購入申請が必要な商品のためeBay出品処理へは進めない。
+    if vendor_name == "ラクマ" and rec.get("purchase_request_required"):
+        rec["listing_head"] = "NG(購入申請あり)"
+        rec["listing_detail"] = "request-required span not found"
+        upsert_vendor_item(conn, rec)
+        writes_since_commit += 1
+        writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
+        return None, debug_unavailable_dump, writes_since_commit, 1, 0
+
+    # === ラクマ: 更新時期NG（.time_ago の文字列判定。メルカリのvendor_updated_at判定とは分離） ===
+    # last_updated_str は parse_detail_rakuma() が同じ詳細GETレスポンスから既に取得済みの値を
+    # そのまま使う（追加のHTTP GETは発生しない）。1ヶ月前まではOK、2ヶ月前以上・年単位はNG。
+    # 古いと判定した時点でseller処理(upsert_mst_seller_from_rec等)を省略するため、
+    # あえてseller関連チェックより前に置く。seller_idはtrx.vendor_itemへ記録されるが
+    # mst.sellerへは登録されない状態のままになる。この状態自体は問題ではなく、
+    # 対応するfn_take_one_candidates側（seller_id有り+mst.seller無しをブロックしない）
+    # の修正とセットで、後日この商品が価格変更等で復活した際に
+    # 改めてheavy_check_detailへ到達し、そこでseller情報を取得・登録できる設計とする。
+    if vendor_name == "ラクマ":
+        stale = is_rakuma_update_too_old(rec.get("last_updated_str"))
+        if stale is None and rec.get("last_updated_str") is not None:
+            print(f"[WARN] ラクマ time_ago 未知形式: sku={sku} text={rec.get('last_updated_str')!r} url={item_url}", flush=True)
+        elif stale is None:
+            print(f"[WARN] ラクマ time_ago 取得不可: sku={sku} url={item_url}", flush=True)
+        elif stale:
+            rec["listing_head"] = "NG(古い更新)"
+            rec["listing_detail"] = rec.get("last_updated_str") or ""
+            upsert_vendor_item(conn, rec)
+            writes_since_commit += 1
+            writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
+            return None, debug_unavailable_dump, writes_since_commit, 1, 0
+
     # === 必須項目チェック ===
     if not (rec.get("description") or "").strip():
         rec["listing_head"] = "説明文なし"
@@ -1108,6 +1157,10 @@ def heavy_check_detail(
         writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
         return None, debug_unavailable_dump, writes_since_commit, 0, 1
 
+    # ラクマ・メルカリ共通: seller_idがtrx.vendor_itemに既にあっても、mst.seller側に
+    # 実データがあるとは限らない（古い更新でここへ来ていなかった等）。
+    # upsert_mst_seller_from_rec()は無条件のupsertのため、既存有無に関わらず
+    # 都度呼んで問題ない（キャッシュを壊さず最新化するだけ）。
     upsert_mst_seller_from_rec(conn, vendor_name, rec)
     writes_since_commit += 1
     writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
@@ -2490,6 +2543,8 @@ def main():
                     item_url = (
                         f"https://mercari-shops.com/products/{sku}"
                         if vendor_name == "メルカリshops"
+                        else f"https://item.fril.jp/{sku}"
+                        if vendor_name == "ラクマ"
                         else f"https://jp.mercari.com/item/{sku}"
                     )
 

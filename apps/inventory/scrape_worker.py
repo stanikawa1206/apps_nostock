@@ -26,6 +26,12 @@ from apps.common.utils import (
     compute_start_price_usd,
 )
 from apps.adapters.mercari_search import make_search_url
+from apps.adapters.rakuma_search import (
+    rakuma_page_url,
+    fetch_rakuma_search_html,
+    extract_items_from_rakuma_html,
+)
+from apps.adapters.rakuma_item_status import is_rakuma_update_too_old
 
 # =========================
 # 設定
@@ -201,6 +207,41 @@ def get_vendor_item_prices_batch(conn, vendor_name: str, vendor_item_ids: List[s
     return out
 
 
+def get_vendor_item_dates_batch(conn, vendor_name: str, vendor_item_ids: List[str]) -> Dict[str, Tuple[Optional[datetime], Optional[datetime]]]:
+    """
+    既存の vendor_created_at / vendor_updated_at を取得する。
+    ラクマの検索一覧にはこれらの日時情報が含まれないため、
+    upsert_vendor_items() のMERGE（UPDATE時にCOALESCEせず直接上書きする仕様）で
+    既存値がNULLに潰されないよう、再スクレイプ時は既存値をそのまま渡し戻す。
+    """
+    if not vendor_item_ids:
+        return {}
+
+    placeholders = ",".join("?" for _ in vendor_item_ids)
+    sql = f"""
+        SELECT vendor_item_id, vendor_created_at, vendor_updated_at
+        FROM [trx].[vendor_item]
+        WHERE vendor_name = ? AND vendor_item_id IN ({placeholders})
+    """
+    params = [vendor_name] + vendor_item_ids
+    out: Dict[str, Tuple[Optional[datetime], Optional[datetime]]] = {}
+
+    cur = conn.cursor()
+    try:
+        cur.execute(sql, params)
+        for vid, created, updated in cur.fetchall():
+            out[str(vid)] = (created, updated)
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+
+    for v in vendor_item_ids:
+        out.setdefault(v, (None, None))
+    return out
+
+
 # =========================
 # eBay side-effects
 # =========================
@@ -242,12 +283,20 @@ def handle_price_change_side_effects(
     before_status, before_detail, before_updated, before_ng = row
 
     # ─────────────────────────────
-    # ② 「○ヶ月前 / ○か月前 / 半年以上前」のときだけクリア
+    # ② 古い更新の判定でクリア
+    # メルカリ: last_updated_str に「○ヶ月前 / ○か月前 / 半年以上前」を含むかの文字列一致。
+    # ラクマ: 表記も閾値もメルカリと異なる（1ヶ月前まではOK、2ヶ月前以上・年単位がNG）ため、
+    #         同じ文字列一致を流用せず、既存の is_rakuma_update_too_old() 判定をそのまま使う。
     # ─────────────────────────────
     if before_updated is not None:
         s = str(before_updated)
 
-        if ("ヶ月前" in s) or ("か月前" in s) or ("半年以上前" in s):
+        if vendor_name == "ラクマ":
+            is_stale = bool(is_rakuma_update_too_old(s))
+        else:
+            is_stale = ("ヶ月前" in s) or ("か月前" in s) or ("半年以上前" in s)
+
+        if is_stale:
 
             # 変更前状態を表示（デバッグ用）
             print(
@@ -829,6 +878,243 @@ def run_fetch_active_ebay(page, start_page, payload: dict, job_id: int) -> Tuple
 
 
 
+# ============================================================
+# fetch_active_rakuma scrape 本体（1 preset 分）
+# Playwright/Selenium不使用: 検索結果ページをHTTP GETするのみ。
+# 商品詳細ページへはアクセスしない（購入申請あり/なし判定もしない）。
+# ============================================================
+def run_fetch_active_rakuma(payload: dict, job_id: int) -> Tuple[int, int]:
+    print(f"[ENV] host={socket.gethostname()} pid={os.getpid()} SIMULATE={SIMULATE}", flush=True)
+
+    preset = payload["preset"]
+    vendor_name = payload["vendor_name"]
+    mode = payload["mode"]
+    low_usd_target = float(payload["low_usd_target"])
+    high_usd_target = float(payload["high_usd_target"])
+
+    print(f"[SCRAPE START][RAKUMA] preset={preset} vendor={vendor_name} mode={mode}", flush=True)
+
+    total_items = 0
+
+    base_url = make_search_url(
+        vendor_name=vendor_name,
+        brand_id=payload["brand_id"],
+        category_id=payload["category_id"],
+        status="on_sale",
+        mode=mode,
+        low_usd_target=low_usd_target,
+        high_usd_target=high_usd_target,
+    )
+    print(f"[URL] {base_url}", flush=True)
+
+    page_idx = 0
+    conn = get_sql_server_connection()
+
+    try:
+        while True:
+            write_status(job_id, page_idx + 1)
+            page_start = time.time()
+            url = rakuma_page_url(base_url, page_idx)
+            print(f"[PAGE] {page_idx+1} {url}", flush=True)
+
+            html = fetch_rakuma_search_html(url)
+            items = extract_items_from_rakuma_html(html) if html is not None else []
+
+            print(f"[PAGE {page_idx+1}] items={len(items)}", flush=True)
+
+            if not items:
+                break
+
+            total_items += len(items)
+
+            item_ids = [it["vendor_item_id"] for it in items]
+            existing_dates = get_vendor_item_dates_batch(conn, vendor_name, item_ids)
+
+            # 価格変化の検知 → 既存メルカリと同じ handle_price_change_side_effects() を流用。
+            # last_updated_str に「ヶ月前」等が入っている（=前回heavy時点で古い更新扱いだった）
+            # 商品の価格が変わっていれば、出品者が商品を動かしたとみなして
+            # 出品状況/出品状況詳細/last_updated_str/last_ng_at をクリアし、
+            # 次回の候補抽出・heavy_check_detailで再評価できる状態に戻す。
+            old_price_map = get_vendor_item_prices_batch(conn, vendor_name, item_ids)
+            cnt_changed = 0
+            cnt_unchanged = 0
+            for it in items:
+                iid = it["vendor_item_id"]
+                price = it["price"]
+                if price is None:
+                    continue
+                old_price = old_price_map.get(iid)
+                if old_price is not None and old_price != price:
+                    cnt_changed += 1
+                    handle_price_change_side_effects(
+                        conn, iid, vendor_name, old_price, price,
+                        mode=mode, low_usd_target=low_usd_target, high_usd_target=high_usd_target,
+                    )
+                else:
+                    cnt_unchanged += 1
+            print(f"[PAGE {page_idx+1}] price changed={cnt_changed} unchanged={cnt_unchanged}", flush=True)
+
+            rows = []
+            for it in items:
+                iid = it["vendor_item_id"]
+                existing_created, existing_updated = existing_dates.get(iid, (None, None))
+                rows.append({
+                    "vendor_name": vendor_name,
+                    "vendor_item_id": iid,
+                    "status": "販売中",
+                    "preset": preset,
+                    "title_jp": it["title_jp"],
+                    "vendor_page": page_idx + 1,
+                    "price": it["price"],
+                    # 検索一覧からは取得不可。既存行があれば既存値を保持し、
+                    # 新規行はNULLのまま（publish時の詳細取得で埋まる想定）。
+                    "vendor_created_at": existing_created,
+                    "vendor_updated_at": existing_updated,
+                    "item_condition_id": None,
+                })
+
+            now = now_jst()
+            print(f"[G] upsert start rows={len(rows)} now={now}", flush=True)
+            upsert_vendor_items(conn, rows, now)
+            print("[G] upsert done", flush=True)
+
+            print(f"[PAGE {page_idx+1} RESULT] upserted={len(rows)}", flush=True)
+
+            if MAX_PAGES and (page_idx + 1) >= MAX_PAGES:
+                print(f"[STOP] reached MAX_PAGES={MAX_PAGES}", flush=True)
+                break
+
+            elapsed = time.time() - page_start
+            TARGET = 8.0
+            if elapsed < TARGET:
+                time.sleep((TARGET - elapsed) + random.uniform(0.0, 5.0))
+
+            page_idx += 1
+            time.sleep(1)
+
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    print(f"[SCRAPE END][RAKUMA] preset={preset}", flush=True)
+    return page_idx + 1, total_items
+
+
+# ============================================================
+# fetch_sold_rakuma scrape 本体（1 preset 分）
+# Playwright/Selenium不使用: 検索結果ページをHTTP GETするのみ。
+# 商品詳細ページへはアクセスしない。
+# ============================================================
+def run_fetch_sold_rakuma(payload: dict, job_id: int) -> Tuple[int, int]:
+    preset_name = payload["preset"]
+    vendor_name = payload["vendor_name"]
+    brand_id = payload["brand_id"]
+    category_id = payload["category_id"]
+    mode = payload.get("mode", "DDP")
+    low_usd_target = payload["low_usd_target"]
+    high_usd_target = payload["high_usd_target"]
+
+    print(
+        f"[SCRAPE START][SOLD][RAKUMA] preset='{preset_name}' "
+        f"vendor='{vendor_name}' mode='{mode}'",
+        flush=True
+    )
+
+    fetched_pages = 0
+    fetched_items = 0
+
+    base_url = make_search_url(
+        vendor_name=vendor_name,
+        brand_id=brand_id,
+        category_id=category_id,
+        status="sold",
+        mode=mode,
+        low_usd_target=low_usd_target,
+        high_usd_target=high_usd_target,
+    )
+    print(f"[URL] {base_url}", flush=True)
+
+    page_idx = 0
+    seen_ids: set[str] = set()
+    conn = get_sql_server_connection()
+
+    try:
+        while True:
+            write_status(job_id, page_idx + 1)
+            if page_idx >= MAX_PAGES:
+                print(f"[STOP] reached MAX_PAGES={MAX_PAGES}", flush=True)
+                break
+
+            target_url = rakuma_page_url(base_url, page_idx)
+            print(f"[PAGE {page_idx+1}] GET {target_url}", flush=True)
+
+            try:
+                html = fetch_rakuma_search_html(target_url)
+                items = extract_items_from_rakuma_html(html) if html is not None else []
+                print(f"[PAGE {page_idx+1}] scraped={len(items)}", flush=True)
+                fetched_pages += 1
+
+                if not items:
+                    break
+
+                new_ids = []
+                for it in items:
+                    iid = (it["vendor_item_id"] or "").strip()
+                    if not iid or iid in seen_ids:
+                        continue
+                    seen_ids.add(iid)
+                    new_ids.append((iid, it))
+
+                fetched_items += len(new_ids)
+
+                existing_dates = get_vendor_item_dates_batch(
+                    conn, vendor_name, [iid for iid, _ in new_ids]
+                )
+
+                rows = []
+                for iid, it in new_ids:
+                    existing_created, existing_updated = existing_dates.get(iid, (None, None))
+                    rows.append({
+                        "vendor_name": vendor_name,
+                        "vendor_item_id": iid,
+                        "status": "売り切れ",
+                        "preset": preset_name,
+                        "title_jp": it["title_jp"],
+                        "price": None,
+                        "vendor_created_at": existing_created,
+                        "vendor_updated_at": existing_updated,
+                    })
+                    handle_listing_delete(conn, iid, vendor_name, "売り切れ")
+
+                if rows:
+                    upsert_vendor_items(conn, rows, now_jst())
+
+            except Exception as e:
+                print(f"[WARN] page error page={page_idx+1}: {e}", flush=True)
+
+            page_idx += 1
+            time.sleep(1)
+
+    finally:
+        if conn:
+            try:
+                conn.close()
+                print(f"[DB] sold_rakuma connection closed.", flush=True)
+            except Exception:
+                pass
+
+    print(
+        f"[SCRAPE END][SOLD][RAKUMA] preset='{preset_name}' "
+        f"pages={fetched_pages} items={fetched_items}",
+        flush=True
+    )
+
+    return fetched_pages, fetched_items
+
+
 # =========================
 # Worker main loop
 # =========================
@@ -901,9 +1187,15 @@ def main():
                     start_page = current_page
 
                     if job_kind == "fetch_active_ebay":
-                        fetched_pages, fetched_items = run_fetch_active_ebay(page, start_page, payload, job_id)
+                        if payload.get("vendor_name") == "ラクマ":
+                            fetched_pages, fetched_items = run_fetch_active_rakuma(payload, job_id)
+                        else:
+                            fetched_pages, fetched_items = run_fetch_active_ebay(page, start_page, payload, job_id)
                     elif job_kind == "fetch_sold_ebay":
-                        fetched_pages, fetched_items = run_fetch_sold_ebay(page, start_page, payload, job_id)
+                        if payload.get("vendor_name") == "ラクマ":
+                            fetched_pages, fetched_items = run_fetch_sold_rakuma(payload, job_id)
+                        else:
+                            fetched_pages, fetched_items = run_fetch_sold_ebay(page, start_page, payload, job_id)
                     else:
                         raise ValueError(f"unknown job_kind: {job_kind}")
 
