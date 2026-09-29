@@ -1179,7 +1179,8 @@ def _wait_for_ship_by_date(account: str, order_id: str, ebay_id: str, max_retrie
 #                         cancellation検索が失敗しただけの状態と区別できなかった）。
 #                         「返金済み」はreturn CLOSED+実返金額ありの経路のみを根拠とする。
 #   11. 配達済み        : Trading API GetOrders の ActualDeliveryTime が存在する
-#                         [観測済み・2026-09-09追加]。90日超過後は取引完了へ。
+#                         [観測済み・2026-09-09追加]。DB保存済みの配達完了日時・OCのDelivered・
+#                         出荷から90日超のみなし配達も配達済み（2026-09-29: 取引完了は廃止）。
 #   12. 配送遅延        : 自動判定しない（2026-09-27廃止、ユーザー指示）。以前は
 #                         「EstimatedDeliveryTimeMaxを超過＝配送遅延」とプログラムが独自に
 #                         判定していた（eBayが遅延状態を返しているわけではない）。今後は人間が
@@ -1194,8 +1195,7 @@ def _wait_for_ship_by_date(account: str, order_id: str, ebay_id: str, max_retrie
 #                         「新規受注」に誤判定する問題があった。2026-09-09に
 #                         明細単位のlineItemFulfillmentStatus（NOT_STARTED/FULFILLEDの
 #                         二値のみ、実機確認済み）を使う方式に修正した。
-#   14. 取引完了        : 出荷済み/配達済みで他に未解決の問題がなく、
-#                         注文日から90日経過 [本スクリプトのローカル判定]
+#   （取引完了: 2026-09-29廃止。配達確認済み・みなし配達はすべて配達済みに統一）
 #
 #   【配達済み・配送遅延判定について(2026-09-09追加)】
 #   Fulfillment APIのshipping_fulfillmentには配達完了を示すフィールドが無いが、
@@ -1221,7 +1221,7 @@ def _wait_for_ship_by_date(account: str, order_id: str, ebay_id: str, max_retrie
 #     1. 新規受注（既存の別経路 send_new_order_mail/send_line_new_order。本ブロックの対象外）
 #     2. キャンセル（キャンセル申請中・キャンセル済み）
 #   それ以外（出荷済み・配達済み・配送遅延・返品申請中・返品返送中・返品到着・
-#   返金済み・INAD申告・未着申告・ケース対応中・要確認・取引完了）は通知しない。
+#   返金済み・INAD申告・未着申告・ケース対応中・要確認）は通知しない。
 #   → 現在DB上のstatusと新しいstatusが異なる場合のみ通知する（同一状態の重複通知はしない）。
 #   初回補完（backfillモード）では絶対に通知しない。
 # ====================================================================
@@ -1238,7 +1238,7 @@ NOTIFY_ON_STATUS = {
 NO_NOTIFY_STATUS = {
     "出荷済み", "配達済み", "配送遅延",
     "返品申請中", "返品返送中", "返品到着", "返金済み",
-    "INAD申告", "未着申告", "ケース対応中", "要確認", "取引完了",
+    "INAD申告", "未着申告", "ケース対応中", "要確認",
     "新規受注",
 }
 
@@ -1270,7 +1270,7 @@ POST_ORDER_DERIVED_STATUSES = {
 
 # 配送進捗の順位。取得できる情報が減っただけ（例: 注文から約90日を過ぎTrading APIが
 # 注文を返さなくなった）で進捗が後退する判定結果になった場合は既存statusを維持する（2026-09-26追加）
-_DELIVERY_RANK = {"新規受注": 0, "出荷済み": 1, "配送遅延": 1, "配達済み": 2, "取引完了": 3}
+_DELIVERY_RANK = {"新規受注": 0, "出荷済み": 1, "配送遅延": 1, "配達済み": 2}
 
 
 # --------------------------------------------------
@@ -2072,9 +2072,7 @@ def determine_status(
             log.warning(f"[determine_status] 出荷済みだが返金状況を確認できないため判定不可: ebay_id={ebay_id} {refund_basis}")
             return None, f"出荷済みだが返金状況を確認できないためstatus判定不可（既存statusを維持）: {refund_basis}"
         if actual_delivery_time is not None:
-            age_days = (now - order_date).days if order_date else 0
-            if age_days > MONITOR_WINDOW_DAYS:
-                return "取引完了", f"配達済み・{age_days}日経過・未解決なし{ship_note}"
+            # 2026-09-29: 「取引完了」は使わない（ユーザー指示）。配達を確認できたものは経過日数に関わらず配達済み
             return "配達済み", f"配達完了 ({actual_delivery_time.isoformat()}){ship_note}"
         # 2026-09-27: 配達予定日の超過を理由に「配送遅延」とする独自判定は廃止（ユーザー指示）。
         # 配達完了を確認できない出荷済みの明細は、予定日を過ぎていても「出荷済み」とする

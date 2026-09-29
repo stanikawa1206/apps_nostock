@@ -826,6 +826,48 @@ def upsert_mst_seller_from_rec(conn, vendor_name: str, rec: dict) -> None:
     with conn.cursor() as cur:
         cur.execute(SQL_UPSERT_MST_SELLER, (vendor_name, seller_id, seller_name, rating_count))
 
+# =========================
+# セラー評価数・High Risk判定：設定値の一元管理
+# mst.vendors / mst.category_groups / mst.presets_brand を唯一の設定元とする。
+# dbo.fn_take_one_candidates 側も同じマスタを参照している（SQLとPythonの二重定義を解消）。
+# =========================
+def get_vendor_rating_thresholds(conn, vendor_name: str) -> tuple[int, int]:
+    """(base_rating_threshold, high_risk_rating_threshold) をmst.vendorsから取得する。"""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT base_rating_threshold, high_risk_rating_threshold FROM mst.vendors WHERE vendor_name = ?",
+            (vendor_name,),
+        )
+        row = cur.fetchone()
+    if row is None:
+        raise ValueError(f"mst.vendorsにvendor_name={vendor_name!r}が存在しません（評価数閾値を取得できません）")
+    return int(row[0]), int(row[1])
+
+def is_category_group_high_risk(conn, category_group: Optional[str]) -> bool:
+    """mst.category_groups.is_high_riskを参照する。"""
+    if not category_group:
+        return False
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT is_high_risk FROM mst.category_groups WHERE category_group = ?",
+            (category_group,),
+        )
+        row = cur.fetchone()
+    return bool(row and row[0])
+
+def is_brand_high_risk(conn, default_brand_en: Optional[str]) -> bool:
+    """mst.presets_brand.is_high_risk_brandをdefault_brand_en経由で参照する。
+    同名default_brand_enが複数行あっても1件でもTRUEならHigh Risk扱いにする（MAXで合成）。"""
+    if not default_brand_en:
+        return False
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT MAX(CAST(is_high_risk_brand AS INT)) FROM mst.presets_brand WHERE default_brand_en = ?",
+            (default_brand_en,),
+        )
+        row = cur.fetchone()
+    return bool(row and row[0])
+
 def _truncate_for_db2(s: str, max_len: int = 200) -> str:
     if s is None:
         return ""
@@ -1221,8 +1263,10 @@ def heavy_check_detail(
             return None, debug_unavailable_dump, writes_since_commit, 1, 0
 
     # === 4.5) セラー判定 ===
+    # 通常評価数閾値・High Risk評価数閾値は mst.vendors を唯一の設定元とする。
     rating_count = rec.get("rating_count")
-    threshold = 20 if vendor_name == "メルカリshops" else 50
+    base_rating_threshold, high_risk_rating_threshold = get_vendor_rating_thresholds(conn, vendor_name)
+    threshold = base_rating_threshold
 
     if rating_count is None:
         rec["listing_head"] = "解析失敗"
@@ -1271,24 +1315,24 @@ def heavy_check_detail(
 
     # === 4.6) 高リスク商品フィルタ ===
     # 高リスク商品 → 信頼セラーのみ
+    # 新品ルール（ペン/製図用品は除外）は既存仕様のまま維持。
+    # High Riskカテゴリー／ブランドの判定基準は
+    # mst.category_groups.is_high_risk / mst.presets_brand.is_high_risk_brand を唯一の設定元とする
+    # （dbo.fn_take_one_candidates側も同じマスタを参照）。
     is_high_risk = False
 
     # 新品
     if item_condition_id == 1 and category_group != "ペン" and category_group != "製図用品":
         is_high_risk = True
 
-    # トレカ
-    if category_group == "トレカ":
+    # High Riskカテゴリー（DBマスタ参照。腕時計もこれによりHigh Risk対象になる）
+    if is_category_group_high_risk(conn, category_group):
         is_high_risk = True
-    
-    # デジカメ
-    if category_group in ("デジカメ", "ビデオカメラ","レンズ"):
-        is_high_risk = True    
 
-    # ヴィトン・シャネル中古
+    # High Riskブランドの中古品（DBマスタ参照）
     if (
         item_condition_id != 1
-        and default_brand_en in ("Louis Vuitton", "CHANEL")
+        and is_brand_high_risk(conn, default_brand_en)
     ):
         is_high_risk = True
 
@@ -1312,14 +1356,14 @@ def heavy_check_detail(
         if allow_new_items == 1:
             allow_high_risk = True
 
-        # 高評価セラー
-        if rating_count >= 500:
+        # 高評価セラー（閾値は mst.vendors.high_risk_rating_threshold を参照）
+        if rating_count >= high_risk_rating_threshold:
             allow_high_risk = True
 
         if not allow_high_risk:
             rec["listing_head"] = "NG(高リスク商品制限)"
             rec["listing_detail"] = (
-                f"allow_new_items != 1 and rating_count={rating_count} < 500"
+                f"allow_new_items != 1 and rating_count={rating_count} < {high_risk_rating_threshold}"
             )
 
             upsert_vendor_item(conn, rec)

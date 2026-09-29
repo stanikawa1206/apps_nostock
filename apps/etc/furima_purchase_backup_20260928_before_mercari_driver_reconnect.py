@@ -2832,43 +2832,6 @@ def mercari_get_tracking_info(driver):
 
 
 # ------------------------------------------------------------
-# 【2026-09-28追加】ChromeDriverセッション断からの復旧（実機不具合: 2026-09-28 06:42、
-# m78745352458の自動送信直前にchromedriver.exeが応答なく消滅し（常駐Chrome本体は生存）、
-# 以後の全取引が「localhost:<chromedriverポート> 接続拒否」で1件約35秒ずつ失敗し続け、
-# タスクスケジューラの実行時間制限(30分)で強制終了されるまで収集が止まっていた）。
-# 接続断を検知したら、常駐Chromeへアタッチし直して処理用タブを作り直す。
-# 上限回数を超えたら、空回りさせずに例外でメルカリの収集を即座に中断する。
-MERCARI_DRIVER_RECONNECT_MAX_COUNT = 2
-
-
-def _is_webdriver_connection_lost(e: Exception) -> bool:
-    """chromedriver.exe自体に接続できない（プロセス消滅等）ことを示す例外かどうか。
-    Seleniumはchromedriverへの接続失敗をurllib3のMaxRetryErrorとしてそのまま送出する。"""
-    import urllib3
-    return isinstance(e, (urllib3.exceptions.MaxRetryError,
-                          urllib3.exceptions.NewConnectionError,
-                          ConnectionRefusedError))
-
-
-def _mercari_reconnect_driver(old_driver, old_tab_id):
-    """死んだSeleniumセッションを破棄し、常駐Chromeへ新しいセッションでアタッチし直す。
-    旧セッションの処理用タブは新セッションから閉じる（ユーザーの既存タブには触れない）。
-    戻り値: (新しいdriver, 新しい処理用タブのtarget_id)"""
-    try:
-        old_driver.quit()
-    except Exception:
-        pass
-    mercari_ensure_chrome_debugger()
-    options = Options()
-    options.debugger_address = f"127.0.0.1:{MERCARI_DEBUG_PORT}"
-    new_driver = webdriver.Chrome(options=options)
-    # 新セッションの操作対象が旧処理用タブになっている場合があるため、先に新しい処理用タブを
-    # 作成・切替してから旧タブを閉じる（逆順だと以後のCDPコマンドがno such windowになる。実機確認済み）。
-    new_tab_id = _create_processing_tab(new_driver)
-    _close_processing_tab(new_driver, old_tab_id)
-    return new_driver, new_tab_id
-
-
 # メイン
 # ------------------------------------------------------------
 def mercari_main(wanted_ids=None):
@@ -2954,7 +2917,6 @@ def mercari_main(wanted_ids=None):
             print()
 
         failed_ids = []
-        driver_reconnect_count = 0
         for url in transaction_urls:
 
             # URLからの注文ID抽出は文字列操作のみで失敗しないため、リトライの外で1回だけ行う
@@ -3083,19 +3045,6 @@ def mercari_main(wanted_ids=None):
 
                 except Exception as e:
                     last_error = e
-                    # 【2026-09-28追加】chromedriverとの接続断は同じdriverで何度やり直しても
-                    # 回復しないため、セッションを作り直してからリトライする。
-                    if _is_webdriver_connection_lost(e):
-                        if driver_reconnect_count >= MERCARI_DRIVER_RECONNECT_MAX_COUNT:
-                            raise RuntimeError(
-                                f"ChromeDriverとの接続断が{MERCARI_DRIVER_RECONNECT_MAX_COUNT}回の"
-                                f"再接続後も解消しないため、メルカリの収集を中断しました: {e}"
-                            ) from e
-                        driver_reconnect_count += 1
-                        print(f"WARN: ChromeDriverとの接続断を検知しました。常駐Chromeへ再接続します"
-                              f"（{driver_reconnect_count}/{MERCARI_DRIVER_RECONNECT_MAX_COUNT}回目）: {e}")
-                        driver, tab_id = _mercari_reconnect_driver(driver, tab_id)
-                        print("OK: ChromeDriverへ再接続しました")
                     if attempt < ITEM_COLLECTION_MAX_ATTEMPTS:
                         print(f"WARN: {url} の処理に失敗しました（{attempt}/{ITEM_COLLECTION_MAX_ATTEMPTS}回目）。"
                               f"リトライします: {e}")
@@ -3122,12 +3071,7 @@ def mercari_main(wanted_ids=None):
         # driver.quit()しても常駐Chrome本体・既存タブは終了しない（実機確認済み）。
         # 今回のSeleniumセッション（chromedriver.exeプロセス）だけを終了し、
         # 毎回実行するたびにchromedriver.exeが残留し続けるのを防ぐ。
-        # 【2026-09-28】chromedriverが既に消滅している場合にquit()の例外で
-        # 本来の例外（中断理由）を覆い隠さないよう、ここでの失敗は無視する。
-        try:
-            driver.quit()
-        except Exception:
-            pass
+        driver.quit()
 
 
 # ============================================================================

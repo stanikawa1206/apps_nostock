@@ -70,6 +70,16 @@ def is_rakuma_update_too_old(last_updated_str: Optional[str]) -> Optional[bool]:
     return None
 
 
+def _extract_is_variant(soup: BeautifulSoup) -> bool:
+    """
+    「種類を選択する」（ラクマ公式ショップ等のバリエーション商品）かどうかを判定する。
+    画面文言（「種類を選択できます」等）はUI都合で変わり得るため使わず、
+    購入UIが埋め込む data-test="stock-sku-select-button" 属性（構造化データ）の
+    有無で判定する。非バリエーション商品には存在しないことを実商品で確認済み。
+    """
+    return soup.select_one("div[data-test='stock-sku-select-button']") is not None
+
+
 class RakumaItemUnavailableError(Exception):
     """商品詳細ページが取得できない（削除済み等）場合に送出する。"""
     def __init__(self, message: str, state: str = "unavailable"):
@@ -267,6 +277,8 @@ def parse_detail_rakuma(url: str, preset: str, vendor_name: str) -> Dict[str, An
     time_ago_el = soup.select_one("div.time_ago")
     last_updated_str = time_ago_el.get_text(strip=True) if time_ago_el else None
 
+    is_variant = _extract_is_variant(soup)
+
     rec: Dict[str, Any] = {
         "vendor_name": vendor_name,
         "title_jp": title_jp,
@@ -288,5 +300,7 @@ def parse_detail_rakuma(url: str, preset: str, vendor_name: str) -> Dict[str, An
         "item_attributes": [],
         "item_condition_id": item_condition_id,
         "purchase_request_required": purchase_request_required,
+        "is_variant": is_variant,
+        "variants": [],
     }
     return rec

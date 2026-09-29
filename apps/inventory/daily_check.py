@@ -18,6 +18,49 @@ if os.name == "nt":
     except Exception:
         pass
 
+
+def disable_console_quick_edit():
+    """
+    このプロセスが接続しているコンソールだけ QuickEdit を無効化する。
+    QuickEdit の選択モード中はコンソールへの print がブロックされ、
+    daily_check.py 全体が停止する（2026-09-28 22:56 発生）ための対策。
+    レジストリは変更しないため、他のコンソールウィンドウには影響しない。
+    失敗しても警告を出すだけで、本体の処理は続行する。
+    """
+    if os.name != "nt":
+        return
+
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        STD_INPUT_HANDLE = -10
+        ENABLE_QUICK_EDIT_MODE = 0x0040
+        ENABLE_EXTENDED_FLAGS = 0x0080
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetStdHandle.restype = wintypes.HANDLE
+        kernel32.GetStdHandle.argtypes = [wintypes.DWORD]
+        kernel32.GetConsoleMode.restype = wintypes.BOOL
+        kernel32.GetConsoleMode.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel32.SetConsoleMode.restype = wintypes.BOOL
+        kernel32.SetConsoleMode.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+
+        handle = kernel32.GetStdHandle(wintypes.DWORD(STD_INPUT_HANDLE & 0xFFFFFFFF))
+        mode = wintypes.DWORD()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            print(f"⚠️ QuickEdit無効化スキップ: コンソールモード取得失敗 (WinError {ctypes.get_last_error()})")
+            return
+
+        new_mode = (mode.value & ~ENABLE_QUICK_EDIT_MODE) | ENABLE_EXTENDED_FLAGS
+        if not kernel32.SetConsoleMode(handle, new_mode):
+            print(f"⚠️ QuickEdit無効化失敗 (WinError {ctypes.get_last_error()})")
+            return
+
+        print("🖱 このコンソールの QuickEdit を無効化しました")
+    except Exception as e:
+        print(f"⚠️ QuickEdit無効化で例外（処理は続行）: {e}")
+
 # ======================
 # utils の読み込み
 # ======================
@@ -29,6 +72,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from apps.common.utils import send_mail, get_sql_server_connection
+import pyodbc
 
 # ======================
 # 子スクリプトのreturncode/stdout/stderr記録用トレースログ
@@ -424,6 +468,28 @@ def reset_remaining_flags(conn):
     conn.commit()
     print("✅ remaining フラグ初期化完了")
 
+DEADLOCK_RETRY_MAX = 5
+DEADLOCK_RETRY_WAIT_SEC = 5
+
+
+def _fetch_count_with_deadlock_retry(cur, sql):
+    """
+    SELECT COUNT(*) を実行して件数を返す。
+    SQL Server error 1205（デッドロックの犠牲）の場合のみ、待機して同じSQLを再実行する。
+    上限回数を超えた場合、および1205以外のエラーはそのまま送出する。
+    """
+    for attempt in range(1, DEADLOCK_RETRY_MAX + 1):
+        try:
+            cur.execute(sql)
+            return cur.fetchone()[0]
+        except pyodbc.Error as e:
+            is_deadlock = bool(e.args) and e.args[0] == "40001" and "(1205)" in str(e)
+            if not is_deadlock or attempt == DEADLOCK_RETRY_MAX:
+                raise
+            print(f"⚠️ デッドロック(1205)検知 → {DEADLOCK_RETRY_WAIT_SEC}秒後にリトライ ({attempt}/{DEADLOCK_RETRY_MAX - 1})")
+            time.sleep(DEADLOCK_RETRY_WAIT_SEC)
+
+
 def wait_until_remaining_exhausted(conn):
     """
     remaining 対象がなくなるまで待機
@@ -434,14 +500,13 @@ def wait_until_remaining_exhausted(conn):
     cur = conn.cursor()
 
     # ★ 初期件数
-    cur.execute("""
+    initial_cnt = _fetch_count_with_deadlock_retry(cur, """
         SELECT COUNT(*)
         FROM trx.vendor_item AS v
         INNER JOIN trx.listings AS l
             ON v.vendor_name = l.vendor_name
            AND v.vendor_item_id = l.vendor_item_id
         WHERE l.is_deleted = 0
-          AND v.vendor_name IN (N'メルカリ', N'メルカリshops')
           AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')
           AND v.remaining_check_at IS NULL
           AND (
@@ -449,17 +514,15 @@ def wait_until_remaining_exhausted(conn):
              OR v.remaining_check_lock < DATEADD(MINUTE, -15, SYSDATETIME())
           )
     """)
-    initial_cnt = cur.fetchone()[0]
 
     while True:
-        cur.execute("""
+        cnt = _fetch_count_with_deadlock_retry(cur, """
             SELECT COUNT(*)
             FROM trx.vendor_item AS v
             INNER JOIN trx.listings AS l
                 ON v.vendor_name = l.vendor_name
                AND v.vendor_item_id = l.vendor_item_id
             WHERE l.is_deleted = 0
-              AND v.vendor_name IN (N'メルカリ', N'メルカリshops')
               AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')
               AND v.remaining_check_at IS NULL
               AND (
@@ -467,7 +530,6 @@ def wait_until_remaining_exhausted(conn):
                  OR v.remaining_check_lock < DATEADD(MINUTE, -15, SYSDATETIME())
               )
         """)
-        cnt = cur.fetchone()[0]
 
         if cnt == 0:
             print("✅ remaining 対象消滅")
@@ -1269,6 +1331,7 @@ def run_one_cycle(cycle_no: int, conn):
 # メイン処理
 # ======================
 def main():
+    disable_console_quick_edit()
     print("start")
     print(__file__)
     conn = get_sql_server_connection()

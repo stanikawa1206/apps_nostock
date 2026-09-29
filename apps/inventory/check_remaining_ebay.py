@@ -80,6 +80,7 @@ from apps.adapters.mercari_item_status import (
 )
 from apps.adapters.mercari_scraper import build_driver
 from apps.common.utils import get_sql_server_connection, compute_start_price_usd
+from apps.adapters.rakuma_item_status import check_rakuma_item_status, RakumaItemUnavailableError
 
 # ===== UTF-8 出力の強制（絵文字/日本語の安全化） =====
 if os.name == "nt" and hasattr(sys.stdout, "reconfigure"):
@@ -127,7 +128,14 @@ def get_status(page, driver: Optional[webdriver.Chrome], url: str) -> tuple[Stat
     （通常メルカリの分岐では driver は参照されないため問題ない）。
     """
     host_path = re.sub(r"^https?://", "", url)
-    
+
+    # --- 0. ラクマの場合：Playwright/Seleniumを使わずHTTP GETのみ ---
+    if "item.fril.jp" in host_path:
+        try:
+            return check_rakuma_item_status(url)
+        except RakumaItemUnavailableError:
+            return "削除", None
+
     # --- 1. メルカリ（通常）の場合：Playwrightのpageを使って高速APIキャプチャ ---
     if "mercari.com" in host_path and "/shops/product/" not in host_path:
         # 修正：pageオブジェクトを渡す
@@ -175,6 +183,8 @@ def update_vendor_item_price_and_status(conn, vendor_name: str, sku: str,
 def build_mercari_url(vendor_name: str, sku: str) -> str:
     if vendor_name == "メルカリshops":
         return f"https://jp.mercari.com/shops/product/{sku}"
+    if vendor_name == "ラクマ":
+        return f"https://item.fril.jp/{sku}"
     return f"https://jp.mercari.com/item/{sku}"
 
 def count_total_remaining(conn):
@@ -187,7 +197,7 @@ def count_total_remaining(conn):
                 ON v.vendor_name = l.vendor_name
                AND v.vendor_item_id = l.vendor_item_id
             WHERE l.is_deleted = 0
-              AND v.vendor_name IN (N'メルカリ', N'メルカリshops')
+              AND v.vendor_name IN (N'メルカリ', N'メルカリshops', N'ラクマ')
               AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')
               AND v.remaining_check_at IS NULL
         """)
@@ -213,7 +223,7 @@ def pull_remaining_targets(conn, worker_name: str, batch_size: int = 5):
                 ON p.preset = v.preset
             WHERE
                 l.is_deleted = 0
-                AND v.vendor_name IN (N'メルカリ', N'メルカリshops')
+                AND v.vendor_name IN (N'メルカリ', N'メルカリshops', N'ラクマ')
                 AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')
                 AND v.remaining_check_at IS NULL
                 AND (
