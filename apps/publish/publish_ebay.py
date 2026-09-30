@@ -2330,69 +2330,162 @@ class PublishState:
     cdn_mode_until: object
     cdn_cache: dict
 
+# take_one_vendor_item() で1回に読み込む候補の上限件数。
+# 同一preset_groupを並行処理するworkerはこの候補を同じ順に見て、他workerが確保中の行を
+# READPASTで飛ばして次の行を取る。worker数（MAX_PARALLEL_PC）より十分大きければよい。
+TAKE_ONE_CANDIDATE_LIMIT = 50
+
+# SQL Serverのデッドロック（1205）のSQLSTATE
+DEADLOCK_SQLSTATE = "40001"
+
+# 旧実装は「UPDATE TOP(1) v ... FROM vendor_item v WITH (UPDLOCK, READPAST) JOIN fn_take_one_candidates()」
+# だったが、実行プラン上 TOP(1) の直下に UPDATE...FROM 結合用の Hash Match(Aggregate, ANY) が入り、
+# 候補グループの全行を UPDLOCK で読み切ってから1件を選んでいた（UPDLOCK はcommitまで保持）。
+# そのため同じグループを同時に取りに来た別workerは READPAST で全行を飛ばして0行となり、
+# 候補が残っているのに EMPTY を書いていた（2026-09-30 03:17/03:51/03:57 に実測）。
+# 同じ理由でworker間のデッドロック(40001)も多発し、プロセスが落ちていた。
+#
+# 現実装は2段階に分ける:
+#   ① 候補の確定: TVFの結果を @cand へ読むだけ（ロックヒント無しの READ COMMITTED）。
+#      他workerの未commit行は「飛ばさず待つ」ので、@cand が0件 = 本当に候補が無い。
+#   ② 1件の確保: @cand を順に Nested Loops で vendor_item の主キーへ当て、UPDLOCK/READPAST で
+#      最初に確保できた1行だけを更新する（途中に集約を挟まないよう結合順・方式・索引を固定）。
+#      ①の後に他workerが確保済みにした行は processing_at IS NULL の再確認で除外する。
+# 最後に @cand の件数と確保した1行を返す（確保できなかった場合は候補件数だけの行）。
+TAKE_ONE_SQL = r"""
+SET NOCOUNT ON;
+
+DECLARE @cand TABLE (
+    vendor_name      NVARCHAR(100) NOT NULL,
+    vendor_item_id   NVARCHAR(200) NOT NULL,
+    preset           NVARCHAR(200) NULL,
+    mode             NVARCHAR(50)  NULL,
+    default_brand_en NVARCHAR(200) NULL,
+    category_id_ebay NVARCHAR(50)  NULL,
+    department       NVARCHAR(50)  NULL,
+    type_ebay        NVARCHAR(200) NULL,
+    category_group   NVARCHAR(100) NULL,
+    low_jpy_target   INT           NULL,
+    high_jpy_target  INT           NULL,
+    is_ok_logic      BIT           NULL,
+    is_collectibles  BIT           NULL,
+    PRIMARY KEY (vendor_name, vendor_item_id)
+);
+DECLARE @pick TABLE (vendor_name NVARCHAR(100) NOT NULL, vendor_item_id NVARCHAR(200) NOT NULL);
+
+-- ① 候補の確定（ロックヒント無し）。TVFは同一商品を複数行返し得るため1商品1行に絞る。
+INSERT INTO @cand
+SELECT TOP (?)
+    t.vendor_name, t.vendor_item_id, t.preset, t.mode, t.default_brand_en, t.category_id_ebay,
+    t.department, t.type_ebay, t.category_group, t.low_jpy_target, t.high_jpy_target,
+    t.is_ok_logic, t.is_collectibles
+FROM (
+    SELECT c.*,
+           ROW_NUMBER() OVER (PARTITION BY c.vendor_name, c.vendor_item_id ORDER BY (SELECT NULL)) AS rn
+    FROM dbo.fn_take_one_candidates(?) c
+) t
+WHERE t.rn = 1
+OPTION (MAXDOP 1);
+
+DECLARE @cand_count INT = @@ROWCOUNT;
+
+-- ② 1件だけ確保する。
+WITH x AS (
+    SELECT TOP (1) v.vendor_name, v.vendor_item_id, v.processing_by, v.processing_at
+    FROM @cand c
+    -- INDEX(1), FORCESEEK: クラスタ化主キーをSeekさせる。非クラスタ化インデックス経由だと
+    -- READPASTはその索引の読み取りにしか効かず、更新時の主キー行ロックで他workerを待ってしまう。
+    INNER JOIN trx.vendor_item v WITH (UPDLOCK, READPAST, ROWLOCK, INDEX(1), FORCESEEK)
+        ON  v.vendor_name    = c.vendor_name
+        AND v.vendor_item_id = c.vendor_item_id
+    WHERE v.processing_at IS NULL
+    ORDER BY c.vendor_name, c.vendor_item_id
+)
+UPDATE x
+SET processing_by = ?,
+    processing_at = SYSDATETIME()
+OUTPUT inserted.vendor_name, inserted.vendor_item_id INTO @pick
+OPTION (FORCE ORDER, LOOP JOIN, MAXDOP 1);
+
+SELECT
+    @cand_count AS cand_count,
+    r.vendor_item_id, r.vendor_name, r.price, r.shipping_region, r.shipping_days,
+    r.preset, r.mode, r.default_brand_en, r.category_id_ebay, r.department, r.type_ebay,
+    r.category_group, r.low_jpy_target, r.high_jpy_target, r.item_condition_id,
+    r.is_ok_logic, r.is_collectibles
+FROM (VALUES (1)) AS d(k)
+LEFT JOIN (
+    SELECT v.vendor_item_id, v.vendor_name, v.price, v.shipping_region, v.shipping_days,
+           c.preset, c.mode, c.default_brand_en, c.category_id_ebay, c.department, c.type_ebay,
+           c.category_group, c.low_jpy_target, c.high_jpy_target, v.item_condition_id,
+           c.is_ok_logic, c.is_collectibles
+    FROM @pick p
+    INNER JOIN trx.vendor_item v
+        ON v.vendor_name = p.vendor_name AND v.vendor_item_id = p.vendor_item_id
+    INNER JOIN @cand c
+        ON c.vendor_name = p.vendor_name AND c.vendor_item_id = p.vendor_item_id
+) AS r ON 1 = 1;
+"""
+
+
 def take_one_vendor_item(conn, preset_group, processing_by, account_name):
     """
     【TVF委譲版】
     候補抽出は dbo.fn_take_one_candidates(@preset_group) に全委譲。
-    この関数は TVF が返した候補の中から1件をロック・確保して返すだけ。
+    この関数は TVF が返した候補の中から1件だけをロック・確保して返す（詳細は TAKE_ONE_SQL のコメント）。
+
+    None を返すのは「ロックの影響を受けない読み取りで候補が0件だった」時だけ（呼び出し側でEMPTYにする）。
+    候補はあるが全て他workerが確保中/確保済みだった場合、およびデッドロック(40001)の犠牲になった場合は
+    None を返さず、少し待って再試行する（プロセスは終了させない）。
     """
 
-    sql = r"""
-        UPDATE TOP (1) v
-        SET
-            v.processing_by = ?,
-            v.processing_at = SYSDATETIME()
-        OUTPUT
-            inserted.vendor_item_id,
-            inserted.vendor_name,
-            inserted.price,
-            inserted.shipping_region,
-            inserted.shipping_days,
-            c.preset,
-            c.mode,
-            c.default_brand_en,
-            c.category_id_ebay,
-            c.department,
-            c.type_ebay,
-            c.category_group,
-            c.low_jpy_target,
-            c.high_jpy_target,
-            inserted.item_condition_id,
-            c.is_ok_logic,
-            c.is_collectibles
-        FROM trx.vendor_item v WITH (UPDLOCK, READPAST, ROWLOCK)
-        INNER JOIN dbo.fn_take_one_candidates(?) c
-            ON c.vendor_name    = v.vendor_name
-           AND c.vendor_item_id = v.vendor_item_id
-        OPTION (MAXDOP 1);
-        """
-
+    attempt = 0
     while True:
+        attempt += 1
         t_start = time.time()
-        with conn.cursor() as cur:
-            # 引数は (processing_by, preset_group) の2つ
-            cur.execute(sql, (processing_by, preset_group))
-            row = cur.fetchone()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(TAKE_ONE_SQL, (TAKE_ONE_CANDIDATE_LIMIT, preset_group, processing_by))
+                row = cur.fetchone()
+                columns = [col[0] for col in cur.description]
             conn.commit()
+        except pyodbc.Error as e:
+            sqlstate = e.args[0] if e.args else None
+            if sqlstate != DEADLOCK_SQLSTATE:
+                raise
+            # デッドロックの犠牲になった時点でSQL Server側のトランザクションは既にロールバック済み。
+            # 接続側の状態を合わせてから再試行する。
+            conn.rollback()
+            wait = random.uniform(0.5, 2.0)
+            print(f"  [DB_WARN] account={account_name} take_oneでデッドロック(40001)。{wait:.1f}秒後に再試行します (attempt={attempt})")
+            time.sleep(wait)
+            continue
 
-            if row is None:
-                # ここでNoneなら、そのグループの担当レンジに在庫がない（枯渇）
-                print(f"  [DB_INFO] account={account_name} 担当範囲({preset_group})の在庫が枯渇しました。")
-                return None
+        result = dict(zip(columns, row))
+        cand_count = result.pop("cand_count")
 
-            elapsed = time.time() - t_start
+        if cand_count == 0:
+            # ロックの影響を受けない読み取りで候補が0件 = そのグループの担当レンジに在庫がない（枯渇）
+            print(f"  [DB_INFO] account={account_name} 担当範囲({preset_group})の在庫が枯渇しました。")
+            return None
 
-            columns = [col[0] for col in cur.description]
-            result = dict(zip(columns, row))
-            
-            sku = result.get("vendor_item_id")
-            price = result.get("price")
-            category_grp = result.get('category_group', '不明')
-            low_target = result.get('low_jpy_target', 0)
-            high_target = result.get('high_jpy_target', 0)
+        if result["vendor_item_id"] is None:
+            # 候補はあるが、読み取り後に他workerが全て確保した/確保中だった。枯渇ではないので再試行する。
+            wait = random.uniform(0.5, 1.5)
+            print(f"  [DB_INFO] account={account_name} 候補{cand_count}件は他workerが確保中のため、{wait:.1f}秒後に再試行します (attempt={attempt})")
+            time.sleep(wait)
+            continue
 
-            print(f"[〇価格OK] account={account_name} SKU={sku} 価格={price} 価格range {low_target}～{high_target} {preset_group}-{category_grp} (Time: {elapsed:.3f}s)")
-            return result
+        elapsed = time.time() - t_start
+
+        sku = result.get("vendor_item_id")
+        price = result.get("price")
+        category_grp = result.get('category_group', '不明')
+        low_target = result.get('low_jpy_target', 0)
+        high_target = result.get('high_jpy_target', 0)
+
+        print(f"[〇価格OK] account={account_name} SKU={sku} 価格={price} 価格range {low_target}～{high_target} {preset_group}-{category_grp} (Time: {elapsed:.3f}s)")
+        return result
 
          
 def main():
