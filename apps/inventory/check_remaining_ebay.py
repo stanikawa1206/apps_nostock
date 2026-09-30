@@ -350,8 +350,9 @@ def run_remaining_worker(worker_name: str):
             # MAX_PER_RUN に達したら exit 1 で終了
             print(f"[INFO] Reached {MAX_PER_RUN} items. Restarting for memory refresh...")
             browser.close()
-            os.system("find /tmp -mindepth 1 -delete")
-            sys.exit(1) # Shellスクリプトがこれを検知して pkill & 再起動する
+            # 一時ファイルの削除は check_remaining_ebay.sh が、この実行専用の TMPDIR だけを対象に行う
+            # （以前の find /tmp -mindepth 1 -delete は他プロセスの一時領域や tmux ソケットまで消していた）。
+            sys.exit(1) # Shellスクリプトがこれを検知して、この実行のプロセスだけを掃除して再起動する
 
     finally:
         if driver is None:
@@ -359,7 +360,6 @@ def run_remaining_worker(worker_name: str):
         safe_quit(driver)
         if pull_conn: pull_conn.close()
         if work_conn: work_conn.close()
-        os.system("find /tmp -mindepth 1 -delete")
 
 def process_status_and_sync(
     conn,
