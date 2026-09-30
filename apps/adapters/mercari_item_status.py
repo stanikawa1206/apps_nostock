@@ -10,6 +10,7 @@ from typing import Optional
 import json
 import psutil
 from playwright.sync_api import sync_playwright
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 import pyodbc
 from bs4 import BeautifulSoup
@@ -43,6 +44,14 @@ Status = Literal["販売中", "売り切れ", "削除", "オークション", "�
 
 # タイムアウト
 TIMEOUT = 12
+
+# fetch_json_core のスクロール(scrollTo)の上限（ミリ秒）。通常は即座に終わる処理。
+SCROLL_TIMEOUT_MS = 5000
+
+# _detect_deleted_from_html の削除マーカー1文言あたりの確認上限（ミリ秒）。
+# 呼ばれる時点でページは読み込み済み（goto 後に items/get を最大10秒待った後）なので、
+# 以前の count()（その瞬間の DOM を数えるだけ）と同じ判定に十分な時間。
+DELETED_MARKER_TIMEOUT_MS = 2000
 
 # 価格抽出用
 PRICE_RE = re.compile(r"[¥￥]\s*([0-9,]+)")
@@ -184,7 +193,13 @@ def fetch_json_core(page, url, match_func, status_holder: Optional[dict] = None)
             evaluate_watchdog.daemon = True
             evaluate_watchdog.start()
             try:
-                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                # page.evaluate() の代わりに、同じ関数をページ内で実行して true が返れば即座に戻り、
+                # 応答が無ければ SCROLL_TIMEOUT_MS で例外になる wait_for_function を使う（main 9c7f098）。
+                page.wait_for_function(
+                    "() => { window.scrollTo(0, document.body.scrollHeight); return true; }",
+                    polling=100,
+                    timeout=SCROLL_TIMEOUT_MS,
+                )
             finally:
                 evaluate_watchdog.cancel()
         except Exception:
@@ -293,19 +308,26 @@ def _detect_deleted_from_html(page, item_id: str) -> bool:
     """
     items/get が取得できず、HTTPステータスからも確定できなかった場合の
     最終フォールバック判定。画面に実際に描画されているテキストのみを見る。
+
+    以前の page.get_by_text(marker).count() はタイムアウトを持たず、ページが応答しないと
+    永久に戻らなかった（2026-09-30 に x162-43-15-160 / x162-43-39-209 の check_remaining が
+    ここで4時間以上停止）。そのため「その文言の要素が DOM に存在するか」（count() > 0 と同じ意味）を
+    タイムアウト付きの wait_for(state="attached") で確認する。
+    時間内に見つからなかった場合（ページが応答しない場合を含む）は削除とは判定しない。
     """
     for marker in DELETED_PAGE_MARKERS:
         try:
-            count = page.get_by_text(marker).count()
+            page.get_by_text(marker).first.wait_for(state="attached", timeout=DELETED_MARKER_TIMEOUT_MS)
+        except PlaywrightTimeoutError:
+            continue
         except Exception as e:
             print(f"[FALLBACK] item_id={item_id} get_by_text({marker!r}) 判定失敗: {e}")
             continue
 
-        if count > 0:
-            print(f"[FALLBACK] item_id={item_id} 削除判定 marker='{marker}' (visible_count={count})")
-            return True
+        print(f"[FALLBACK] item_id={item_id} 削除判定 marker='{marker}'")
+        return True
 
-    print(f"[FALLBACK] item_id={item_id} 削除マーカーなし（画面表示テキストで未検出）")
+    print(f"[FALLBACK] item_id={item_id} 削除マーカーなし（画面表示テキストで未検出、または応答なし）")
     return False
 
 

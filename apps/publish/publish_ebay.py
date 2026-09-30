@@ -11,8 +11,6 @@ import re
 import sys
 import time
 import socket
-import threading
-from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
@@ -23,7 +21,6 @@ import boto3
 from datetime import timedelta  # 追加（mainのstateで使う）
 from dataclasses import dataclass
 from playwright.sync_api import sync_playwright
-import psutil
 from selenium import webdriver
 from PIL import Image
 from io import BytesIO
@@ -55,6 +52,11 @@ from apps.common.utils import (
     contains_risky_word,
     get_openai_client,
     log_listings_change,
+)
+from apps.common.process_watchdog import (
+    playwright_driver_is_dead,
+    playwright_driver_monitor,
+    start_watchdog,
 )
 
 from apps.adapters.ebay_api import ApiHandledError, ListingLimitError, post_one_item
@@ -203,7 +205,7 @@ def is_fatal_renderer_error(e: Exception) -> bool:
     # （"Connection closed while reading from the driver"）で来るため、例外の型や文言ではなく
     # driver の生死で判定する。browser/context/page 側だけが落ちた場合（driver は生存）は
     # 商品ごとに browser を起動し直すので処理を継続できる。
-    if _playwright_driver_is_dead():
+    if playwright_driver_is_dead():
         return True
 
     s = str(e).lower()
@@ -222,14 +224,8 @@ class FatalRendererError(Exception):
 
 
 # ========= プロセスが処理を進められなくなった時の自己終了 =========
-# 方式は x162-43-39-209 のカナリア(a305457, mercari_item_status._on_evaluate_timeout)と同じ:
-# 監視スレッドから、このプロセスの子孫(Playwright driver・Chromium・chromedriver・Chrome)を
-# kill してから os._exit() する。メインスレッドは Playwright の同期呼び出しの中で空回り・
-# ブロックしている可能性があるため、その状態には依存しない。exit code は 0/10 以外なので
-# VPS の publish_ebay_loop.sh が15秒後に新しい publish_ebay を起動する。
-
-# Playwright driver(node) の生存確認間隔（秒）。driver 死亡から自己終了までの最大遅延になる。
-PLAYWRIGHT_DRIVER_POLL_SEC = 5
+# 仕組みは apps/common/process_watchdog.py（check_remaining_ebay と共通）。
+# exit code は 0/10 以外なので VPS の publish_ebay_loop.sh が15秒後に新しい publish_ebay を起動する。
 
 # 1商品の処理（ブラウザ起動〜解析〜出品〜ブラウザ終了）の上限秒数。
 # 2026-09-30 の実測（4,668件）は p50=16秒 / p99=35秒 / p99.9=57秒 / 最大77秒で、120秒超は0件。
@@ -238,66 +234,6 @@ PLAYWRIGHT_DRIVER_POLL_SEC = 5
 # 30分は実測最大の20倍以上かつ OpenAI 1呼び出し分の最悪時間を上回るため、
 # これを超えた場合は「処理が進まなくなった」とみなす。
 ITEM_WATCHDOG_TIMEOUT_SEC = 30 * 60
-
-# playwright_driver_monitor() が見つけた、このプロセスの Playwright driver(node) プロセス
-_playwright_driver_proc: Optional[psutil.Process] = None
-
-
-def _kill_own_descendants_and_exit(reason: str, exit_code: int) -> None:
-    print(f"[WATCHDOG] {reason} → 子プロセスを強制終了して exit {exit_code}", flush=True)
-    children = psutil.Process(os.getpid()).children(recursive=True)
-    for child in children:
-        try:
-            child.kill()
-        except psutil.NoSuchProcess:
-            pass
-    print(f"[WATCHDOG] 子プロセス{len(children)}件にkillを送信しました", flush=True)
-    sys.stdout.flush()
-    sys.stderr.flush()
-    os._exit(exit_code)
-
-
-def _playwright_driver_is_dead() -> bool:
-    proc = _playwright_driver_proc
-    if proc is None:
-        return False
-    try:
-        return proc.status() == psutil.STATUS_ZOMBIE
-    except psutil.NoSuchProcess:
-        return True
-
-
-@contextmanager
-def playwright_driver_monitor():
-    """
-    sync_playwright() の直後に入れ、このプロセスの Playwright driver(node) が死んだら
-    PLAYWRIGHT_DRIVER_POLL_SEC 秒以内に自己終了させる。
-    with を抜ける時（sync_playwright の正常終了で driver を止める前）に監視を止めるので、
-    正常終了(exit 10)の経路では発火しない。
-    """
-    global _playwright_driver_proc
-    drivers = [
-        c for c in psutil.Process(os.getpid()).children()
-        if "run-driver" in " ".join(c.cmdline())
-    ]
-    if len(drivers) != 1:
-        raise RuntimeError(f"Playwright driver プロセスを特定できません: {[c.pid for c in drivers]}")
-    _playwright_driver_proc = drivers[0]
-    stop = threading.Event()
-
-    def watch():
-        while not stop.wait(PLAYWRIGHT_DRIVER_POLL_SEC):
-            if _playwright_driver_is_dead() and not stop.is_set():
-                _kill_own_descendants_and_exit(
-                    f"Playwright driver(pid={_playwright_driver_proc.pid})が終了しました", 1
-                )
-
-    threading.Thread(target=watch, name="playwright-driver-monitor", daemon=True).start()
-    try:
-        yield
-    finally:
-        stop.set()
-        _playwright_driver_proc = None
 
 
 # ========= 詳細解析（Shops / 通常） =========
@@ -2693,13 +2629,10 @@ def main():
                     # 1商品の処理が ITEM_WATCHDOG_TIMEOUT_SEC 以内に終わらなければ自己終了する。
                     # Playwright/Selenium の同期呼び出しが例外も出さず戻らなくなった場合の最後の備え。
                     # 下の finally の最後で解除する（意図した待機である LIMIT待ち等は対象外）。
-                    item_watchdog = threading.Timer(
+                    item_watchdog = start_watchdog(
                         ITEM_WATCHDOG_TIMEOUT_SEC,
-                        _kill_own_descendants_and_exit,
-                        args=(f"1商品の処理が{ITEM_WATCHDOG_TIMEOUT_SEC}秒以内に終わりませんでした SKU={sku}", 2),
+                        f"1商品の処理が{ITEM_WATCHDOG_TIMEOUT_SEC}秒以内に終わりませんでした SKU={sku}",
                     )
-                    item_watchdog.daemon = True
-                    item_watchdog.start()
 
                     try:
                         browser = p.chromium.launch(headless=True)

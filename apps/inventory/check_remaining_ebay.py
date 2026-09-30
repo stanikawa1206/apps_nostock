@@ -80,6 +80,16 @@ from apps.adapters.mercari_item_status import (
 )
 from apps.adapters.mercari_scraper import build_driver
 from apps.common.utils import get_sql_server_connection, compute_start_price_usd
+from apps.common.process_watchdog import playwright_driver_monitor, start_watchdog
+
+# 1回の繰り返し（10件ごとのブラウザ再起動・対象取得・1商品の処理）の上限秒数。これを超えたら
+# 子孫を kill して exit 2 で自己終了し、check_remaining_ebay.sh がこの実行だけを片付けて再起動する。
+# 2026-09-30 の実測（1,670件）は1件の処理 p50=2.9秒 / p99=16秒 / p99.9=25秒 / 最大26秒、
+# 取得間隔（ブラウザ再起動込み）最大82秒。1件の中の各通信にはそれぞれ上限があり
+# （Playwright: goto 10秒・items/get 待ち10秒・スクロール5秒・削除マーカー2秒×4 を最大2回、
+#   eBay 削除 API: GET 30秒 + DELETE 30秒、Selenium: ページ読込30秒・HTTP 読取120秒）、
+# 全部が上限まで掛かっても数分で終わる。10分はそれを上回り、実測最大の7倍以上。
+CHECK_ITEM_WATCHDOG_TIMEOUT_SEC = 10 * 60
 
 # ===== UTF-8 出力の強制（絵文字/日本語の安全化） =====
 if os.name == "nt" and hasattr(sys.stdout, "reconfigure"):
@@ -283,7 +293,8 @@ def run_remaining_worker(worker_name: str):
         pull_conn = get_sql_server_connection()
         work_conn = get_sql_server_connection()
 
-        with sync_playwright() as p:
+        # playwright_driver_monitor(): driver(node) が死んだら自己終了させる（apps/common/process_watchdog.py）
+        with sync_playwright() as p, playwright_driver_monitor():
 
             # browserとcontextを１回だけ起動=使いまわし
             # この２つは起動が重いので、使いまわしすべき
@@ -304,7 +315,15 @@ def run_remaining_worker(worker_name: str):
             #)
 
             while processed_count < MAX_PER_RUN:
-                if processed_count > 0 and processed_count % 10 == 0:                
+                # この繰り返しが CHECK_ITEM_WATCHDOG_TIMEOUT_SEC 以内に終わらなければ自己終了する
+                # （Playwright/Selenium の同期呼び出しが例外も出さず戻らなくなった場合の備え）。
+                # 意図した待機（下の Wait 10s）の前と、1件の処理が終わった所で解除する。
+                item_watchdog = start_watchdog(
+                    CHECK_ITEM_WATCHDOG_TIMEOUT_SEC,
+                    f"check_remaining: {processed_count + 1}件目の処理が{CHECK_ITEM_WATCHDOG_TIMEOUT_SEC}秒以内に終わりませんでした",
+                )
+
+                if processed_count > 0 and processed_count % 10 == 0:
                     try:
                         browser.close()
                     except:
@@ -321,6 +340,7 @@ def run_remaining_worker(worker_name: str):
                 if not rows:
                     total_left = count_total_remaining(pull_conn)
                     if total_left > 0:
+                        item_watchdog.cancel()
                         print(f"[RETRY] DB says {total_left} items left. Wait 10s...")
                         time.sleep(10)
                         continue
@@ -342,6 +362,7 @@ def run_remaining_worker(worker_name: str):
                         print("[Selenium] build_driver() created for Mercari Shops")
 
                     process_status_and_sync(work_conn, page, driver, row, worker_name)
+                    item_watchdog.cancel()
                     processed_count += 1
                     if processed_count >= MAX_PER_RUN:
                         break 
@@ -349,6 +370,8 @@ def run_remaining_worker(worker_name: str):
 
             # MAX_PER_RUN に達したら exit 1 で終了
             print(f"[INFO] Reached {MAX_PER_RUN} items. Restarting for memory refresh...")
+            # 終了処理（browser.close() 等）も戻らない場合に備え、解除せずに exit へ進む
+            start_watchdog(CHECK_ITEM_WATCHDOG_TIMEOUT_SEC, "check_remaining: 終了処理が戻りませんでした")
             browser.close()
             # 一時ファイルの削除は check_remaining_ebay.sh が、この実行専用の TMPDIR だけを対象に行う
             # （以前の find /tmp -mindepth 1 -delete は他プロセスの一時領域や tmux ソケットまで消していた）。
