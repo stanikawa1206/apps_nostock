@@ -198,7 +198,11 @@ def build_mercari_url(vendor_name: str, sku: str) -> str:
     return f"https://jp.mercari.com/item/{sku}"
 
 def count_total_remaining(conn):
-    """DB全体で、まだ処理が必要な件数が何件あるかを確認する"""
+    """DB全体で、まだ処理が必要な件数が何件あるかを確認する
+
+    pull_remaining_targets() と対象条件を一致させること（ロック条件を除く）。
+    ここで数えるのに pull で取れない行があると、残件が減らず永久RETRYになる。
+    """
     with conn.cursor() as cur:
         cur.execute("""
             SELECT COUNT(*)
@@ -214,6 +218,11 @@ def count_total_remaining(conn):
         return cur.fetchone()[0]
 
 def pull_remaining_targets(conn, worker_name: str, batch_size: int = 5):
+    # presets_lookup は LEFT JOIN にする。INNER JOIN だと、ブランド無効化などで
+    # presets_lookup から消えた preset の既存出品が取得できなくなる一方、
+    # count_total_remaining() / daily_check の待機ではカウントされ続けるため、
+    # 残件が減らず永久待機になる（2026-10-07 オリエント135件で発生）。
+    # presetなしの行は has_preset=False とし、在庫チェックだけ行う（価格改定はしない）。
     sql = f"""
         ;WITH cte AS (
             SELECT TOP ({batch_size})
@@ -224,12 +233,13 @@ def pull_remaining_targets(conn, worker_name: str, batch_size: int = 5):
                 v.preset,
                 p.mode,
                 p.low_usd_target,
-                p.high_usd_target
+                p.high_usd_target,
+                p.preset AS lookup_preset
             FROM trx.vendor_item AS v WITH (UPDLOCK, ROWLOCK, READPAST)
             INNER JOIN trx.listings AS l
                 ON l.vendor_name    = v.vendor_name
                AND l.vendor_item_id = v.vendor_item_id
-            INNER JOIN mst.presets_lookup AS p
+            LEFT JOIN mst.presets_lookup AS p
                 ON p.preset = v.preset
             WHERE
                 l.is_deleted = 0
@@ -254,7 +264,8 @@ def pull_remaining_targets(conn, worker_name: str, batch_size: int = 5):
             cte.preset,
             cte.mode,
             cte.low_usd_target,
-            cte.high_usd_target
+            cte.high_usd_target,
+            cte.lookup_preset
         FROM trx.vendor_item AS v
         INNER JOIN cte
             ON v.vendor_name     = cte.vendor_name
@@ -271,6 +282,7 @@ def pull_remaining_targets(conn, worker_name: str, batch_size: int = 5):
 
     result = []
     for row in rows:
+        has_preset = row[8] is not None
         result.append({
             "vendor_name": row[0],
             "vendor_item_id": row[1],
@@ -278,8 +290,9 @@ def pull_remaining_targets(conn, worker_name: str, batch_size: int = 5):
             "listing_id": row[3],
             "preset": row[4],
             "mode": row[5],
-            "low_usd_target": float(row[6]),
-            "high_usd_target": float(row[7]),
+            "low_usd_target": float(row[6]) if has_preset else None,
+            "high_usd_target": float(row[7]) if has_preset else None,
+            "has_preset": has_preset,
         })
 
     return result
@@ -425,9 +438,30 @@ def process_status_and_sync(
         old_price = get_vendor_item_price(conn, vendor_name, sku)
 
         # =====================
+        # 3'. presetなし（presets_lookup に無い既存出品）& 販売中
+        # =====================
+        # mode / low・high_usd_target が無いため価格計算・価格帯判定・eBay価格改定は行わない。
+        # vendor_item.price も更新しない（preset復旧後の初回チェックで価格差を検出し、
+        # 通常どおり価格改定・価格帯判定が行われるようにするため）。status だけ更新する。
+        # 終了系ステータスの場合は下の 5. で従来どおり eBay 削除される。
+        if not row["has_preset"] and status == "販売中":
+            print(
+                f"[NO_PRESET] sku={sku} preset={row['preset']} account={row['account']} "
+                f"price_jpy={price_jpy} old_price={old_price} → 価格改定なし・出品維持",
+                flush=True,
+            )
+            update_vendor_item_price_and_status(
+                conn,
+                vendor_name,
+                sku,
+                None,
+                status,
+            )
+
+        # =====================
         # 3. 販売中 & 価格取得成功
         # =====================
-        if status == "販売中" and price_jpy is not None:
+        elif status == "販売中" and price_jpy is not None:
 
             # ---- 価格変更あり ----
             if old_price is None or old_price != price_jpy:

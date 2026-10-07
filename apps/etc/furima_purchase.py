@@ -64,6 +64,7 @@ import subprocess
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import date, datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
@@ -127,6 +128,9 @@ ESTIMATED_ARRIVAL_STATUS = "到着予定"
 # フリマ側の再スクレイプ結果（☆出荷可能等）で無条件に上書き＝後退してしまう
 # 実害（発送日が入っているのにeBayステータスが☆出荷可能へ戻る）が発生していた。
 # 「出荷済み」はフリマ側進捗より後の段階のため、既存の最上位(3)より高いランクとする。
+# 【2026-10-03修正】fetch_orders_ebay.pyが日常へ同期するeBay出荷後のstatus（配達済み等）も
+# 未定義(-1)だったため、sync_carrier_tracking_to_daily()の配達完了検知で☆出荷可能へ
+# 戻されていた（80件で確認）。出荷済みと同じランク4とする。
 _STATUS_RANK = {
     "【購入済】": 0,
     "連絡あり": 0,
@@ -136,6 +140,14 @@ _STATUS_RANK = {
     "☆出荷可能": 3,
     "☆到着済": 3,
     "出荷済み": 4,
+    "配送遅延": 4,
+    "配達済み": 4,
+    "返金済み": 4,
+    "要確認": 4,
+    "INAD申告": 4,
+    "未着申告": 4,
+    "返品申請中": 4,
+    "返品返送中": 4,
 }
 
 # 【2026-09-10 trx.vendor_purchase廃止に伴い追加】このプログラムの管理外・後工程の
@@ -408,6 +420,19 @@ def update_daily_tracking_info(access_conn, order_id: str, tracking_number, carr
         access_cur.close()
 
     return updated
+
+
+def _daily_has_tracking(access_conn, order_id: str) -> bool:
+    """
+    【2026-10-06追加】日常に送り状番号・配送会社が既に保存済みかどうか。
+    保存済みの注文は、mercari_get_tracking_info()で送り状番号の表示を待つ必要がないため、
+    その判定に使う（Accessへの軽い問い合わせのみ）。
+    """
+    with access_conn.cursor() as cur:
+        row = cur.execute(
+            f"SELECT tracking_number, carrier FROM {ACCESS_TABLE} WHERE 注文ID = ?", order_id
+        ).fetchone()
+    return bool(row and row[0] and row[1])
 
 
 def _get_current_ebay_status(access_conn, order_id: str):
@@ -2326,6 +2351,15 @@ def _capture_mercari_api_responses(driver, order_id: str, port: int = MERCARI_DE
                 url = p["response"]["url"]
                 for w in want:
                     if w in url and w not in bodies:
+                        # 【2026-10-06追加】別注文の応答の取り違え防止。応答URLのitem_idが
+                        # 現在処理中のorder_idと一致するものだけを採用する（一致しない応答は
+                        # 本文も取得しない）。全く届かなければ従来通り下の「捕捉に失敗」になる。
+                        resp_item_id = urllib.parse.parse_qs(
+                            urllib.parse.urlparse(url).query).get("item_id", [""])[0]
+                        if resp_item_id != order_id:
+                            print(f"WARN: [{order_id}] 別注文のAPI応答を検出したため採用しません: "
+                                  f"api={w} item_id={resp_item_id!r} url={url}")
+                            continue
                         pending_request_ids[p["requestId"]] = w
             elif method == "Network.loadingFinished":
                 req_id = data["params"]["requestId"]
@@ -2339,6 +2373,22 @@ def _capture_mercari_api_responses(driver, order_id: str, port: int = MERCARI_DE
         missing = [w for w in want if w not in bodies]
         if missing:
             raise RuntimeError(f"APIレスポンスの捕捉に失敗しました: {missing}")
+
+        # 【2026-10-06追加】応答本文側でも注文IDを照合する（実機確認済み:
+        # transaction_evidences/get は data.item_id、get_messages は各メッセージの item_id に
+        # 注文IDが入る）。一致しなければ採用せず例外にする（呼び出し元の既存リトライに乗る）。
+        evidence_item_id = (bodies[EVIDENCE_API_URL_SUBSTR].get("data") or {}).get("item_id")
+        if evidence_item_id != order_id:
+            print(f"WARN: [{order_id}] transaction_evidences/get の応答本文のitem_idが一致しないため"
+                  f"採用しません: item_id={evidence_item_id!r}")
+            raise RuntimeError(f"別注文のAPI応答を検出しました（evidence item_id={evidence_item_id!r}）")
+        # メッセージ0件の場合は本文に注文IDが無いため、応答URLのitem_id照合（上記）のみで判定する。
+        other_ids = {m.get("item_id") for m in (bodies[MESSAGES_API_URL_SUBSTR].get("data") or [])
+                     if isinstance(m, dict) and "item_id" in m and m.get("item_id") != order_id}
+        if other_ids:
+            print(f"WARN: [{order_id}] transaction_messages/get_messages の応答本文に別注文の"
+                  f"item_idが含まれるため採用しません: {sorted(map(str, other_ids))}")
+            raise RuntimeError(f"別注文のAPI応答を検出しました（messages item_id={sorted(map(str, other_ids))}）")
 
         return {"evidence": bodies[EVIDENCE_API_URL_SUBSTR], "messages": bodies[MESSAGES_API_URL_SUBSTR]}
     finally:
@@ -2789,46 +2839,77 @@ KANTEI_BUSINESS_LABEL = "事業者送り状番号"
 KANTEI_BUSINESS_NOT_ISSUED = "まだ発行されていません"
 
 
-def mercari_get_tracking_info(driver):
-    """
-    取引ページの「送り状番号」表示から番号と配送会社を取得する。
-    未発送・あんしん鑑定で事業者送り状番号が未発行の場合などは (None, None) を返す（異常ではない）。
-    """
-    body_text = driver.find_element(By.TAG_NAME, "body").text
+# 【2026-10-06追加】送り状番号の表示待ち。取引ページの「送り状番号」欄は、
+# mercari_get_messages()が待つ取引メッセージAPIの応答より遅れて描画されるため、
+# 直後に1回だけ本文を読むと欄がまだ無く、黙って(None, None)になっていた
+# （実機不具合: m99037514093が9/28以降毎回番号未取得→ヤマト追跡の対象外→到着日空欄。
+# 再現テストでは応答直後の読み取りは5回中4回失敗、表示まではリロード後2〜3秒程度）。
+MERCARI_TRACKING_WAIT_SEC = 8
+MERCARI_TRACKING_POLL_SEC = 0.5
 
+
+def _parse_mercari_tracking_text(body_text):
+    """
+    取引ページの本文から (送り状番号, 配送会社, 状態) を返す。
+    状態: "found"（番号あり）/ "not_issued"（あんしん鑑定で事業者送り状番号が未発行）/
+          "absent"（送り状番号の表示なし）
+    """
     business_idx = body_text.find(KANTEI_BUSINESS_LABEL)
     if business_idx != -1:
         # あんしん鑑定対象。「事業者送り状番号」（鑑定事業者→購入者）だけを見る。
         # 「出品者送り状番号」（出品者→鑑定事業者）は日常への保存にも到着判定にも使わない。
-        window = body_text[business_idx: business_idx + 200]
         if KANTEI_BUSINESS_NOT_ISSUED in body_text[business_idx: business_idx + 40]:
-            return None, None
+            return None, None, "not_issued"
+        window = body_text[business_idx: business_idx + 200]
+    else:
+        idx = body_text.find("送り状番号")
+        if idx == -1:
+            return None, None, "absent"
+        window = body_text[idx: idx + 200]
 
-        m = MERCARI_TRACKING_NUMBER_RE.search(window)
-        if not m:
-            return None, None
-        tracking_number = m.group(0)
-
-        for marker, carrier in MERCARI_TRACKING_CARRIER_MARKERS:
-            if marker in window:
-                return tracking_number, carrier
-        return tracking_number, None
-
-    idx = body_text.find("送り状番号")
-    if idx == -1:
-        return None, None
-
-    window = body_text[idx: idx + 200]
     m = MERCARI_TRACKING_NUMBER_RE.search(window)
     if not m:
-        return None, None
+        return None, None, "absent"
     tracking_number = m.group(0)
 
     for marker, carrier in MERCARI_TRACKING_CARRIER_MARKERS:
         if marker in window:
-            return tracking_number, carrier
+            return tracking_number, carrier, "found"
+    return tracking_number, None, "found"
 
-    return tracking_number, None
+
+def mercari_get_tracking_info(driver, order_id: str = "", wait_for_tracking: bool = False):
+    """
+    取引ページの「送り状番号」表示から番号と配送会社を取得する。
+    未発送・あんしん鑑定で事業者送り状番号が未発行の場合などは (None, None) を返す（異常ではない）。
+
+    wait_for_tracking: 【2026-10-06追加】Trueの場合、送り状番号と配送会社が表示されるまで
+        MERCARI_TRACKING_POLL_SEC間隔で最大MERCARI_TRACKING_WAIT_SEC秒待ち、取得できた時点で
+        すぐ返す。待っても取得できなければ「送り状番号取得失敗」をWARNとしてログに残す。
+        呼び出し元は、発送済み以降でまだ日常に送り状番号が無い注文の場合だけTrueにする
+        （発送前・保存済みの注文に不要な待機を入れないため）。
+    """
+    deadline = time.time() + (MERCARI_TRACKING_WAIT_SEC if wait_for_tracking else 0)
+    while True:
+        body_text = driver.find_element(By.TAG_NAME, "body").text
+        tracking_number, carrier, state = _parse_mercari_tracking_text(body_text)
+
+        if state == "not_issued":
+            return None, None
+        if tracking_number and carrier:
+            return tracking_number, carrier
+        if time.time() >= deadline:
+            break
+        time.sleep(MERCARI_TRACKING_POLL_SEC)
+
+    if wait_for_tracking:
+        if tracking_number:
+            print(f"WARN: 送り状番号取得失敗(配送会社不明) 注文ID={order_id} 送り状番号={tracking_number} "
+                  f"{MERCARI_TRACKING_WAIT_SEC}秒待っても配送会社を判定できませんでした")
+        else:
+            print(f"WARN: 送り状番号取得失敗 注文ID={order_id} "
+                  f"{MERCARI_TRACKING_WAIT_SEC}秒待っても送り状番号の表示を確認できませんでした")
+    return tracking_number, carrier
 
 
 # ------------------------------------------------------------
@@ -2993,7 +3074,14 @@ def mercari_main(wanted_ids=None):
                     # 追加のページアクセスは発生しない。
                     messages, evidence = mercari_get_messages(driver, vendor_item_id, return_evidence=True)
                     has_seller_message = any(m["is_from_seller"] for m in messages)
-                    tracking_number, carrier = mercari_get_tracking_info(driver)
+                    # 【2026-10-06修正】発送済み以降で、まだ日常に送り状番号が無い注文だけ表示を待つ。
+                    need_tracking_wait = (
+                        raw_status in ("発送済み", ARRIVED_STATUS)
+                        and not _daily_has_tracking(access_conn, vendor_item_id)
+                    )
+                    tracking_number, carrier = mercari_get_tracking_info(
+                        driver, order_id=vendor_item_id, wait_for_tracking=need_tracking_wait
+                    )
 
                     # 【2026-09-23追加】キャンセル申請中／キャンセル済みかどうかを一度だけ判定し、
                     # 日常.eBayステータスの更新・自動送信の両方をこの結果でゲートする
@@ -5442,6 +5530,91 @@ def _run_collection(requested_by: str = "", test_site: str = "", test_item_id: s
     _write_status(overall_state, results, started_at, finished_at=datetime.now().isoformat())
 
 
+# ============================================================================
+# 【2026-10-06追加】毎日6:00の自動実行（タスクスケジューラ FurimaPurchaseDaily → --daily）
+# Access「到着日入力」の「フリマ情報取得」ボタン（state=requestedを書き込み、
+# FurimaPurchaseCollectorWatcherが_run_collection()を実行する方式）を廃止し、
+# 同じ_run_collection()（全サイト・全件収集）を毎日自動で実行する。収集ロジックは変更しない。
+#
+# 結果ファイル（eBay dailyのfetch_orders_ebay_daily_result.txtと同じ考え方。毎回上書き・UTF-8）:
+#   1行目 = 最後に正常終了した日時（今回失敗・中断した場合は前回の正常終了日時をそのまま残す。
+#           古い日時が今回の正常終了と誤認されないよう、2行目に必ず今回の状態を書く）
+#   2行目 = エラー内容（正常終了なら「なし」。開始時に「実行中（…開始）」を書くため、
+#           途中でプロセスが落ちた場合は「実行中」のまま残り、正常終了扱いにはならない）
+#   3行目 = 今回の開始日時（Access側が「実行中」のまま長時間経過しているかを判定するため）
+# Access側（他PC含む）から読めるよう、状態ファイルと同じ共有フォルダ(Y:\)に置く。
+# ============================================================================
+DAILY_RESULT_FILE = Path(r"Y:\furima_purchase_daily_result.txt")
+DAILY_REQUESTED_BY = "DAILY"
+# 前回の収集（Ctrl+Tのテスト等）が実行中・依頼中の場合は、終わるまでこの間隔で待つ。
+# 最大待機時間を超えたら今回の自動実行は行わず、結果ファイルにエラーとして残す。
+DAILY_WAIT_FOR_IDLE_MAX_SEC = 60 * 60
+DAILY_WAIT_FOR_IDLE_POLL_SEC = 30
+
+
+def _read_daily_last_success() -> str:
+    """結果ファイルの1行目（最後に正常終了した日時）を返す。無ければ空文字。"""
+    try:
+        return DAILY_RESULT_FILE.read_text(encoding="utf-8").splitlines()[0].strip()
+    except (OSError, IndexError):
+        return ""
+
+
+def _write_daily_result(last_success: str, error: str, started_at: str) -> None:
+    """結果ファイルを一時ファイル経由で置き換える（Access側が書き込み途中を読まないようにする）。"""
+    error = error.replace("\r", " ").replace("\n", " ").strip() or "なし"
+    tmp = DAILY_RESULT_FILE.with_name(DAILY_RESULT_FILE.name + ".tmp")
+    tmp.write_text(f"{last_success}\n{error}\n{started_at}\n", encoding="utf-8")
+    os.replace(tmp, DAILY_RESULT_FILE)
+
+
+def _run_daily() -> None:
+    started_at = f"{datetime.now():%Y-%m-%d %H:%M:%S}"
+    last_success = _read_daily_last_success()
+    _write_daily_result(last_success, f"実行中（{started_at} 開始）", started_at)
+
+    try:
+        # 前回の収集が実行中・依頼中なら終わるまで待つ（二重実行しない）。
+        deadline = time.time() + DAILY_WAIT_FOR_IDLE_MAX_SEC
+        while True:
+            status = _read_status()
+            state = status.get("state")
+            if state == "running":
+                _reap_if_dead(status)  # 応答なく終了したプロセスのrunningはerrorへ確定する
+                status = _read_status()
+                state = status.get("state")
+            if state not in ("running", "requested"):
+                break
+            if time.time() >= deadline:
+                error = (f"前回のフリマ情報取得が{DAILY_WAIT_FOR_IDLE_MAX_SEC // 60}分以上終了しないため、"
+                         f"今回の自動実行は行いませんでした（state={state}、"
+                         f"開始={status.get('started_at', '')}）")
+                print(f"[daily] {error}")
+                _write_daily_result(last_success, f"エラー（{datetime.now():%Y-%m-%d %H:%M:%S}）: {error}", started_at)
+                return
+            print(f"[daily] 前回のフリマ情報取得が{state}のため待機します", flush=True)
+            time.sleep(DAILY_WAIT_FOR_IDLE_POLL_SEC)
+
+        _run_collection(requested_by=DAILY_REQUESTED_BY)
+
+        status = _read_status()
+        if status.get("state") == "done":
+            _write_daily_result(f"{datetime.now():%Y-%m-%d %H:%M:%S}", "なし", started_at)
+            print("[daily] 正常終了しました", flush=True)
+        else:
+            errors = []
+            for name, _ in SITES:
+                if status.get(name) != "success":
+                    errors.append(f"{name}: {status.get(f'{name}_error') or status.get(name) or '結果不明'}")
+            error = " / ".join(errors) or f"state={status.get('state')}"
+            _write_daily_result(last_success, f"エラー（{datetime.now():%Y-%m-%d %H:%M:%S}）: {error}", started_at)
+            print(f"[daily] エラーで終了しました: {error}", flush=True)
+    except BaseException as e:
+        _write_daily_result(
+            last_success, f"エラー（{datetime.now():%Y-%m-%d %H:%M:%S}）: {type(e).__name__}: {e}", started_at)
+        raise
+
+
 def main(poll_only: bool = False) -> None:
     """
     2026-09-13の方針転換後のエントリポイント。Pythonはmouse上でのみ実行される
@@ -5496,4 +5669,10 @@ if __name__ == "__main__":
     _poll_only = "--poll-only" in sys.argv
     if _poll_only:
         sys.argv.remove("--poll-only")
-    main(poll_only=_poll_only)
+    # 【2026-10-06追加】毎日6:00の自動実行（--poll-onlyと同じ理由でsys.argvから取り除く）
+    _daily = "--daily" in sys.argv
+    if _daily:
+        sys.argv.remove("--daily")
+        _run_daily()
+    else:
+        main(poll_only=_poll_only)

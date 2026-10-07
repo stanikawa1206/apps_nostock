@@ -52,7 +52,6 @@ def main():
             "low_usd_target": p["low_usd_target"],
             "high_usd_target": p["high_usd_target"],
             "status": "sold_out|trading",
-            "max_pages": 3,                            # producer 側で固定してもOK
         }
 
         insert_job(conn, JOB_KIND, payload)

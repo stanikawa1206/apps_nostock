@@ -137,7 +137,6 @@ RAKUMA_BASE_URL = (
     "https://fril.jp/s?"
     "statuses=5,4,6"
     "&carriage=1"
-    "&official_item_type=1"
     "&order=desc"
 )
 

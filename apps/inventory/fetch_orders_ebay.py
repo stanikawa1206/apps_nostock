@@ -560,8 +560,10 @@ ACCESS_EBAY_STATUS_SYNC_TARGETS = {
 }
 
 # 日常.eBayステータスがこの値のレコードは上書きしない（在庫管理の別ワークフローで手動設定する値。
-# 2026-09-27、ユーザー指示）。
-ACCESS_EBAY_STATUS_SYNC_PROTECTED = {"◎有在庫"}
+# 2026-09-27、ユーザー指示）。GA鑑定待ちはeBay上は出荷済み(鑑定センター宛)でも人が管理する値のため
+# 保護する。在庫切れ・キャンセルも人が設定する値のため保護する（いずれも2026-10-03、ユーザー指示）。
+# 日常.発送日の補完もこれらのレコードには行わない。
+ACCESS_EBAY_STATUS_SYNC_PROTECTED = {"◎有在庫", "GA鑑定待ち", "在庫切れ", "キャンセル"}
 
 # daily/backfillの最後に日常.eBayステータス同期を行うか。
 # 仕入側（furima_purchase.py等）も同じ日常.eBayステータスを独自の値・進行度ランクで読み書き
@@ -581,9 +583,10 @@ def sync_ebay_status_to_access(
     あり得るためorder_idだけでは紐付けない。前後空白の補正などの推測による突き合わせは行わない。
     日常側で同一キーが複数行ある場合は1対1で対応できないため更新しない。
     片方にしか存在しないレコードは何もしない（新規作成・削除・補完はしない）。
-    日常.eBayステータスがACCESS_EBAY_STATUS_SYNC_PROTECTED（◎有在庫）のレコードは上書きしない。
+    日常.eBayステータスがACCESS_EBAY_STATUS_SYNC_PROTECTED（◎有在庫・GA鑑定待ち・在庫切れ・キャンセル）のレコードは上書きしない。
+    日常側の配送進捗が後退する更新（配達済み→出荷済み等、_DELIVERY_RANK基準）は行わない（2026-10-03追加）。
     戻り値: 集計dict（matched/changed/changed_by_status/not_in_access/duplicate_in_access/
-    protected_in_access/not_target_status/unchanged/errors）。"""
+    protected_in_access/regression_in_access/not_target_status/unchanged/errors）。"""
     cur = cn.cursor()
     cur.execute("SELECT order_id, ebay_id, status FROM trx.ebay_orders")
     db_rows = cur.fetchall()
@@ -594,7 +597,7 @@ def sync_ebay_status_to_access(
     stats = {
         "target": len(db_rows), "matched": 0, "changed": 0, "unchanged": 0,
         "changed_by_status": {}, "not_target_status": 0, "not_in_access": 0,
-        "duplicate_in_access": 0, "protected_in_access": 0, "errors": 0,
+        "duplicate_in_access": 0, "protected_in_access": 0, "regression_in_access": 0, "errors": 0,
     }
     conn = None
     try:
@@ -626,6 +629,15 @@ def sync_ebay_status_to_access(
                 continue
             if access_statuses[0] in ACCESS_EBAY_STATUS_SYNC_PROTECTED:
                 stats["protected_in_access"] += 1
+                continue
+            current = access_statuses[0]
+            if (current in _DELIVERY_RANK and status in _DELIVERY_RANK
+                    and _DELIVERY_RANK[status] < _DELIVERY_RANK[current]):
+                stats["regression_in_access"] += 1
+                log.info(
+                    f"[ebay_status] 日常の配送進捗が後退するため更新しません: order_id={order_id} ebay_id={ebay_id} "
+                    f"{current} -> {status}"
+                )
                 continue
             stats["matched"] += 1
             if access_statuses[0] == status:
@@ -670,6 +682,88 @@ def sync_ebay_status_to_access(
             except Exception:
                 pass
     log.info(f"[ebay_status][サマリ] dry_run={dry_run} {stats}")
+    return stats
+
+
+def sync_shipped_date_to_access(shipped_by_key: dict[tuple[str, str], datetime], dry_run: bool = True) -> dict:
+    """eBay APIの実出荷日時(shippedDate、UTC)をJSTの日付に変換し、Access「日常」.発送日が空欄の場合だけ補完する
+    （2026-10-03追加、ユーザー指示）。人が入力済みの発送日は上書きしない。
+    shipped_by_key: {(order_id, ebay_id): 出荷日時(aware)}。
+    対応キーはsync_ebay_status_to_accessと同じ 日常(amazon注文番号, eBayID) の完全一致で、
+    同一キーが複数行ある場合は更新しない。eBayステータスがACCESS_EBAY_STATUS_SYNC_PROTECTEDの
+    レコードも更新しない。既存の発送日に合わせ日付のみ（時刻0:00）で書き込む。"""
+    stats = {
+        "target": len(shipped_by_key), "filled": 0, "already_filled": 0, "not_in_access": 0,
+        "duplicate_in_access": 0, "protected_in_access": 0, "errors": 0,
+    }
+    conn = None
+    try:
+        conn = pyodbc.connect(
+            r"Driver={Microsoft Access Driver (*.mdb, *.accdb)};"
+            r"DBQ=\\MOUSE\My Documents\日常せどり\ヤフオクDB.accdb;",
+            timeout=5,
+        )
+        acur = conn.cursor()
+        acur.execute("SELECT amazon注文番号, eBayID, eBayステータス, 発送日 FROM 日常 WHERE amazon注文番号 IS NOT NULL")
+        access_by_key: dict[tuple[str, str], list] = {}
+        for order_no, ebay_item_id, ebay_status, ship_day in acur.fetchall():
+            access_by_key.setdefault((order_no, ebay_item_id), []).append((ebay_status, ship_day))
+
+        for (order_id, ebay_id), shipped_at in shipped_by_key.items():
+            rows = access_by_key.get((order_id, ebay_id))
+            if not rows:
+                stats["not_in_access"] += 1
+                continue
+            if len(rows) > 1:
+                stats["duplicate_in_access"] += 1
+                continue
+            ebay_status, ship_day = rows[0]
+            if ship_day is not None:
+                stats["already_filled"] += 1
+                continue
+            if ebay_status in ACCESS_EBAY_STATUS_SYNC_PROTECTED:
+                stats["protected_in_access"] += 1
+                continue
+            jst_day = datetime.combine(shipped_at.astimezone(_JST).date(), datetime.min.time())
+            if dry_run:
+                stats["filled"] += 1
+                log.info(
+                    f"[ship_date][DRY-RUN] 日常.発送日補完予定: order_id={order_id} ebay_id={ebay_id} "
+                    f"eBayステータス={ebay_status} 発送日={jst_day:%Y-%m-%d} (shippedDate={shipped_at.isoformat()})"
+                )
+                continue
+            try:
+                acur.execute(
+                    "UPDATE 日常 SET 発送日 = ? WHERE amazon注文番号 = ? AND eBayID = ? AND 発送日 IS NULL",
+                    jst_day, order_id, ebay_id,
+                )
+                if acur.rowcount != 1:
+                    conn.rollback()
+                    stats["errors"] += 1
+                    log.error(
+                        f"[ship_date] 更新行数が1行ではないため取り消しました(rowcount={acur.rowcount}): "
+                        f"order_id={order_id} ebay_id={ebay_id}"
+                    )
+                    continue
+                conn.commit()
+                stats["filled"] += 1
+                log.info(
+                    f"[ship_date] 日常.発送日補完: order_id={order_id} ebay_id={ebay_id} "
+                    f"発送日={jst_day:%Y-%m-%d} (shippedDate={shipped_at.isoformat()})"
+                )
+            except Exception:
+                stats["errors"] += 1
+                log.error(f"[ship_date] Access更新失敗: order_id={order_id} ebay_id={ebay_id}", exc_info=True)
+    except Exception:
+        stats["errors"] += 1
+        log.error("[ship_date] Access接続・読込に失敗しました", exc_info=True)
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    log.info(f"[ship_date][サマリ] dry_run={dry_run} {stats}")
     return stats
 
 
@@ -3380,9 +3474,23 @@ def run_daily(dry_run: bool = True):
         # ---- 最後: Access「日常」.eBayステータスへ同期（対象はこのdailyで確認した注文） ----
         if ACCESS_EBAY_STATUS_SYNC_ENABLED:
             sync_ebay_status_to_access(cn, keys=[(p["order_id"], p["ebay_id"]) for p in pending], dry_run=dry_run)
+        # ---- 最後: Access「日常」.発送日が空欄のものだけeBayの実出荷日(JST)で補完 ----
+        sync_shipped_date_to_access(
+            {(p["order_id"], p["ebay_id"]): p["result"]["shipped_at"] for p in pending if p["result"].get("shipped_at")},
+            dry_run=dry_run,
+        )
     finally:
         cn.close()
     log.info("daily処理 完了")
+
+
+# dailyの最終実行結果（Accessフォーム「ebay照会」が読んで表示する。最新1回分のみ・毎回上書き）
+# 1行目=完了日時、2行目以降=エラー内容（例外がなければ「なし」）。UTF-8。
+DAILY_RESULT_PATH = Path(r"D:\apps_nostock\logs\fetch_orders_ebay_daily_result.txt")
+
+
+def write_daily_result(error: str) -> None:
+    DAILY_RESULT_PATH.write_text(f"{datetime.now():%Y-%m-%d %H:%M:%S}\n{error}\n", encoding="utf-8")
 
 
 # --------------------------------------------------
@@ -3652,7 +3760,14 @@ if __name__ == "__main__":
     if args.mode == "realtime":
         run_realtime(once=args.once, dry_run=not args.live)
     elif args.mode == "daily":
-        run_daily(dry_run=not args.live)
+        try:
+            run_daily(dry_run=not args.live)
+        except Exception as e:
+            if args.live:
+                write_daily_result(f"{type(e).__name__}: {e}")
+            raise
+        if args.live:
+            write_daily_result("なし")
     elif args.mode == "backfill":
         run_backfill(
             dry_run=not args.live, target=args.target, sync_to_access=not args.no_access_sync,

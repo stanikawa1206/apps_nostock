@@ -105,7 +105,7 @@ EXIT_AFTER_DELETE = False
 # ★ 対策(10): swap警告を出すか（Linuxのみ）
 CHECK_SWAP = (os.environ.get("CHECK_SWAP", "1") == "1")
 
-MAX_PAGES = 2
+SOLD_MAX_PAGES = 2
 PAUSE = 0.6
 SIMULATE_DELETE = False
 
@@ -685,8 +685,8 @@ def run_fetch_sold_ebay(page, start_page, payload: dict, job_id: int) -> Tuple[i
     try:
         while True:
             write_status(job_id, page_idx + 1)
-            if page_idx >= MAX_PAGES:
-                print(f"[STOP] reached MAX_PAGES={MAX_PAGES}", flush=True)
+            if page_idx >= SOLD_MAX_PAGES:
+                print(f"[STOP] reached SOLD_MAX_PAGES={SOLD_MAX_PAGES}", flush=True)
                 break
 
             target_url = page_url(base_url, page_idx)
@@ -980,10 +980,6 @@ def run_fetch_active_rakuma(payload: dict, job_id: int) -> Tuple[int, int]:
 
             print(f"[PAGE {page_idx+1} RESULT] upserted={len(rows)}", flush=True)
 
-            if MAX_PAGES and (page_idx + 1) >= MAX_PAGES:
-                print(f"[STOP] reached MAX_PAGES={MAX_PAGES}", flush=True)
-                break
-
             elapsed = time.time() - page_start
             TARGET = 8.0
             if elapsed < TARGET:
@@ -1000,7 +996,7 @@ def run_fetch_active_rakuma(payload: dict, job_id: int) -> Tuple[int, int]:
                 pass
 
     print(f"[SCRAPE END][RAKUMA] preset={preset}", flush=True)
-    return page_idx + 1, total_items
+    return page_idx, total_items
 
 
 # ============================================================
@@ -1044,8 +1040,8 @@ def run_fetch_sold_rakuma(payload: dict, job_id: int) -> Tuple[int, int]:
     try:
         while True:
             write_status(job_id, page_idx + 1)
-            if page_idx >= MAX_PAGES:
-                print(f"[STOP] reached MAX_PAGES={MAX_PAGES}", flush=True)
+            if page_idx >= SOLD_MAX_PAGES:
+                print(f"[STOP] reached SOLD_MAX_PAGES={SOLD_MAX_PAGES}", flush=True)
                 break
 
             target_url = rakuma_page_url(base_url, page_idx)

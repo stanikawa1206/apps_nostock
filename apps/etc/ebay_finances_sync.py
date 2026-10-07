@@ -134,6 +134,12 @@ PAYOUT_SETTLE_WINDOW = timedelta(days=45)
 # 際限なく広がらないよう、探索対象は直近UNRESOLVED_LOOKBACK_CAP以内に限定する。
 UNRESOLVED_LOOKBACK_CAP = timedelta(days=180)
 
+# 取得開始日を固定するアカウント。これより前のデータを再登録させないため、
+# DBの状態に関係なく常にこの日時から取得する。
+FIXED_SYNC_START = {
+    "貴文": datetime(2026, 3, 6, tzinfo=timezone.utc),
+}
+
 # --------------------------------------------------
 # アカウント一覧
 # --------------------------------------------------
@@ -144,7 +150,6 @@ def load_accounts() -> list[str]:
         cur.execute("""
             SELECT account
             FROM mst.ebay_accounts
-            WHERE is_excluded = 0
             ORDER BY account
         """)
         return [row[0] for row in cur.fetchall()]
@@ -177,6 +182,9 @@ def get_unresolved_floor(cn, account: str) -> Optional[datetime]:
 
 
 def get_sync_start(cn, account: str, record_type: str) -> datetime:
+    if account in FIXED_SYNC_START:
+        return FIXED_SYNC_START[account]
+
     cur = cn.cursor()
     cur.execute("""
         SELECT MAX(transaction_date)
@@ -225,6 +233,9 @@ def _fetch_paginated(url: str, headers: dict, params: dict, data_key: str, label
             log.warning(f"[{label}] レート制限 - 5秒待機してリトライ")
             time.sleep(5)
             continue
+        # 該当期間にデータが1件も無い場合、Finances APIは本文なしの204を返す（実測）
+        if r.status_code == 204:
+            break
         r.raise_for_status()
         data = r.json()
 

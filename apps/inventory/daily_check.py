@@ -182,6 +182,84 @@ DEBUG_STOP_AFTER_FIRST_INVENTORY = False
 ############################################
 
 # ======================
+# DB接続断からの再接続
+# ======================
+# DB_SERVER=sqlserver はこのPC自身のTailscale IPを指しているため、Tailscaleが
+# アダプタを再設定すると（2026-10-06 16:10:14〜16:10:40、約26秒）、ローカルの
+# SQL Serverへの接続でも 08S01 で全切断され、daily_check.py全体が終了していた。
+# SQLSTATE 08xxx（通信・接続エラー）の場合だけ、待機→再接続→その処理単位を
+# 最初からやり直す。それ以外のエラーは従来どおりそのまま送出する。
+DB_RECONNECT_WAIT_SEC = 10
+DB_RECONNECT_MAX_ATTEMPTS = 30  # 10秒×30回 ≒ 5分間つながらなければ諦めて例外を送出
+DB_OPERATION_MAX_RETRIES = 5    # 再接続には成功したのに同じ処理が接続エラーを繰り返す場合の上限
+
+
+def _is_db_connection_error(e: pyodbc.Error) -> bool:
+    return bool(e.args) and str(e.args[0]).startswith("08")
+
+
+class ReconnectingConnection:
+    """
+    pyodbc接続を保持し、接続断時に張り直せるようにするラッパー。
+    cursor()/commit()/rollback()/close()/autocommit は保持中の接続へそのまま委譲するため、
+    既存のDBアクセス関数は conn として受け取ってそのまま使える。
+    """
+
+    def __init__(self):
+        self._conn = get_sql_server_connection()
+
+    @property
+    def autocommit(self):
+        return self._conn.autocommit
+
+    @autocommit.setter
+    def autocommit(self, value):
+        self._conn.autocommit = value
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def _reconnect(self):
+        # 切断前の autocommit 設定を新しい接続にも引き継ぐ
+        # （refresh_presets_and_clear_locks() 実行後は True になっているため）
+        autocommit = self._conn.autocommit
+        try:
+            self._conn.close()
+        except pyodbc.Error:
+            pass
+
+        for attempt in range(1, DB_RECONNECT_MAX_ATTEMPTS + 1):
+            time.sleep(DB_RECONNECT_WAIT_SEC)
+            try:
+                self._conn = get_sql_server_connection()
+                self._conn.autocommit = autocommit
+                print(f"✅ DB再接続成功（{attempt}回目）")
+                return
+            except pyodbc.Error as e:
+                if attempt == DB_RECONNECT_MAX_ATTEMPTS:
+                    raise
+                print(f"⚠️ DB再接続失敗（{attempt}/{DB_RECONNECT_MAX_ATTEMPTS}）: {e}")
+
+    def run(self, func, *args, **kwargs):
+        """
+        func(self, *args, **kwargs) を実行する。通信・接続エラーで失敗した場合は
+        再接続してから func を最初からやり直す（func は再実行しても安全な単位であること）。
+        """
+        for attempt in range(1, DB_OPERATION_MAX_RETRIES + 1):
+            try:
+                return func(self, *args, **kwargs)
+            except pyodbc.Error as e:
+                if not _is_db_connection_error(e) or attempt == DB_OPERATION_MAX_RETRIES:
+                    raise
+                print(
+                    f"⚠️ DB接続エラー（{func.__name__}）: {e}\n"
+                    f"   → {DB_RECONNECT_WAIT_SEC}秒ごとに再接続を試みます"
+                    f"（処理のやり直し {attempt}/{DB_OPERATION_MAX_RETRIES - 1}）"
+                )
+                self._reconnect()
+
+
+# ======================
 # 共通関数
 # ======================
 def run_script(path: Path, timeout: float | None = None) -> tuple[int, str]:
@@ -490,17 +568,89 @@ def _fetch_count_with_deadlock_retry(cur, sql):
             time.sleep(DEADLOCK_RETRY_WAIT_SEC)
 
 
+def notify_no_preset_listings(conn):
+    """
+    mst.presets_lookup に存在しない preset を持つ既存eBay出品（is_deleted=0）を集計し、
+    1件以上あれば1通のメールにまとめて通知する。
+
+    check_remaining は presetなしの出品も在庫チェックだけは続ける（価格改定はしない）。
+    ブランド無効化等が意図的なら既存出品の終了を、誤りなら preset の復旧を判断するための通知。
+    ブランドは preset 名の先頭が brand_name_ja と一致するもの（最長一致）から推定する。
+    戻り値: presetなし出品の件数
+    """
+    cur = conn.cursor()
+    rows = cur.execute("""
+        SELECT
+            ISNULL(v.preset, N'(NULL)') AS preset,
+            l.account,
+            b.brand_id,
+            b.brand_name_ja,
+            b.is_active,
+            COUNT(*) AS cnt
+        FROM trx.listings AS l
+        INNER JOIN trx.vendor_item AS v
+            ON v.vendor_name = l.vendor_name
+           AND v.vendor_item_id = l.vendor_item_id
+        LEFT JOIN mst.presets_lookup AS p
+            ON p.preset = v.preset
+        OUTER APPLY (
+            SELECT TOP (1) pb.brand_id, pb.brand_name_ja, pb.is_active
+            FROM mst.presets_brand AS pb
+            WHERE v.preset LIKE pb.brand_name_ja + N'%'
+            ORDER BY LEN(pb.brand_name_ja) DESC
+        ) AS b
+        WHERE l.is_deleted = 0
+          AND p.preset IS NULL
+        GROUP BY v.preset, l.account, b.brand_id, b.brand_name_ja, b.is_active
+        ORDER BY cnt DESC
+    """).fetchall()
+
+    total = sum(r.cnt for r in rows)
+    print(f"🔎 presetなしの既存eBay出品: {total} 件")
+    if total == 0:
+        return 0
+
+    by_preset, by_brand, by_account = {}, {}, {}
+    for r in rows:
+        by_preset[r.preset] = by_preset.get(r.preset, 0) + r.cnt
+        brand_key = (
+            f"{r.brand_name_ja}（brand_id={r.brand_id}, is_active={int(r.is_active)}）"
+            if r.brand_id is not None else "（ブランド特定不可）"
+        )
+        by_brand[brand_key] = by_brand.get(brand_key, 0) + r.cnt
+        by_account[r.account] = by_account.get(r.account, 0) + r.cnt
+
+    def fmt(d):
+        return "\n".join(f"  {k}: {v} 件" for k, v in sorted(d.items(), key=lambda kv: -kv[1]))
+
+    body = (
+        f"mst.presets_lookup に存在しない preset の既存eBay出品が {total} 件あります。\n"
+        "在庫チェック（売り切れ等の削除）は継続していますが、価格改定は行っていません。\n"
+        "ブランド/presetの停止が意図的なら既存出品の扱いを、誤りなら preset の復旧を判断してください。\n\n"
+        f"■ ブランド別\n{fmt(by_brand)}\n\n"
+        f"■ アカウント別\n{fmt(by_account)}\n\n"
+        f"■ preset別\n{fmt(by_preset)}\n"
+    )
+    print(body)
+    if send_mail(f"【要確認】presetなしの既存eBay出品 {total}件", body):
+        print("📧 presetなし出品の通知メール送信成功")
+    else:
+        print("❌ presetなし出品の通知メール送信失敗")
+    return total
+
+
 def wait_until_remaining_exhausted(conn):
     """
     remaining 対象がなくなるまで待機
     ＋ 処理件数を返す
+
+    presets_lookup の有無では絞らないこと。check_remaining_ebay.py の
+    pull_remaining_targets() は presetなしの出品も取得するため、ここで数えた行は必ず処理される。
     """
 
     print("⏳ remaining 対象がなくなるのを待機中…")
-    cur = conn.cursor()
 
-    # ★ 初期件数
-    initial_cnt = _fetch_count_with_deadlock_retry(cur, """
+    sql = """
         SELECT COUNT(*)
         FROM trx.vendor_item AS v
         INNER JOIN trx.listings AS l
@@ -513,23 +663,18 @@ def wait_until_remaining_exhausted(conn):
                 v.remaining_check_lock IS NULL
              OR v.remaining_check_lock < DATEADD(MINUTE, -15, SYSDATETIME())
           )
-    """)
+    """
+
+    # 関数全体ではなく件数取得1回ごとに再接続・再実行する
+    # （関数ごとやり直すと初期件数＝処理件数が取り直されてしまうため）
+    def fetch_count(c):
+        return _fetch_count_with_deadlock_retry(c.cursor(), sql)
+
+    # ★ 初期件数
+    initial_cnt = conn.run(fetch_count)
 
     while True:
-        cnt = _fetch_count_with_deadlock_retry(cur, """
-            SELECT COUNT(*)
-            FROM trx.vendor_item AS v
-            INNER JOIN trx.listings AS l
-                ON v.vendor_name = l.vendor_name
-               AND v.vendor_item_id = l.vendor_item_id
-            WHERE l.is_deleted = 0
-              AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')
-              AND v.remaining_check_at IS NULL
-              AND (
-                    v.remaining_check_lock IS NULL
-                 OR v.remaining_check_lock < DATEADD(MINUTE, -15, SYSDATETIME())
-              )
-        """)
+        cnt = conn.run(fetch_count)
 
         if cnt == 0:
             print("✅ remaining 対象消滅")
@@ -815,7 +960,7 @@ def run_inventory_management_round(conn, cycle_no, round_no):
         return
 
     # worker完了待ち
-    wait_until_no_pending(conn, phase_name="pre_sold")
+    conn.run(wait_until_no_pending, phase_name="pre_sold")
 
     pre_sold_end = datetime.now()
 
@@ -851,7 +996,7 @@ def run_inventory_management_round(conn, cycle_no, round_no):
         return
 
     # ②-2 worker 完了待ち（ここが本体）
-    wait_until_no_pending(conn, phase_name="active")
+    conn.run(wait_until_no_pending, phase_name="active")
 
     # ★ ここで active フェーズ完了
     active_end = datetime.now()
@@ -887,7 +1032,7 @@ def run_inventory_management_round(conn, cycle_no, round_no):
         return
 
     # ②-3-2 worker 完了待ち（ここが本体）
-    wait_until_no_pending(conn, phase_name="sold")
+    conn.run(wait_until_no_pending, phase_name="sold")
 
     # ★ ここで sold フェーズ完了
     sold_end = datetime.now()
@@ -910,7 +1055,7 @@ def run_inventory_management_round(conn, cycle_no, round_no):
     rem_start = datetime.now()
 
     # ★ 1. フラグ初期化
-    reset_remaining_flags(conn)
+    conn.run(reset_remaining_flags)
 
     # ★ 2. worker起動
     launch_remaining_workers()
@@ -919,6 +1064,9 @@ def run_inventory_management_round(conn, cycle_no, round_no):
     processed_count = wait_until_remaining_exhausted(conn)
 
     rem_end = datetime.now()
+
+    # ★ 4. presetなしの既存出品があれば1通にまとめて通知
+    conn.run(notify_no_preset_listings)
 
     extra = f"remaining 処理件数: {processed_count} 件"
 
@@ -1141,7 +1289,7 @@ def run_publish_manager(conn):
     """
 
     # publish直前に、前回までの処理ロックをクリアしておく
-    refresh_presets_and_clear_locks(conn)
+    conn.run(refresh_presets_and_clear_locks)
 
     # 開始時刻: publish_manager起動直前
     pub_start = datetime.now()
@@ -1334,10 +1482,10 @@ def main():
     disable_console_quick_edit()
     print("start")
     print(__file__)
-    conn = get_sql_server_connection()
+    conn = ReconnectingConnection()
 
     # presets一覧を準備
-    refresh_presets_lookup(conn)
+    conn.run(refresh_presets_lookup)
 
     try:
         print("=== 🧭 daily_check.py 開始（永久ループ、mst.control で停止制御） ===")
@@ -1348,7 +1496,7 @@ def main():
 
             # 1サイクル（1日分）完了直後にのみ停止判定する。
             # 在庫管理の各回転終了時（run_one_cycle内のround_noループ）では判定しない。
-            if should_stop_daily_check(conn):
+            if conn.run(should_stop_daily_check):
                 break
 
             cycle_no += 1
