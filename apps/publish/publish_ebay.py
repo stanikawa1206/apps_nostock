@@ -1177,11 +1177,11 @@ def heavy_check_detail(
         return None, debug_unavailable_dump, writes_since_commit, 1, 0
 
     # === ラクマ: 購入申請ありNG ===
-    # <span class="item__icon request-required">すぐに購入可</span> が存在しない場合、
-    # 購入申請が必要な商品のためeBay出品処理へは進めない。
+    # class="item__icon request-required"（「すぐに購入可」。タグはspanのこともdivのこともある）
+    # が存在しない場合、購入申請が必要な商品のためeBay出品処理へは進めない。
     if vendor_name == "ラクマ" and rec.get("purchase_request_required"):
         rec["listing_head"] = "NG(購入申請あり)"
-        rec["listing_detail"] = "request-required span not found"
+        rec["listing_detail"] = "request-required element not found"
         upsert_vendor_item(conn, rec)
         writes_since_commit += 1
         writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)

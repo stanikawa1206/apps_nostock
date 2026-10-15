@@ -7,10 +7,16 @@ rakuma_item_status.py — ラクマ(fril.jp)商品詳細ページ取得・パー
   heavy_check_detail / upsert_vendor_item / post_to_ebay にそのまま渡せるようにする。
 
 【購入申請の判定】
-  <span class="item__icon request-required">すぐに購入可</span>
+  class="item__icon request-required" を持つ要素（すぐに購入可」）
   が存在する → 購入申請なし（すぐ購入可能）→ 出品対象
   存在しない → 購入申請あり → 出品NG
   （class名の request-required から意味を逆推測しない。A/Bテストで確認済みの仕様）
+
+  2026-10-15追記: 当初はこの要素が <span> だったためタグ込みで
+  "span.item__icon.request-required" を判定条件にしていたが、ラクマ側のHTML変更により
+  <div class="item__icon request-required"> へ変わり、span固定のセレクタが常にマッチしなく
+  なっていた（＝常に「存在しない」＝NG(購入申請あり)と誤判定）。タグを問わずclass名のみで
+  判定するよう修正済み（".item__icon.request-required"）。
 """
 
 from __future__ import annotations
@@ -191,11 +197,16 @@ def check_rakuma_item_status(url: str) -> "tuple[str, Optional[int]]":
     - 売り切れ商品も詳細ページ自体は200で残るが、購入ボタン(a.btn_buy)が無くなり、
       代わりに <span class="type-modal__contents--button--sold">SOLD OUT</span> が表示される
       （JSON-LDのofferisAvailability等は更新されず当てにならないため使わない）
-    - <span class="item__icon request-required">すぐに購入可</span> の有無（購入申請仕様）は
-      売り切れ判定とは独立した別要素。存在しない(=購入申請あり)場合は、
-      即時購入できない状態のため、check_remaining上も「売り切れ」と同様に
-      eBay出品を終了させる対象として扱う（既存の終了系ステータス集合を変更せずに済むように
-      既存の"売り切れ"へ寄せている）。
+    - class="item__icon request-required"（「すぐに購入可」）の有無（購入申請仕様）は
+      売り切れ判定とは独立した別要素。タグは <span> のことも <div> のこともある
+      （2026-10-15: ラクマ側のHTML変更でspanからdivへ変わり、span固定のセレクタだと
+      常に「存在しない」と誤判定する事象が発生したため、タグを問わずclass名のみで判定する）。
+
+      2026-10-15追記: 「存在しない」は本来「購入申請あり」を意味する想定だったが、
+      HTML構造の変化など他の要因でも同じ見え方になり得ることが判明したため、ここでは
+      確定的に「売り切れ」として削除対象にはしない。安全側に倒し「判定不可」を返して
+      今回のチェックはスキップする（remaining_check_atも更新されず次回再判定される）。
+      結果として誤ってeBay出品を削除するより、判定を先送りする方を優先する。
     """
     html = fetch_rakuma_item_html(url)  # 404ならRakumaItemUnavailableErrorが送出される
     soup = BeautifulSoup(html, "html.parser")
@@ -205,10 +216,11 @@ def check_rakuma_item_status(url: str) -> "tuple[str, Optional[int]]":
     if sold_marker is not None or buy_button is None:
         return "売り切れ", None
 
-    purchase_ok_span = soup.select_one("span.item__icon.request-required")
-    if purchase_ok_span is None:
-        # 購入申請あり = 今は即時購入できない
-        return "売り切れ", None
+    purchase_ok_el = soup.select_one(".item__icon.request-required")
+    if purchase_ok_el is None:
+        # 購入申請ありの可能性はあるが確定できないため、売り切れ扱いにして削除してしまう
+        # 安全ではない判断は行わない（詳細は関数docstring参照）。
+        return "判定不可", None
 
     price = None
     ld = _extract_ld_json_product(soup) or {}
@@ -269,8 +281,10 @@ def parse_detail_rakuma(url: str, preset: str, vendor_name: str) -> Dict[str, An
     shipping_days = detail.get("発送日の目安")
 
     # 購入申請判定（仕様どおり: 存在=購入申請なし、不在=購入申請あり）
-    purchase_ok_span = soup.select_one("span.item__icon.request-required")
-    purchase_request_required = purchase_ok_span is None
+    # タグは<span>のことも<div>のこともあるため、タグを問わずclass名のみで判定する
+    # （2026-10-15: span固定だったため大量誤判定が発生した事象の修正。詳細はファイル冒頭docstring参照）。
+    purchase_ok_el = soup.select_one(".item__icon.request-required")
+    purchase_request_required = purchase_ok_el is None
 
     # 「N日前」等の相対表記のみ取得可能（正確な日時は取得不可のため
     # vendor_created_at/vendor_updated_at はNoneのまま呼び出し元に委ねる）
