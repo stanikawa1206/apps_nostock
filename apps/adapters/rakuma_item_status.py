@@ -273,6 +273,17 @@ def parse_detail_rakuma(url: str, preset: str, vendor_name: str) -> Dict[str, An
     html = fetch_rakuma_item_html(url)
     soup = BeautifulSoup(html, "html.parser")
 
+    # SOLD OUT判定（check_rakuma_item_status()と同じセレクタを流用、追加HTTPアクセス無し）。
+    # sold_markerの明示的な出現のみを「売り切れ」の確定条件とし、buy_buttonが単に
+    # 見つからない場合（HTML変更等でセレクタが外れた可能性も含む）は売り切れと断定せず
+    # 「判定不可」として扱う（安全のため出品は中止するが、恒久的なSOLD OUT扱いにはしない）。
+    sold_marker = soup.select_one("span.type-modal__contents--button--sold")
+    buy_button = soup.select_one("a.btn_buy")
+    if sold_marker is not None:
+        raise RakumaItemUnavailableError("sold out marker found", state="売り切れ")
+    if buy_button is None:
+        raise RakumaItemUnavailableError("buy button not found (status undetermined)", state="判定不可")
+
     ld = _extract_ld_json_product(soup) or {}
 
     title_el = soup.select_one("h1.item__name")
