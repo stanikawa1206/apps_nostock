@@ -17,6 +17,19 @@ rakuma_item_status.py — ラクマ(fril.jp)商品詳細ページ取得・パー
   <div class="item__icon request-required"> へ変わり、span固定のセレクタが常にマッチしなく
   なっていた（＝常に「存在しない」＝NG(購入申請あり)と誤判定）。タグを問わずclass名のみで
   判定するよう修正済み（".item__icon.request-required"）。
+
+【seller_idの取得方式（2026-10-16変更）】
+  旧方式: 商品詳細ページの img.user[data-original] (プロフィール画像URL) から
+  数字のユーザーID(/user/<digits>/)を抽出してseller_idとしていた。プロフィール画像が
+  未設定（デフォルトアイコン等）のセラーはページ上に数字IDが一切存在せず、
+  「解析失敗/seller_idが空」となり出品不可のまま毎日候補に戻り続けてしまう問題があった。
+
+  新方式: <a class="shop_link" href="https://fril.jp/shop/{ID}"> から取得できる
+  ショップID（32桁英数字ハッシュ、またはCyclejersey等のカスタムショップ名スラッグ）を
+  正式なseller_id として使う（フリマウォッチ側 furimawatch_2rescrape.py の
+  _SHOP_ID_RE と同じ抽出方式。実商品で安定して取得できることを確認済み）。
+  数字のユーザーIDは取得できれば seller_id2 として別途保持するが、取得できなくても
+  解析失敗にはしない（mst.seller.seller_id2、NULL可）。
 """
 
 from __future__ import annotations
@@ -45,6 +58,11 @@ RAKUMA_ITEM_CONDITION_MAP = {
 }
 
 _SELLER_ID_PATTERN = re.compile(r"/user/(\d+)/")
+
+# ショップURLのID（正式なseller_id、2026-10-16〜）。フリマウォッチ側
+# furimawatch_2rescrape.py の _SHOP_ID_RE と同じ抽出方式（href=https://fril.jp/... に
+# 限定することで、CDN上のJSアセットURL等の紛らわしい/shop/一致を除外している）。
+_SHOP_ID_PATTERN = re.compile(r'href="https://fril\.jp/shop/([A-Za-z0-9_-]+)"')
 
 # ラクマ商品詳細ページの <div class="time_ago"> 表記（例: "6分前" "約22時間前" "30日前"
 # "約1ヶ月前" "1ヶ月前" "2ヶ月前" "6ヶ月前" "2年弱前" "3年以上前" "約4年前"）を判定する。
@@ -109,7 +127,14 @@ def _extract_detail_table(soup: BeautifulSoup) -> Dict[str, str]:
     return out
 
 
-def _extract_seller_id(soup: BeautifulSoup) -> Optional[str]:
+def _extract_shop_id(html: str) -> Optional[str]:
+    """正式なseller_id（ショップURLのID）。a.shop_link が無い等で取得できなければNone。"""
+    m = _SHOP_ID_PATTERN.search(html)
+    return m.group(1) if m else None
+
+
+def _extract_seller_id_numeric(soup: BeautifulSoup) -> Optional[str]:
+    """seller_id2（数字のユーザーID）。プロフィール画像未設定のセラーは取得できずNoneになる。"""
     img = soup.select_one("img.user[data-original*='/user/']")
     if img and img.has_attr("data-original"):
         m = _SELLER_ID_PATTERN.search(img["data-original"])
@@ -303,7 +328,8 @@ def parse_detail_rakuma(url: str, preset: str, vendor_name: str) -> Dict[str, An
         "last_updated_str": last_updated_str,
         "shipping_region": shipping_region,
         "shipping_days": shipping_days,
-        "seller_id": _extract_seller_id(soup),
+        "seller_id": _extract_shop_id(html),
+        "seller_id2": _extract_seller_id_numeric(soup),
         "seller_name": _extract_seller_name(soup),
         "rating_count": _extract_rating_count(soup),
         "num_likes": _extract_num_likes(html),

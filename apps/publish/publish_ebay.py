@@ -832,28 +832,31 @@ def sanitize_title_dangerous_words(title: str) -> str:
 
 SQL_UPSERT_MST_SELLER = """
 MERGE INTO mst.seller AS tgt
-USING (VALUES (?, ?, ?, ?)) AS src (vendor_name, seller_id, seller_name, rating_count)
+USING (VALUES (?, ?, ?, ?, ?)) AS src (vendor_name, seller_id, seller_name, rating_count, seller_id2)
 ON (tgt.vendor_name = src.vendor_name AND tgt.seller_id = src.seller_id)
 WHEN MATCHED THEN
     UPDATE SET
         seller_name = COALESCE(src.seller_name, tgt.seller_name),
         rating_count = COALESCE(src.rating_count, tgt.rating_count),
+        seller_id2 = COALESCE(src.seller_id2, tgt.seller_id2),
         last_checked_at = CASE
                             WHEN src.rating_count IS NOT NULL THEN SYSDATETIME()
                             ELSE tgt.last_checked_at
                           END
 WHEN NOT MATCHED THEN
-    INSERT (vendor_name, seller_id, seller_name, rating_count, is_ng, last_checked_at)
+    INSERT (vendor_name, seller_id, seller_name, rating_count, is_ng, last_checked_at, seller_id2)
     VALUES (src.vendor_name, src.seller_id, src.seller_name, src.rating_count, 0,
-            CASE WHEN src.rating_count IS NOT NULL THEN SYSDATETIME() ELSE NULL END);
+            CASE WHEN src.rating_count IS NOT NULL THEN SYSDATETIME() ELSE NULL END, src.seller_id2);
 """
 
 def upsert_mst_seller_from_rec(conn, vendor_name: str, rec: dict) -> None:
     seller_id = (rec.get("seller_id") or "").strip()
     seller_name = (rec.get("seller_name") or "").strip() or None
     rating_count = rec.get("rating_count")
+    # seller_id2: ラクマのみ使用（数字のユーザーID。取得できなければNone）。他vendorは常にNone。
+    seller_id2 = (rec.get("seller_id2") or "").strip() or None
     with conn.cursor() as cur:
-        cur.execute(SQL_UPSERT_MST_SELLER, (vendor_name, seller_id, seller_name, rating_count))
+        cur.execute(SQL_UPSERT_MST_SELLER, (vendor_name, seller_id, seller_name, rating_count, seller_id2))
 
 # =========================
 # セラー評価数・High Risk判定：設定値の一元管理
