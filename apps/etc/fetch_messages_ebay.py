@@ -537,12 +537,14 @@ def _send_ebay_reply(account: str, listing_id: str, sender_id: str,
     if not token:
         return {"ok": False, "error": "token取得失敗"}
 
+    # ItemID はAPI仕様上Optional（省略時は RecipientID が必須）。
+    # 商品に紐付かないメッセージ(listing_id が None)では ItemID 要素ごと省略する。
+    item_xml = f"\n  <ItemID>{listing_id}</ItemID>" if listing_id else ""
     xml_body = f"""<?xml version="1.0" encoding="utf-8"?>
 <AddMemberMessageRTQRequest xmlns="urn:ebay:apis:eBLBaseComponents">
   <RequesterCredentials>
     <eBayAuthToken>{token}</eBayAuthToken>
-  </RequesterCredentials>
-  <ItemID>{listing_id}</ItemID>
+  </RequesterCredentials>{item_xml}
   <MemberMessage>
     <Body>{xml_escape(body)}</Body>
     <RecipientID>{sender_id}</RecipientID>

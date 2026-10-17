@@ -51,6 +51,7 @@
 
 from __future__ import annotations
 
+import glob
 import os
 import random
 import re
@@ -99,6 +100,48 @@ if os.name == "nt" and hasattr(sys.stdout, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8", line_buffering=True)
     except Exception:
         pass
+
+# ===== ログ保存（コンソール出力はそのまま維持しつつファイルにも保存） =====
+# 既存の print() / 判定ロジックには一切手を入れず、stdout/stderr を tee するだけ。
+# ログ保存に失敗しても在庫管理処理自体は止めない（_Tee / セットアップ全体を try/except で保護）。
+class _Tee:
+    def __init__(self, *streams):
+        self._streams = streams
+
+    def write(self, data):
+        for s in self._streams:
+            try:
+                s.write(data)
+            except Exception:
+                pass
+
+    def flush(self):
+        for s in self._streams:
+            try:
+                s.flush()
+            except Exception:
+                pass
+
+try:
+    LOG_DIR = os.path.join(str(PROJECT_ROOT), "logs")
+    os.makedirs(LOG_DIR, exist_ok=True)
+
+    _CHECK_REMAINING_PID = os.getpid()
+    _log_path = os.path.join(LOG_DIR, f"check_remaining_{_CHECK_REMAINING_PID}.log")
+    _log_file = open(_log_path, "a", encoding="utf-8", buffering=1)
+    sys.stdout = _Tee(sys.stdout, _log_file)
+    sys.stderr = _Tee(sys.stderr, _log_file)
+
+    # 30日を超えた check_remaining_*.log のみ起動時に削除（他プログラムのログには触れない）
+    _LOG_RETENTION_SEC = 30 * 24 * 60 * 60
+    for _f in glob.glob(os.path.join(LOG_DIR, "check_remaining_*.log")):
+        try:
+            if time.time() - os.path.getmtime(_f) > _LOG_RETENTION_SEC:
+                os.remove(_f)
+        except Exception:
+            pass
+except Exception:
+    pass
 
 # ===== 軽量ロガー & セーフクローズ =====
 from datetime import datetime

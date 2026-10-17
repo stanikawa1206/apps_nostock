@@ -30,6 +30,7 @@ import os
 import time
 import traceback
 import pyodbc
+import psutil  # LIMIT監視専用モード(--limit-only)の二重起動防止チェックに使用
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -89,6 +90,12 @@ VPS_LIST = [
 
 # LIMIT監視の間隔（秒）
 LIMIT_CHECK_INTERVAL_SECONDS = 5
+
+# --limit-only モード（LIMIT監視・解除だけを行う独立モード）の二重起動防止用ロックファイル。
+# publish_manager.py本来のmain()（VPS/worker起動・Git更新等を含むフル実行）とは別に、
+# daily_check.py経由のpublish_manager.pyが異常終了した場合でも、既に起動済みの8ワーカーの
+# LIMIT監視・解除だけを単独で常駐させるための応急対応として追加した。
+LIMIT_ONLY_LOCK_PATH = PROJECT_ROOT / "logs" / "publish_manager_limit_only.pid"
 
 # get_active_listings の完了待ちポーリング間隔（秒）
 ACTIVE_LISTINGS_WAIT_SECONDS = 5
@@ -923,6 +930,70 @@ def monitor_limit_accounts():
         time.sleep(LIMIT_CHECK_INTERVAL_SECONDS)
 
 
+def _ensure_no_duplicate_limit_only_monitor():
+    """
+    --limit-only モードの二重起動を防ぐ。
+    ロックファイルに記録されたPIDが現在も生きていれば起動を中止する。
+    """
+    if LIMIT_ONLY_LOCK_PATH.exists():
+        existing_pid = None
+        try:
+            existing_pid = int(LIMIT_ONLY_LOCK_PATH.read_text(encoding="utf-8").strip())
+        except (ValueError, OSError):
+            pass
+        if existing_pid and psutil.pid_exists(existing_pid):
+            raise RuntimeError(
+                f"LIMIT監視専用モード(--limit-only)は既にPID={existing_pid}で起動中のため、"
+                "二重起動を中止します。"
+            )
+
+    LIMIT_ONLY_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    LIMIT_ONLY_LOCK_PATH.write_text(str(os.getpid()), encoding="utf-8")
+
+
+def monitor_limit_accounts_forever():
+    """
+    【応急対応用・独立モード】LIMIT監視・解除だけを常駐して行う。
+
+    通常のmain()とは異なり、以下は一切実行しない:
+      - reset_close_status() / update_post_targets()（前日分クリア・post_target再計算）
+      - get_active_listings の取得
+      - run_vps() / run_local()（VPS・ローカルworkerの起動）
+      - Git更新（run_vps内のgit pullを含む。このモードでは一切のVPS操作をしない）
+
+    LIMIT検知・出品枠確保・close_reasonクリアのロジックは
+    monitor_limit_accounts() / handle_limit_account() 等と完全に共通（変更していない）。
+    通常版との違いは次の2点のみ:
+      1. is_all_accounts_finished() による終了判定を行わず、常駐し続ける
+         （8ワーカーは既に稼働中で、今後も新たにLIMITになり得るため）。
+      2. 起動時に二重起動防止チェックを行う。
+    """
+    _ensure_no_duplicate_limit_only_monitor()
+
+    _pm_log("[monitor_limit_accounts_forever] start (--limit-only mode)")
+    print("=" * 40)
+    print("=== publish_manager.py --limit-only 開始（LIMIT監視・解除専用、常駐） ===")
+    print("=" * 40)
+
+    loop_no = 0
+    while True:
+        loop_no += 1
+        _pm_log(f"[monitor_limit_accounts_forever] loop start loop_no={loop_no}")
+
+        limit_accounts = get_limit_accounts()
+
+        if limit_accounts:
+            handle_limit_accounts(limit_accounts)
+
+        auto_fix_done_accounts()
+
+        _pm_log(
+            f"[monitor_limit_accounts_forever] sleep before loop_no={loop_no} "
+            f"seconds={LIMIT_CHECK_INTERVAL_SECONDS}"
+        )
+        time.sleep(LIMIT_CHECK_INTERVAL_SECONDS)
+
+
 def main():
     print("=" * 40)
     print("=== publish_manager.py 実行開始 ===")
@@ -995,7 +1066,10 @@ def main():
 
 if __name__ == "__main__":
     try:
-        main()
+        if "--limit-only" in sys.argv:
+            monitor_limit_accounts_forever()
+        else:
+            main()
     except Exception as e:
         _pm_log(f"[__main__] UNCAUGHT EXCEPTION: {e}")
         _pm_log(traceback.format_exc())

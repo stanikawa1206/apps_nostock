@@ -91,6 +91,10 @@ AUTO_REFRESH_SECONDS = 600
 # /api/fetch の多重実行防止用ロック（自動更新と手動更新、複数タブからの同時実行をまとめて防ぐ）
 _fetch_lock = threading.Lock()
 
+# listing_id が NULL のスレッド（商品に紐付かない問い合わせ）を /api/thread のURLで表すキー。
+# フロント側はJSの null、DB側は NULL で扱い、URLに載せる時だけこのキーに変換する。
+NO_LISTING_KEY = "_none"
+
 app = Flask(__name__)
 
 HTML = """<!DOCTYPE html>
@@ -509,6 +513,12 @@ const REPLY_TEMPLATES = {
 
 // 自動更新の間隔（秒）。サーバー側の AUTO_REFRESH_SECONDS 定数から注入される。
 const AUTO_REFRESH_SECONDS = {{ auto_refresh_seconds }};
+// listing_id が null のスレッドを /api/thread のURLで表すキー。サーバー側の NO_LISTING_KEY 定数から注入される。
+const NO_LISTING_KEY = {{ no_listing_key|tojson }};
+
+function threadUrl(senderId, itemId) {
+  return '/api/thread/' + encodeURIComponent(senderId) + '/' + encodeURIComponent(itemId == null ? NO_LISTING_KEY : itemId);
+}
 
 let threads = [];
 let activeThread = null;
@@ -603,7 +613,7 @@ function renderThreads() {
 
     return `<div class="thread-item${hasOrder ? ' has-order' : ''}${isActive ? ' active' : ''}"
               data-status="${t.thread_status}" data-order="${hasOrder ? 1 : 0}"
-              onclick="openThread('${t.sender_id}','${t.listing_id}', this)">
+              onclick="openThread('${t.sender_id}',${t.listing_id == null ? 'null' : "'" + t.listing_id + "'"}, this)">
       ${thumb}
       <div class="thread-info">
         <div class="thread-sender">${t.sender_id || '不明'} <span style="font-size:12px;color:#aaa;font-weight:400;">${t.account || ''}</span></div>
@@ -643,11 +653,11 @@ function safeMsgText(str) {
 // 現在開いているスレッドの新着メッセージだけをチャット欄に追記する。
 // 返信パネル（日本語/指示/英語返信案の入力中テキスト）や選択状態には一切触れない。
 async function refreshActiveThreadMessages() {
-  if (!activeThreadSenderId || !activeThreadItemId || !activeThread) return;
+  if (!activeThreadSenderId || !activeThread) return;
 
   let data;
   try {
-    const res = await fetch('/api/thread/' + encodeURIComponent(activeThreadSenderId) + '/' + encodeURIComponent(activeThreadItemId));
+    const res = await fetch(threadUrl(activeThreadSenderId, activeThreadItemId));
     data = await res.json();
   } catch (e) {
     console.error('auto refresh (thread) error:', e);
@@ -772,7 +782,7 @@ async function openThread(senderId, itemId, el) {
   activeThreadItemId   = itemId;
   currentReplyMessageId = null;
 
-  const res = await fetch('/api/thread/' + encodeURIComponent(senderId) + '/' + encodeURIComponent(itemId));
+  const res = await fetch(threadUrl(senderId, itemId));
   const data = await res.json();
   if (data.error) { console.error('thread error:', data.error); return; }
 
@@ -1206,9 +1216,20 @@ def _build_order_prompt_section(order_info: dict) -> str:
     return "\n".join(lines) + "\n\n"
 
 
+def _thread_where(sender_id: str, listing_id, prefix: str = "") -> tuple:
+    """
+    スレッド(sender_id + listing_id)を絞り込むWHERE句とパラメータを返す。
+    listing_id が None のスレッドは `= ?` では一致しないため IS NULL で引く。
+    """
+    if listing_id is None:
+        return f"{prefix}sender_id = ? AND {prefix}listing_id IS NULL", (sender_id,)
+    return f"{prefix}sender_id = ? AND {prefix}listing_id = ?", (sender_id, listing_id)
+
+
 @app.route("/")
 def index():
-    return render_template_string(HTML, auto_refresh_seconds=AUTO_REFRESH_SECONDS)
+    return render_template_string(HTML, auto_refresh_seconds=AUTO_REFRESH_SECONDS,
+                                  no_listing_key=NO_LISTING_KEY)
 
 
 @app.route("/api/accounts")
@@ -1225,6 +1246,17 @@ def api_accounts():
     finally:
         if cur: cur.close()
         if cn: cn.close()
+
+
+def build_vendor_url(vendor_name, vendor_item_id):
+    """仕入先ボタンのURL（vendor_name で切り替え。メルカリshops・ラクマ以外は従来どおりメルカリ）"""
+    if not vendor_item_id:
+        return None
+    if vendor_name == 'メルカリshops':
+        return 'https://mercari-shops.com/products/' + vendor_item_id
+    if vendor_name == 'ラクマ':
+        return 'https://item.fril.jp/' + vendor_item_id
+    return 'https://jp.mercari.com/item/' + vendor_item_id
 
 
 @app.route("/api/threads")
@@ -1299,14 +1331,7 @@ def api_threads():
                 r['thread_status'] = '対応不要'
             else:
                 r['thread_status'] = '未返信'
-            vendor_name = r.get('vendor_name') or ''
-            vid         = r.get('vendor_item_id') or ''
-            if vendor_name == 'メルカリshops' and vid:
-                r['vendor_url'] = 'https://mercari-shops.com/products/' + vid
-            elif vid:
-                r['vendor_url'] = 'https://jp.mercari.com/item/' + vid
-            else:
-                r['vendor_url'] = None
+            r['vendor_url'] = build_vendor_url(r.get('vendor_name'), r.get('vendor_item_id'))
         return jsonify(rows)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1319,6 +1344,8 @@ def api_threads():
 def api_thread(sender_id, listing_id):
     import time
     t0 = time.time()
+    if listing_id == NO_LISTING_KEY:
+        listing_id = None
     cn = cur = None
     try:
         cn  = get_sql_server_connection()
@@ -1327,14 +1354,15 @@ def api_thread(sender_id, listing_id):
         cur = cn.cursor()
 
         # メッセージ一覧
-        cur.execute("""
+        where, params = _thread_where(sender_id, listing_id)
+        cur.execute(f"""
             SELECT message_id, sender_id, listing_id, item_title,
                    direction, received_at, body_text, body_text_ja,
                    category, auto_reply_type
             FROM trx.ebay_messages
-            WHERE sender_id = ? AND listing_id = ?
+            WHERE {where}
             ORDER BY received_at ASC
-        """, sender_id, listing_id)
+        """, *params)
         cols = [d[0] for d in cur.description]
         msgs = [dict(zip(cols, row)) for row in cur.fetchall()]
         t2 = time.time()
@@ -1361,8 +1389,9 @@ def api_thread(sender_id, listing_id):
                 m['negotiation_reason']         = display['reason']
 
         # 仕入先情報（account はメッセージから取得）
-        cur.execute("""
-            SELECT TOP 1 l.vendor_item_id, vi.vendor_name, vi.image_url1
+        where, params = _thread_where(sender_id, listing_id, prefix="em.")
+        cur.execute(f"""
+            SELECT TOP 1 l.vendor_item_id, l.vendor_name, vi.image_url1
             FROM trx.ebay_messages em
             JOIN trx.listings l
               ON l.account    = em.account
@@ -1370,9 +1399,9 @@ def api_thread(sender_id, listing_id):
             LEFT JOIN trx.vendor_item vi
               ON vi.vendor_item_id = l.vendor_item_id
              AND vi.vendor_name    = l.vendor_name
-            WHERE em.sender_id = ? AND em.listing_id = ?
+            WHERE {where}
             ORDER BY l.is_deleted ASC, l.deleted_at DESC
-        """, sender_id, listing_id)
+        """, *params)
         row = cur.fetchone()
         t3 = time.time()
         print(f"[thread] 仕入先情報取得: {t3-t2:.3f}s")
@@ -1381,12 +1410,7 @@ def api_thread(sender_id, listing_id):
         vendor_name    = row[1] if row else None
         image_url1     = row[2] if row else None
 
-        if vendor_name == 'メルカリshops' and vendor_item_id:
-            vendor_url = 'https://mercari-shops.com/products/' + vendor_item_id
-        elif vendor_item_id:
-            vendor_url = 'https://jp.mercari.com/item/' + vendor_item_id
-        else:
-            vendor_url = None
+        vendor_url = build_vendor_url(vendor_name, vendor_item_id)
 
         # 注文有無（この相手・この商品に対する注文が trx.ebay_orders に存在するか）
         order_info = _fetch_order_info(cur, sender_id, listing_id)
@@ -1433,11 +1457,12 @@ def api_generate(message_id):
 
             sender_id, listing_id, item_title = row
 
-            cur.execute("""
+            where, params = _thread_where(sender_id, listing_id)
+            cur.execute(f"""
                 SELECT direction, body_text FROM trx.ebay_messages
-                WHERE sender_id = ? AND listing_id = ?
+                WHERE {where}
                 ORDER BY received_at ASC
-            """, sender_id, listing_id)
+            """, *params)
             history = cur.fetchall()
 
             # 購入前 / 購入後を区別してAIに返信案を作らせるため、注文有無を取得する。
@@ -1634,24 +1659,35 @@ def api_unskip(message_id):
         if cn: cn.close()
 
 
-def _send_ebay_reply(account: str, listing_id: str, sender_id: str,
-                     parent_message_id: str, body: str) -> dict:
-    token = get_access_token_new(account)
-    if not token:
-        return {"ok": False, "error": "token取得失敗"}
-
-    xml_body = f"""<?xml version="1.0" encoding="utf-8"?>
+def _build_reply_xml(token: str, listing_id, sender_id: str,
+                     parent_message_id: str, body: str) -> bytes:
+    """
+    AddMemberMessageRTQ のリクエストXMLを組み立てる。
+    ItemID はAPI仕様上Optionalで、省略時は RecipientID が必須（常に付与している）。
+    商品に紐付かないメッセージ(listing_id が None)への返信では ItemID 要素ごと省略し、
+    ParentMessageID + RecipientID で返信先を特定する。
+    """
+    item_xml = f"\n  <ItemID>{listing_id}</ItemID>" if listing_id else ""
+    return f"""<?xml version="1.0" encoding="utf-8"?>
 <AddMemberMessageRTQRequest xmlns="urn:ebay:apis:eBLBaseComponents">
   <RequesterCredentials>
     <eBayAuthToken>{token}</eBayAuthToken>
-  </RequesterCredentials>
-  <ItemID>{listing_id}</ItemID>
+  </RequesterCredentials>{item_xml}
   <MemberMessage>
     <Body>{xml_escape(body)}</Body>
     <RecipientID>{sender_id}</RecipientID>
     <ParentMessageID>{parent_message_id}</ParentMessageID>
   </MemberMessage>
 </AddMemberMessageRTQRequest>""".encode("utf-8")
+
+
+def _send_ebay_reply(account: str, listing_id: str, sender_id: str,
+                     parent_message_id: str, body: str) -> dict:
+    token = get_access_token_new(account)
+    if not token:
+        return {"ok": False, "error": "token取得失敗"}
+
+    xml_body = _build_reply_xml(token, listing_id, sender_id, parent_message_id, body)
 
     headers = {
         "Content-Type":                   "text/xml",

@@ -847,6 +847,26 @@ def fetch_paid_orders(account: str, start: datetime, end: datetime):
 
     return all_orders
 
+def _build_vendor_url(vendor_name, vendor_item_id, shops_url_base: str):
+    """
+    trx.vendor_item.vendor_name から仕入元の商品URLを組み立てる。
+
+    SKU(vendor_item_id)の形だけでは仕入元を確定できない（ラクマは32桁hexで
+    "m"始まりでもメルカリshops形式でもない）ため、必ずvendor_nameで判定する。
+    vendor_nameが未知・未取得の場合はNoneを返す（根拠なくメルカリURLにしない）。
+    shops_url_base はメール/LINEでメルカリshopsのURL形式が異なるため呼び出し側が渡す。
+    """
+    if not vendor_item_id:
+        return None
+    if vendor_name == "メルカリshops":
+        return f"{shops_url_base}{vendor_item_id}"
+    if vendor_name == "ラクマ":
+        return f"https://item.fril.jp/{vendor_item_id}"
+    if vendor_name == "メルカリ":
+        return f"https://jp.mercari.com/item/{vendor_item_id}"
+    return None
+
+
 def send_new_order_mail(
     account: str,
     order_id: str,
@@ -880,10 +900,13 @@ def send_new_order_mail(
     # -------------------------
     # URL
     # -------------------------
-    if vendor_name == "メルカリshops":
-        mercari_url = f"https://mercari-shops.com/products/{vendor_item_id}"
+    vendor_url = _build_vendor_url(
+        vendor_name, vendor_item_id, "https://mercari-shops.com/products/"
+    )
+    if vendor_url:
+        vendor_link_html = f'<a href="{vendor_url}">{vendor_url}</a>'
     else:
-        mercari_url = f"https://jp.mercari.com/item/{vendor_item_id}"
+        vendor_link_html = "仕入元不明（trx.vendor_itemで仕入元を特定できません）"
 
     ebay_url = f"https://www.ebay.com/itm/{ebay_id}"
 
@@ -914,9 +937,9 @@ def send_new_order_mail(
 
     <br>
 
-    <!-- メルカリURL（ラベルなし） -->
+    <!-- 仕入元URL（ラベルなし） -->
     <div>
-        <a href="{mercari_url}">{mercari_url}</a>
+        {vendor_link_html}
     </div>
 
     <br>
@@ -1029,6 +1052,7 @@ def send_line_new_order(
 
         # DBから画像URL取得（send_new_order_mail と同じソース）
         image_url = None
+        vendor_name = None
         try:
             cn = get_sql_server_connection()
             cur = cn.cursor()
@@ -1050,27 +1074,24 @@ def send_line_new_order(
  
         ebay_url = f"https://www.ebay.com/itm/{ebay_id}" if ebay_id else ""
 
-        if vendor_item_id:
-            if vendor_item_id.startswith("m"):
-                # 通常メルカリ
-                mercari_url = (
-                    f"https://jp.mercari.com/item/{vendor_item_id}"
-                    f"?openExternalBrowser=1"
-                )
-            else:
-                # メルカリShops
-                mercari_url = (
-                    f"https://jp.mercari.com/shops/product/{vendor_item_id}"
-                    f"?openExternalBrowser=1"
-                )
+        vendor_url = _build_vendor_url(
+            vendor_name, vendor_item_id, "https://jp.mercari.com/shops/product/"
+        )
+        if vendor_url:
+            vendor_label = "ラクマ" if vendor_name == "ラクマ" else "メルカリ"
+            vendor_url_text = f"{vendor_url}?openExternalBrowser=1"
+        elif vendor_item_id:
+            vendor_label = "仕入元"
+            vendor_url_text = f"不明（SKU: {vendor_item_id}）"
         else:
-            mercari_url = ""
+            vendor_label = "メルカリ"
+            vendor_url_text = ""
 
         text = (
             f"🟢【新規受注】{account}\n"
             f"\n"
-            f"メルカリ:\n"
-            f"{mercari_url}\n"
+            f"{vendor_label}:\n"
+            f"{vendor_url_text}\n"
             f"\n"
             f"eBay:\n"
             f"{ebay_url}\n"
