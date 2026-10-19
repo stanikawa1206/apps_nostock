@@ -1223,10 +1223,13 @@ def main():
                         page.on("request", lambda r: "entities:search" in r.url and print("REQ:", r.url, flush=True))
                         page.on("response", lambda r: "entities:search" in r.url and print("RES:", r.url, flush=True))
 
+                        # statusファイルは release_job() 成功後に消す。先に消すと、release_job() が
+                        # DB接続断(08S01)で失敗してワーカーが落ちた際、ジョブが running のまま
+                        # watchdog の監視対象からも外れて取り残される（2026-10-06〜10-16 に5件発生）。
+                        release_job(conn, job_id)
+
                         if os.path.exists(STATUS_FILE):
                             os.remove(STATUS_FILE)
-                            
-                        release_job(conn, job_id)
                         continue
 
                     raise
