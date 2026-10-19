@@ -56,6 +56,7 @@ import time
 import random
 import logging
 from pathlib import Path
+from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Dict, Any, Optional, Tuple
 from urllib.parse import urlencode, urlparse, parse_qsl, urlunparse, quote
@@ -715,6 +716,207 @@ def delete_item_from_ebay(account: str, sku: str) -> Dict[str, Any]:
     }
 
 
+# ====== Trading API（出品状態の確認・読み取り専用）======
+# REST版の削除(delete_item_from_ebay)は、offerが既に無い(=eBay側で終了済みの可能性がある)場合も
+# 失敗を返すため、DB(trx.listings)が出品中のまま残り続ける不整合が発生していた（2026-10-19調査）。
+# 「eBay側の終了を確認できた時だけDBを削除済みにする」判定に使う。
+_ENDED_LISTING_STATUSES = {"Completed", "Ended"}
+
+
+def get_listing_status(account: str, item_id: str) -> Dict[str, Any]:
+    """
+    GetItem で出品の状態を取得する。
+    ended は ListingStatus が Completed/Ended の時だけ True。
+    取得に失敗した場合は ok=False / ended=False を返す（終了扱いにはしない）。
+    """
+    token = get_access_token_new(account)
+    if not token:
+        return {"ok": False, "ended": False, "error": "no_token"}
+
+    headers = {
+        "X-EBAY-API-CALL-NAME": "GetItem",
+        "X-EBAY-API-SITEID": "0",
+        "X-EBAY-API-COMPATIBILITY-LEVEL": TRADING_COMPAT_LEVEL,
+        "X-EBAY-API-IAF-TOKEN": token,
+        "Content-Type": "text/xml",
+    }
+    body = f"""<?xml version="1.0" encoding="utf-8"?>
+<GetItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+  <ItemID>{item_id}</ItemID>
+  <OutputSelector>Item.ListingDetails</OutputSelector>
+  <OutputSelector>Item.SellingStatus</OutputSelector>
+</GetItemRequest>""".encode("utf-8")
+
+    try:
+        r = requests.post(TRADING_ENDPOINT, headers=headers, data=body, timeout=30)
+    except requests.exceptions.RequestException as e:
+        return {"ok": False, "ended": False, "error": f"http_error:{e}"}
+
+    if r.status_code != 200:
+        return {"ok": False, "ended": False, "error": f"http_status:{r.status_code}"}
+
+    try:
+        root = ET.fromstring(r.text)
+    except ET.ParseError as e:
+        return {"ok": False, "ended": False, "error": f"parse_error:{e}"}
+
+    ns = {"e": "urn:ebay:apis:eBLBaseComponents"}
+    ack = (root.findtext("e:Ack", default="", namespaces=ns) or "").strip()
+    if ack not in ("Success", "Warning"):
+        code = root.findtext(".//e:Errors/e:ErrorCode", default="", namespaces=ns)
+        msg = root.findtext(".//e:Errors/e:LongMessage", default="", namespaces=ns)
+        return {"ok": False, "ended": False, "error": f"ack={ack} {code} {msg}".strip()}
+
+    listing_status = root.findtext(".//e:SellingStatus/e:ListingStatus", default="", namespaces=ns)
+    return {
+        "ok": True,
+        "ended": listing_status in _ENDED_LISTING_STATUSES,
+        "listing_status": listing_status,
+        "end_time": root.findtext(".//e:ListingDetails/e:EndTime", default="", namespaces=ns),
+        "ending_reason": root.findtext(".//e:ListingDetails/e:EndingReason", default="", namespaces=ns),
+        "quantity_sold": root.findtext(".//e:SellingStatus/e:QuantitySold", default="", namespaces=ns),
+    }
+
+
+def mark_listing_deleted_if_ended(
+    account: str,
+    listing_id: str,
+    sku: str,
+    delete_reason: str,
+    error_message: Optional[str] = None,
+) -> bool:
+    """
+    GetItem で eBay側の終了を確認できた場合だけ、trx.listings の該当行を削除済みにする。
+    確認できない場合（出品中・取得失敗）はログを残し、DBは変更しない。
+    削除済みにした場合 True を返す。
+    """
+    status = get_listing_status(account, listing_id)
+
+    if not status.get("ended"):
+        print(
+            f"[ENDED_CHECK_NG] account={account} listing_id={listing_id} sku={sku} "
+            f"reason={delete_reason} status={status!r} → DB変更なし",
+            flush=True,
+        )
+        return False
+
+    # deleted_at は eBay側の終了時刻(EndTime, UTC)を優先し、取得できない場合だけ検知時刻にする。
+    # UTC→DBサーバーのローカル時刻への変換はSQL側で行う（VPSのPythonはタイムゾーンが異なるため）。
+    end_time_utc = None
+    try:
+        end_time_utc = datetime.strptime(
+            (status.get("end_time") or "")[:19], "%Y-%m-%dT%H:%M:%S"
+        )
+    except ValueError:
+        pass
+
+    conn = get_sql_server_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE trx.listings
+            SET
+                is_deleted = 1,
+                deleted_at = ISNULL(
+                    DATEADD(minute, DATEDIFF(minute, SYSUTCDATETIME(), SYSDATETIME()), CAST(? AS datetime2)),
+                    SYSDATETIME()
+                ),
+                delete_reason = ?,
+                error_message = ISNULL(?, error_message),
+                error_at = CASE WHEN ? IS NULL THEN error_at ELSE SYSDATETIME() END
+            OUTPUT deleted.listing_id
+            WHERE account = ?
+              AND listing_id = ?
+              AND is_deleted = 0
+            """,
+            end_time_utc, delete_reason, error_message, error_message, account, listing_id,
+        )
+        updated = cursor.fetchall()
+        conn.commit()
+    finally:
+        conn.close()
+
+    for _ in updated:
+        log_listings_change("DELETE", account, listing_id, sku, delete_reason)
+
+    print(
+        f"[ENDED_CHECK_OK] account={account} listing_id={listing_id} sku={sku} "
+        f"reason={delete_reason} listing_status={status.get('listing_status')} "
+        f"end_time={status.get('end_time')} ending_reason={status.get('ending_reason')} "
+        f"deleted_at={'EndTime' if end_time_utc else '検知時刻'} updated={len(updated)}",
+        flush=True,
+    )
+    return bool(updated)
+
+
+def _delete_listing_after_price_failure(
+    account: str,
+    sku: str,
+    error_message: str,
+    delete_reason: str,
+) -> None:
+    """
+    価格更新失敗時の eBay削除 + trx.listings 論理削除。
+    eBay削除に成功した場合は従来どおり、そのSKUの出品中行を削除済みにする。
+    失敗した場合は、出品中行ごとに GetItem で終了を確認できたものだけ削除済みにする
+    （以前は削除結果を見ずにDBを削除済みにしており、eBayに出品が残る不整合が発生していた）。
+    """
+    res = delete_item_from_ebay(account, sku)
+
+    if res.get("success"):
+        conn = get_sql_server_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE trx.listings
+            SET
+                error_message = ?,
+                delete_reason = ?,
+                error_at = SYSDATETIME(),
+                deleted_at = SYSDATETIME(),
+                is_deleted = 1
+            OUTPUT deleted.account, deleted.listing_id
+            WHERE vendor_item_id = ?
+            AND is_deleted = 0
+            """,
+            error_message,
+            delete_reason,
+            sku
+        )
+        for row in cursor.fetchall():
+            log_listings_change("DELETE", row[0], row[1], sku, delete_reason)
+        conn.commit()
+        conn.close()
+        return
+
+    print(
+        f"[PRICE_DELETE_NG] account={account} sku={sku} reason={delete_reason} "
+        f"delete_result={res!r}",
+        flush=True,
+    )
+
+    conn = get_sql_server_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT listing_id
+            FROM trx.listings
+            WHERE vendor_item_id = ?
+              AND account = ?
+              AND is_deleted = 0
+            """,
+            sku, account,
+        )
+        listing_ids = [str(row[0]) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+    for listing_id in listing_ids:
+        mark_listing_deleted_if_ended(account, listing_id, sku, delete_reason, error_message)
+
+
 ## Trading API版　今後削除
 def delete_item_from_ebay_bk(account: str, item_id: str) -> Dict[str, Any]:
     print(f"delete_item_from_ebay: account={account}, item_id={item_id}")
@@ -813,6 +1015,23 @@ def delete_items_from_ebay_batch(account: str, item_ids: list[str], batch_no: Op
         }
         # ===== [一時デバッグ] EndItemResponseContainerが1件も取れなかった(パース失敗) =====
         _log_delete_debug(f"[DELETE DEBUG][ebay_api] account={account} batch_no={batch_no} results抽出0件(parse_error) result={result!r}")
+
+        # 10007(System error)はバッチ全体が失敗応答でも、eBay側では実際に終了していることがある
+        # （2026-10-01 BUZZ batch_no=9 で実測。DBが出品中のまま残り、後の価格更新で再出品された）。
+        # 結果不明として1件ずつ GetItem で確認し、終了を確認できたものだけ success=True で返す。
+        if result["error_code"] == 10007:
+            verified = []
+            for iid in item_ids:
+                status = get_listing_status(account, iid)
+                verified.append({
+                    "item_id": str(iid),
+                    "success": bool(status.get("ended")),
+                    "error_code": 10007,
+                    "error_message": f"10007後のGetItem確認: {status!r}",
+                })
+            result["results"] = verified
+            _log_delete_debug(f"[DELETE DEBUG][ebay_api] account={account} batch_no={batch_no} 10007のためGetItemで確認 results={verified!r}")
+
         return result
     if any(r.get("error_code") in (518, 429) for r in results):
         result = {"success": False, "error_code": 518, "results": results, "message": "per-container rate limit", "raw_response": text}
@@ -875,7 +1094,8 @@ def update_ebay_price_rest(
     sku: str,
     new_price_usd,
     *,
-    debug: bool = False
+    debug: bool = False,
+    expected_listing_id: Optional[str] = None,
 ) -> dict:
     if not account or not sku:
         return {"success": False, "error": "missing_account_or_sku"}
@@ -907,6 +1127,35 @@ def update_ebay_price_rest(
             "sku": sku,
             "error": "offer_get_failed",
         }
+
+    # 3') 出品状態の確認
+    # 終了済み(UNPUBLISHED/ENDED)のofferを publishOffer すると、新しいlisting_idで再出品され、
+    # trx.listings に記録されない出品が発生していた（2026-10-01 BUZZ 2JWDS... 等で実測）。
+    # PUBLISHED かつ ACTIVE の場合だけ価格更新へ進む（公開中offerのpublishは既存出品の更新で、新規出品にならない）。
+    listing = offer_obj.get("listing") or {}
+    offer_status = offer_obj.get("status")
+    listing_status = listing.get("listingStatus")
+    offer_listing_id = str(listing.get("listingId") or "")
+    if offer_status != "PUBLISHED" or listing_status != "ACTIVE":
+        not_active_error = f"listing_not_active:{offer_status}/{listing_status}/{offer_listing_id}"
+        print(
+            f"[PRICE_SKIP] account={account} sku={sku} expected_listing_id={expected_listing_id} "
+            f"{not_active_error} → 価格更新・再出品しない",
+            flush=True,
+        )
+        if expected_listing_id:
+            mark_listing_deleted_if_ended(
+                account, str(expected_listing_id), sku, "eBay終了確認", not_active_error
+            )
+        return {"success": False, "sku": sku, "error": not_active_error}
+
+    # eBay側で公開中だがDBと listing_id が違う場合も価格更新は続ける（DBの既存行は変更しない）。
+    if expected_listing_id and offer_listing_id != str(expected_listing_id):
+        print(
+            f"[PRICE_LISTING_ID_MISMATCH] account={account} sku={sku} "
+            f"db_listing_id={expected_listing_id} ebay_listing_id={offer_listing_id} → 価格更新は継続",
+            flush=True,
+        )
 
     # 4) 価格変更
     offer_obj.setdefault("pricingSummary", {})
@@ -952,8 +1201,6 @@ def update_ebay_price_rest(
         # 25097 → 削除＋出品不可
         # =========================
         if error_id == 25097:
-            delete_item_from_ebay(account, sku)
-
             conn = get_sql_server_connection()
             cursor = conn.cursor()
 
@@ -963,28 +1210,15 @@ def update_ebay_price_rest(
                 WHERE vendor_item_id = ?
             """, (sku,))
 
-            cursor.execute("""
-                UPDATE trx.listings
-                SET
-                    error_message = ?,
-                    delete_reason = ?,
-                    error_at = SYSDATETIME(),
-                    deleted_at = SYSDATETIME(),
-                    is_deleted = 1
-                OUTPUT deleted.account, deleted.listing_id
-                WHERE vendor_item_id = ?
-                AND is_deleted = 0
-            """, error_message, "IP違反", sku)
-            for row in cursor.fetchall():
-                log_listings_change("DELETE", row[0], row[1], sku, "IP違反")
-
             conn.commit()
             conn.close()
+
+            _delete_listing_after_price_failure(account, sku, error_message, "IP違反")
 
             return {"success": False, "sku": sku, "error": error_message}
 
         # -------------------------
-        # 出品削除
+        # 出品削除 + DB更新
         # -------------------------
         print(
             "DELETE LISTING:",
@@ -992,35 +1226,7 @@ def update_ebay_price_rest(
             "sku=", sku,
             "reason=", error_message
         )
-        delete_item_from_ebay(account, sku)
-
-        # -------------------------
-        # DB更新
-        # -------------------------
-        conn = get_sql_server_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            UPDATE trx.listings
-            SET
-                error_message = ?,
-                delete_reason = ?,
-                error_at = SYSDATETIME(),
-                deleted_at = SYSDATETIME(),
-                is_deleted = 1
-            OUTPUT deleted.account, deleted.listing_id
-            WHERE vendor_item_id = ?
-            AND is_deleted=0
-            """,
-            error_message,
-            "価格更新失敗",  # delete_reason に入る値
-            sku
-        )
-        for row in cursor.fetchall():
-            log_listings_change("DELETE", row[0], row[1], sku, "価格更新失敗")
-
-        conn.commit()
-        conn.close()
+        _delete_listing_after_price_failure(account, sku, error_message, "価格更新失敗")
 
         return {
             "success": False,
@@ -1041,6 +1247,14 @@ def update_ebay_price_rest(
     # DB更新（ここ追加）
     # -------------------------
     if ok2:
+        published_listing_id = str((pub_res or {}).get("listingId") or "")
+        if published_listing_id != offer_listing_id:
+            print(
+                f"[PRICE_PUBLISH_LISTING_ID_CHANGED] account={account} sku={sku} "
+                f"before={offer_listing_id} after={published_listing_id}",
+                flush=True,
+            )
+
         conn = get_sql_server_connection()
         cursor = conn.cursor()
 
@@ -1077,8 +1291,6 @@ def update_ebay_price_rest(
 
         # 25097 → 削除＋出品不可
         if error_id == 25097:
-            delete_item_from_ebay(account, sku)
-
             conn = get_sql_server_connection()
             cursor = conn.cursor()
 
@@ -1088,52 +1300,15 @@ def update_ebay_price_rest(
                 WHERE vendor_item_id = ?
             """, (sku,))
 
-            cursor.execute("""
-                UPDATE trx.listings
-                SET
-                    error_message = ?,
-                    delete_reason = ?,
-                    error_at = SYSDATETIME(),
-                    deleted_at = SYSDATETIME(),
-                    is_deleted = 1
-                OUTPUT deleted.account, deleted.listing_id
-                WHERE vendor_item_id = ?
-                AND is_deleted = 0
-            """, error_message, "IP違反", sku)
-            for row in cursor.fetchall():
-                log_listings_change("DELETE", row[0], row[1], sku, "IP違反")
-
             conn.commit()
             conn.close()
+
+            _delete_listing_after_price_failure(account, sku, error_message, "IP違反")
 
             return {"success": False, "sku": sku, "error": error_message}
 
         # その他 → 従来通り削除
-        delete_item_from_ebay(account,sku)
-
-        conn=get_sql_server_connection()
-        cursor=conn.cursor()
-        cursor.execute(
-            """
-            UPDATE trx.listings
-            SET
-                error_message = ?,
-                delete_reason = ?,  -- 追加
-                error_at = SYSDATETIME(),
-                deleted_at = SYSDATETIME(),
-                is_deleted = 1
-            OUTPUT deleted.account, deleted.listing_id
-            WHERE vendor_item_id = ?
-            AND is_deleted = 0
-            """,
-            error_message,
-            "価格更新失敗",  # delete_reason に入る値
-            sku
-        )
-        for row in cursor.fetchall():
-            log_listings_change("DELETE", row[0], row[1], sku, "価格更新失敗")
-        conn.commit()
-        conn.close()
+        _delete_listing_after_price_failure(account, sku, error_message, "価格更新失敗")
 
         return {"success":False,"sku":sku,"error":error_message}
     return {"success":True,"sku":sku}

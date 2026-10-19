@@ -18,7 +18,11 @@ from datetime import datetime, timezone, timedelta
 
 # ★ eBay削除API ← 波線エラーの正体はコレ
 from apps.adapters.ebay_api import delete_item_from_ebay
-from apps.adapters.ebay_api import update_ebay_price_rest
+from apps.adapters.ebay_api import (
+    get_listing_status,
+    mark_listing_deleted_if_ended,
+    update_ebay_price_rest,
+)
 from apps.common.utils import log_listings_change
 
 # ================================
@@ -577,6 +581,25 @@ def handle_listing_delete(
         "already_ended",
     }
 
+    if not ok:
+        # REST版の削除は offer が既に無い(=eBay側で終了済みの可能性がある)場合も失敗を返し、
+        # note(already_deleted)も返さないため、DBが出品中のまま残り再試行でも直らなかった
+        # （2026-10-19調査）。GetItem で終了を確認できた時だけ削除済みにする。
+        status = get_listing_status(account, listing_id)
+        if status.get("ended"):
+            print(
+                f"[DELETE_VERIFIED] listing_id={listing_id} account={account} sku={vendor_item_id} "
+                f"reason={reason} delete_result={res!r} status={status!r}",
+                flush=True,
+            )
+            ok = True
+        else:
+            print(
+                f"[DELETE_NG] listing_id={listing_id} account={account} sku={vendor_item_id} "
+                f"reason={reason} delete_result={res!r} status={status!r} → DB変更なし",
+                flush=True,
+            )
+
     if ok:
         with conn.cursor() as cur:
             cur.execute("""
@@ -638,6 +661,7 @@ def handle_listing_price_update(
                 vendor_item_id,
                 usd,
                 debug=True,
+                expected_listing_id=listing_id,
             )
 
         except Exception as e:
@@ -666,7 +690,16 @@ def handle_listing_price_update(
             f"reason=offer_not_found_for_sku",
             flush=True,
         )
+        # offer が無い出品は eBay側で終了済みのことがある。終了を確認できた時だけ削除済みにする。
+        mark_listing_deleted_if_ended(
+            account, listing_id, vendor_item_id, "eBay終了確認", "offer_not_found_for_sku"
+        )
 
+        return
+
+    if resp and str(resp.get("error") or "").startswith("listing_not_active:"):
+        # 終了済みofferのため価格更新(再出品)を行わなかった。DB側の扱いは
+        # update_ebay_price_rest 内で GetItem 確認済み。例外にはせず次の商品へ進む。
         return
 
 
