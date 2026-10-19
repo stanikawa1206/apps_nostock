@@ -843,7 +843,17 @@ WHEN MATCHED THEN
                             WHEN src.rating_count IS NOT NULL THEN SYSDATETIME()
                             ELSE tgt.last_checked_at
                           END
-WHEN NOT MATCHED THEN
+-- ショップID正式行が既に存在する場合（統合処理 merge_numeric_seller_into_shop_row が
+-- 既に完了している場合があるため）、その数字IDに対応する数字ID仮登録行を再作成しない
+-- （furimawatch_1scrape.pyのSQL_UPSERT_MST_SELLER_FROM_TIMELINEと同じガード方針）。
+WHEN NOT MATCHED
+    AND NOT EXISTS (
+        SELECT 1 FROM mst.seller s2
+        WHERE s2.vendor_name = src.vendor_name
+          AND s2.seller_id2 = src.seller_id
+          AND s2.seller_id LIKE N'%[^0-9]%'
+    )
+THEN
     INSERT (vendor_name, seller_id, seller_name, rating_count, is_ng, last_checked_at, seller_id2)
     VALUES (src.vendor_name, src.seller_id, src.seller_name, src.rating_count, 0,
             CASE WHEN src.rating_count IS NOT NULL THEN SYSDATETIME() ELSE NULL END, src.seller_id2);
