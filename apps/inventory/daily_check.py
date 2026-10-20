@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 import sys
 import subprocess
+import threading
 import time
 import logging
 from pathlib import Path
@@ -262,26 +263,77 @@ class ReconnectingConnection:
 # ======================
 # 共通関数
 # ======================
-def run_script(path: Path, timeout: float | None = None) -> tuple[int, str]:
+STDERR_TAIL_BYTES = 16 * 1024  # 異常終了メールに載せるため保持する stderr 末尾の上限
+
+
+def _tee_stderr(pipe, tail: bytearray):
+    """子の stderr をそのまま親のコンソールへ流しつつ、末尾だけ tail に保持する。"""
+    while True:
+        chunk = pipe.read(4096)
+        if not chunk:
+            break
+        sys.stderr.buffer.write(chunk)
+        sys.stderr.buffer.flush()
+        tail.extend(chunk)
+        del tail[:-STDERR_TAIL_BYTES]
+
+
+def run_script(
+    path: Path,
+    timeout: float | None = None,
+    capture_stderr: bool = True,
+) -> tuple[int, str]:
+    """
+    戻り値: (returncode, stderr末尾)。capture_stderr=False の場合、stderr末尾は常に ""。
+    """
     print(f"\n=== ▶ {path.name} 実行開始 ===")
 
     # capture_output=Trueにしない: 子スクリプトの標準出力・標準エラーを
     # 親（daily_check.py）のコンソールへそのまま継承させ、実行中の出力を
     # リアルタイムに表示させるため。
     #
+    # stderr だけは、異常終了時のメールに traceback を載せるためパイプで受け、
+    # _tee_stderr() で親のコンソールへ逐次そのまま流しながら末尾を保持する。
+    # ただし子がさらに常駐プロセスを起動する場合（publish_manager.py →
+    # publish_ebay.py）は、そのプロセスがパイプを引き継いで子の終了後も
+    # 書き込み続けるため、capture_stderr=False で従来どおり継承させること。
+    #
     # timeout はデフォルトNone（＝従来どおり無期限待機）。呼び出し元が明示的に
     # timeoutを渡した場合のみ有効になるため、他のrun_script()呼び出しの挙動は
     # 変更しない。publish_manager.py がtimeout未設定のHTTP呼び出しでハングし、
     # daily_check.py全体が約11時間停止し続けた事象（2026-09-21発生）の
     # 再発防止として、publish_manager.py呼び出し側でのみtimeoutを指定している。
+    stderr_tail = bytearray()
     try:
-        result = subprocess.run(
-            [PYTHON, str(path)],
-            cwd=str(BASE_DIR),
-            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
-            timeout=timeout,
-        )
-        returncode = result.returncode
+        if capture_stderr:
+            # subprocess.run() と同じく、timeout超過時は直接の子をkillしてから送出する
+            with subprocess.Popen(
+                [PYTHON, str(path)],
+                cwd=str(BASE_DIR),
+                env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+                stderr=subprocess.PIPE,
+                bufsize=0,
+            ) as proc:
+                reader = threading.Thread(
+                    target=_tee_stderr, args=(proc.stderr, stderr_tail), daemon=True
+                )
+                reader.start()
+                try:
+                    returncode = proc.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+                    raise
+                finally:
+                    reader.join()
+        else:
+            result = subprocess.run(
+                [PYTHON, str(path)],
+                cwd=str(BASE_DIR),
+                env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+                timeout=timeout,
+            )
+            returncode = result.returncode
     except subprocess.TimeoutExpired:
         # subprocess.run()はtimeout超過時に直接の子プロセス（path本体）を
         # 自動的にkillして待機してから例外を送出する（孫プロセス以下の後始末は
@@ -300,7 +352,51 @@ def run_script(path: Path, timeout: float | None = None) -> tuple[int, str]:
     else:
         print(f"=== ❌ {path.name} 異常終了（returncode={returncode}） ===")
 
-    return returncode, ""
+    return returncode, stderr_tail.decode("utf-8", errors="replace")
+
+
+STDERR_MAIL_TAIL_LINES = 40
+
+
+def format_child_error(stderr_text: str) -> str:
+    """
+    子プロセスの stderr 末尾から、異常終了メール用の原因情報を整形する。
+    traceback があれば最後の例外の種類・メッセージ・発生箇所を抜き出す。
+    """
+    if not stderr_text.strip():
+        return "【子プロセスのエラー情報】\n（stderr 出力なし）\n"
+    lines = stderr_text.replace("\r\n", "\n").rstrip("\n").split("\n")
+
+    out = ["【子プロセスのエラー情報】"]
+
+    tb_start = max((i for i, l in enumerate(lines) if l.startswith("Traceback (most recent call last)")), default=None)
+    if tb_start is not None:
+        tb = lines[tb_start:]
+        # 例外行: traceback 内で最後のインデントなしの行
+        exc_line = next((l for l in reversed(tb[1:]) if l and not l[0].isspace()), "")
+        exc_type, _, exc_msg = exc_line.partition(": ")
+        out.append(f"エラーの種類: {exc_type}")
+        out.append(f"エラーメッセージ: {exc_msg}")
+
+        frames = [i for i, l in enumerate(tb) if re.match(r'\s+File ".*", line \d+', l)]
+        # 最後のフレームがライブラリ内部の場合は、プロジェクト内で最後に通ったフレームも併記する
+        project_frames = [i for i in frames if str(BASE_DIR).lower() in tb[i].lower()]
+        labeled = []
+        if frames:
+            labeled.append(("発生箇所", frames[-1]))
+        if project_frames and project_frames[-1] != frames[-1]:
+            labeled.append(("発生箇所(プロジェクト内)", project_frames[-1]))
+        for label, idx in labeled:
+            out.append(f"{label}: {tb[idx].strip()}")
+            if idx + 1 < len(tb) and not re.match(r'\s+File "', tb[idx + 1]):
+                code_line = tb[idx + 1].strip()
+                if code_line and code_line != exc_line:
+                    out.append(f"    {code_line}")
+
+    out.append("")
+    out.append(f"--- stderr 末尾（最大{STDERR_MAIL_TAIL_LINES}行） ---")
+    out.extend(lines[-STDERR_MAIL_TAIL_LINES:])
+    return "\n".join(out) + "\n"
 
 
 def format_trx_listings_count_by_account(conn) -> str:
@@ -420,9 +516,11 @@ def send_script_mail(
 
     subject = f"{mark} {script.name} {round_info} {status}"
 
+    round_line = f"回転番号: {round_no}\n" if round_no is not None else ""
+
     body = (
         f"スクリプト: {script.name}\n"
-        f"{'回転番号: ' + str(round_no) + '\\n' if round_no is not None else ''}"
+        f"{round_line}"
         f"開始時刻: {start}\n"
         f"終了時刻: {end}\n"
         f"処理時間: {elapsed}\n"
@@ -944,7 +1042,7 @@ def run_inventory_management_round(conn, cycle_no, round_no):
     print("\n=== ⭐ 事前 sold チェック（分散版）開始 ===")
 
     pre_sold_start = datetime.now()
-    pre_sold_code, _ = run_script(FETCH_SOLD)  # job投入
+    pre_sold_code, pre_sold_err = run_script(FETCH_SOLD)  # job投入
 
     if pre_sold_code != 0:
         pre_sold_end = datetime.now()
@@ -954,6 +1052,7 @@ def run_inventory_management_round(conn, cycle_no, round_no):
             pre_sold_end,
             pre_sold_code,
             round_no=round_no,
+            extra_body=format_child_error(pre_sold_err),
             conn=conn,
         )
         print("[STOP] 事前 fetch_sold job投入失敗")
@@ -980,7 +1079,7 @@ def run_inventory_management_round(conn, cycle_no, round_no):
 
     # ②-1 job投入
     active_start = datetime.now()
-    active_code, _ = run_script(FETCH_ACTIVE)
+    active_code, active_err = run_script(FETCH_ACTIVE)
 
     if active_code != 0:
         active_end = datetime.now()
@@ -990,6 +1089,7 @@ def run_inventory_management_round(conn, cycle_no, round_no):
             active_end,
             active_code,
             round_no=round_no,
+            extra_body=format_child_error(active_err),
             conn=conn,
         )
         print("[STOP] fetch_active job投入失敗")
@@ -1016,7 +1116,7 @@ def run_inventory_management_round(conn, cycle_no, round_no):
 
     # ②-3-1 job投入
     sold_start = datetime.now()
-    sold_code, _ = run_script(FETCH_SOLD)
+    sold_code, sold_err = run_script(FETCH_SOLD)
 
     if sold_code != 0:
         sold_end = datetime.now()
@@ -1026,6 +1126,7 @@ def run_inventory_management_round(conn, cycle_no, round_no):
             sold_end,
             sold_code,
             round_no=round_no,
+            extra_body=format_child_error(sold_err),
             conn=conn,
         )
         print("[STOP] fetch_sold job投入失敗")
@@ -1248,7 +1349,7 @@ def run_delete_ebay_daily(conn):
     """
 
     del_start = datetime.now()
-    del_code, _ = run_script(DELETE_SCRIPT)
+    del_code, del_err = run_script(DELETE_SCRIPT)
     del_end = datetime.now()
 
     subject = (
@@ -1265,6 +1366,8 @@ def run_delete_ebay_daily(conn):
         f"returncode: {del_code}\n\n"
         + format_trx_listings_count_by_account(conn)
     )
+    if del_code != 0:
+        body += "\n" + format_child_error(del_err)
 
     print("=" * 40)
     print("📧 メール送信開始")
@@ -1293,7 +1396,12 @@ def run_publish_manager(conn):
 
     # 開始時刻: publish_manager起動直前
     pub_start = datetime.now()
-    pub_code, _ = run_script(PUBLISH_MANAGER_SCRIPT, timeout=PUBLISH_MANAGER_TIMEOUT_SECONDS)
+    # publish_manager.py は常駐の publish_ebay.py を起動するため stderr は取り込まない（run_script参照）
+    pub_code, _ = run_script(
+        PUBLISH_MANAGER_SCRIPT,
+        timeout=PUBLISH_MANAGER_TIMEOUT_SECONDS,
+        capture_stderr=False,
+    )
     # 終了時刻: run_script()（publish_manager.py本体）から戻った直後
     pub_end = datetime.now()
 

@@ -116,6 +116,12 @@ PAGE_RESTART_EVERY = 10
 
 FETCH_TIMEOUT_MS = 30000
 
+# entities:search の応答本文の受信完了を待つ上限（"B: before json()" からの秒数）。
+# resp.json() は受信完了イベント(loadingFinished/loadingFailed)を時間制限なしで待つため、
+# それが届かないと永久に戻らない（各VPSで3日に十数回発生）。正常時の B→C は p99=1秒・最大21秒。
+BODY_FINISH_TIMEOUT_SEC = 30
+BODY_FINISH_POLL_MS = 100
+
 # =========================
 # SQL
 # =========================
@@ -580,6 +586,20 @@ def fetch_page_json_new(page, url, conn, job_id):
 
 def fetch_page_json(page, url, conn, job_id):
 
+    # 受信完了（成功・失敗とも）したリクエストを記録し、完了を確認してから resp.json() を呼ぶ
+    finished_requests = set()
+    def on_request_done(request):  # page.on は組み込みメソッド(set.add)を受け付けない
+        finished_requests.add(request)
+    page.on("requestfinished", on_request_done)
+    page.on("requestfailed", on_request_done)
+    try:
+        return _fetch_page_json_attempts(page, url, finished_requests)
+    finally:
+        page.remove_listener("requestfinished", on_request_done)
+        page.remove_listener("requestfailed", on_request_done)
+
+def _fetch_page_json_attempts(page, url, finished_requests):
+
     for attempt in range(2):
         try:
             print(f"A: expect_response start {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -598,7 +618,12 @@ def fetch_page_json(page, url, conn, job_id):
                     raise RuntimeError(f"Mercari API status={resp.status}")
                                 
                 print(f"B: before json() (Fetch Start) {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-                # json_data = resp.json(timeout=10000) 
+                deadline = time.time() + BODY_FINISH_TIMEOUT_SEC
+                while resp.request not in finished_requests:
+                    if time.time() > deadline:
+                        raise RuntimeError(f"BODY_TIMEOUT: 応答本文が{BODY_FINISH_TIMEOUT_SEC}秒以内に受信完了しない")
+                    page.wait_for_timeout(BODY_FINISH_POLL_MS)
+                # json_data = resp.json(timeout=10000)
                 json_data = resp.json()
                 print(f"C: after json() {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
