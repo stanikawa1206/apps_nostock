@@ -23,7 +23,7 @@ from apps.adapters.ebay_api import (
     mark_listing_deleted_if_ended,
     update_ebay_price_rest,
 )
-from apps.common.utils import log_listings_change
+from apps.common.utils import log_listings_change, send_mail
 
 # ================================
 # 例外定義  
@@ -617,13 +617,52 @@ def handle_listing_delete(
 
 
 def _is_transient_inventory_error(resp: Dict[str, Any]) -> bool:
-    if not resp or resp.get("success"):
-        return False
-    raw = resp.get("raw") or {}
-    errors = ((raw.get("putOffer") or {}).get("errors") or []) or raw.get("errors") or []
-    msgs = " ".join(str(e.get("message","")) for e in errors if isinstance(e, dict)).lower()
-    codes = {int(e.get("errorId")) for e in errors if isinstance(e, dict) and str(e.get("errorId","")).isdigit()}
-    return (25001 in codes) or ("internal error" in msgs)
+    # update_ebay_price_rest は raw を返さないため、以前の raw.errors を見る判定は常に False で
+    # 再試行が働いていなかった。一時的な失敗かは update_ebay_price_rest 側で判定して transient で返す。
+    return bool(resp) and not resp.get("success") and bool(resp.get("transient"))
+
+
+PRICE_PENDING_PREFIX = "価格更新失敗(再試行待ち)"
+
+
+def _record_price_update_pending(conn, account: str, listing_id: str, sku: str, error: str) -> None:
+    """
+    価格更新できなかった出品中の行に失敗内容を記録する（is_deleted は変えず管理対象に残す）。
+    error_at は最初に失敗した時刻のまま保持し、初回の失敗時だけメールで通知する。
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE trx.listings
+               SET error_message = ?,
+                   error_at = CASE WHEN error_message LIKE ? THEN error_at ELSE SYSDATETIME() END
+            OUTPUT deleted.error_message
+             WHERE account = ?
+               AND listing_id = ?
+               AND is_deleted = 0
+        """, (f"{PRICE_PENDING_PREFIX}:{error}"[:4000], PRICE_PENDING_PREFIX + "%", account, listing_id))
+        rows = cur.fetchall()
+    conn.commit()
+
+    if rows and not str(rows[0][0] or "").startswith(PRICE_PENDING_PREFIX):
+        send_mail(
+            f"【要確認】eBay価格更新失敗 {account} {sku}",
+            "eBayの価格更新に失敗しました。出品は管理対象のまま残し、次回の価格変更検知・在庫チェックで再試行します。\n"
+            "仕入れ価格が上がっている場合は赤字販売の恐れがあるため、続く場合は出品の終了を検討してください。\n\n"
+            f"account: {account}\nlisting_id: {listing_id}\nsku: {sku}\nerror: {error}\n",
+        )
+
+
+def _clear_price_update_pending(conn, account: str, listing_id: str) -> None:
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE trx.listings
+               SET error_message = NULL, error_at = NULL
+             WHERE account = ?
+               AND listing_id = ?
+               AND is_deleted = 0
+               AND error_message LIKE ?
+        """, (account, listing_id, PRICE_PENDING_PREFIX + "%"))
+    conn.commit()
 
 def handle_listing_price_update(
     conn,
@@ -691,23 +730,28 @@ def handle_listing_price_update(
             flush=True,
         )
         # offer が無い出品は eBay側で終了済みのことがある。終了を確認できた時だけ削除済みにする。
-        mark_listing_deleted_if_ended(
+        if mark_listing_deleted_if_ended(
             account, listing_id, vendor_item_id, "eBay終了確認", "offer_not_found_for_sku"
-        )
+        ):
+            return
 
+    if resp and resp.get("db_deleted"):
+        # 終了済みofferのため価格更新(再出品)を行わず、GetItem で終了を確認してDBも削除済みにした。
         return
 
-    if resp and str(resp.get("error") or "").startswith("listing_not_active:"):
-        # 終了済みofferのため価格更新(再出品)を行わなかった。DB側の扱いは
-        # update_ebay_price_rest 内で GetItem 確認済み。例外にはせず次の商品へ進む。
-        return
-
-
-
+    # 価格更新できず、eBayで出品中の可能性が残る場合は例外にする。
+    # 呼び出し元は vendor_item.price を更新しないため、次回も価格変更として再試行される
+    # （以前は listing_not_active / offer_not_found で例外にせず戻り、再試行されなかった）。
     if not did_update:
+        error = (resp or {}).get("error") or "exception"
+        if resp and "db_deleted" in resp:
+            error += " / eBayの出品終了を確認できずDB削除なし"
+        _record_price_update_pending(conn, account, listing_id, vendor_item_id, error)
         raise RuntimeError(
-            f"eBay価格更新失敗 sku={vendor_item_id} listing_id={listing_id} account={account}"
+            f"eBay価格更新失敗 sku={vendor_item_id} listing_id={listing_id} account={account} error={error}"
         )
+
+    _clear_price_update_pending(conn, account, listing_id)
     
 if __name__ == "__main__":
 

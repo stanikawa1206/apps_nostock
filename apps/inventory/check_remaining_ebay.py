@@ -538,15 +538,21 @@ def process_status_and_sync(
                 # 3-B. レンジ内 → eBay価格改定
                 # =====================
                 else:
-                    handle_listing_price_update(
-                        conn,
-                        sku,
-                        vendor_name,
-                        new_price_usd,
-                    )
+                    try:
+                        handle_listing_price_update(
+                            conn,
+                            sku,
+                            vendor_name,
+                            new_price_usd,
+                        )
+                    except RuntimeError as e:
+                        # eBay価格更新失敗。vendor_item.price を旧価格のまま残し、次回のチェックで再試行する
+                        # （以前は例外でワーカーごと終了していた）。
+                        print(f"[PRICE_RETRY_PENDING] sku={sku} {old_price} -> {price_jpy} JPY: {e}", flush=True)
+                        price_jpy = None
 
 
-            # ---- vendor_item 更新（価格あり）----
+            # ---- vendor_item 更新（価格あり。価格更新失敗時は status のみ）----
             update_vendor_item_price_and_status(
                 conn,
                 vendor_name,

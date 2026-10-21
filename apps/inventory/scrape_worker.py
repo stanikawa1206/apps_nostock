@@ -836,6 +836,7 @@ def run_fetch_active_ebay(page, start_page, payload: dict, job_id: int) -> Tuple
             cnt_skip = 0
             cnt_changed = 0
             cnt_unchanged = 0
+            price_retry = {}
 
             for iid, title, price, seller, created, updated, item_condition_id in items:
                 if price is None:
@@ -845,16 +846,22 @@ def run_fetch_active_ebay(page, start_page, payload: dict, job_id: int) -> Tuple
                 old_price = old_price_map.get(iid)
                 if old_price is not None and old_price != price:
                     cnt_changed += 1
-                    handle_price_change_side_effects(
-                        conn,
-                        iid,
-                        vendor_name,
-                        old_price,
-                        price,
-                        mode=mode,
-                        low_usd_target=low_usd_target,
-                        high_usd_target=high_usd_target,
-                    )
+                    try:
+                        handle_price_change_side_effects(
+                            conn,
+                            iid,
+                            vendor_name,
+                            old_price,
+                            price,
+                            mode=mode,
+                            low_usd_target=low_usd_target,
+                            high_usd_target=high_usd_target,
+                        )
+                    except RuntimeError as e:
+                        # eBay価格更新失敗。vendor_item.price を旧価格のまま残し、次回の取得で再試行する
+                        # （以前はジョブごと異常終了し、以降のページが処理されなかった）。
+                        print(f"[PRICE_RETRY_PENDING] sku={iid} {old_price} -> {price} JPY: {e}", flush=True)
+                        price_retry[iid] = old_price
                 else:
                     cnt_unchanged += 1
 
@@ -865,7 +872,7 @@ def run_fetch_active_ebay(page, start_page, payload: dict, job_id: int) -> Tuple
                 "preset": preset,
                 "title_jp": title,
                 "vendor_page": page_idx+1,
-                "price": price,
+                "price": price_retry.get(iid, price),
                 "vendor_created_at": created,
                 "vendor_updated_at": updated,
                 "item_condition_id": item_condition_id,
@@ -963,6 +970,7 @@ def run_fetch_active_rakuma(payload: dict, job_id: int) -> Tuple[int, int]:
             old_price_map = get_vendor_item_prices_batch(conn, vendor_name, item_ids)
             cnt_changed = 0
             cnt_unchanged = 0
+            price_retry = {}
             for it in items:
                 iid = it["vendor_item_id"]
                 price = it["price"]
@@ -971,10 +979,15 @@ def run_fetch_active_rakuma(payload: dict, job_id: int) -> Tuple[int, int]:
                 old_price = old_price_map.get(iid)
                 if old_price is not None and old_price != price:
                     cnt_changed += 1
-                    handle_price_change_side_effects(
-                        conn, iid, vendor_name, old_price, price,
-                        mode=mode, low_usd_target=low_usd_target, high_usd_target=high_usd_target,
-                    )
+                    try:
+                        handle_price_change_side_effects(
+                            conn, iid, vendor_name, old_price, price,
+                            mode=mode, low_usd_target=low_usd_target, high_usd_target=high_usd_target,
+                        )
+                    except RuntimeError as e:
+                        # eBay価格更新失敗。vendor_item.price を旧価格のまま残し、次回の取得で再試行する。
+                        print(f"[PRICE_RETRY_PENDING] sku={iid} {old_price} -> {price} JPY: {e}", flush=True)
+                        price_retry[iid] = old_price
                 else:
                     cnt_unchanged += 1
             print(f"[PAGE {page_idx+1}] price changed={cnt_changed} unchanged={cnt_unchanged}", flush=True)
@@ -990,7 +1003,7 @@ def run_fetch_active_rakuma(payload: dict, job_id: int) -> Tuple[int, int]:
                     "preset": preset,
                     "title_jp": it["title_jp"],
                     "vendor_page": page_idx + 1,
-                    "price": it["price"],
+                    "price": price_retry.get(iid, it["price"]),
                     # 検索一覧からは取得不可。既存行があれば既存値を保持し、
                     # 新規行はNULLのまま（publish時の詳細取得で埋まる想定）。
                     "vendor_created_at": existing_created,
