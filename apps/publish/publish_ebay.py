@@ -868,6 +868,187 @@ def upsert_mst_seller_from_rec(conn, vendor_name: str, rec: dict) -> None:
     with conn.cursor() as cur:
         cur.execute(SQL_UPSERT_MST_SELLER, (vendor_name, seller_id, seller_name, rating_count, seller_id2))
 
+
+# ===================================================================
+# ラクマ: 数字ID仮登録行 → ショップID正式行への統合
+# （furimawatch_2rescrape.py の merge_numeric_seller_into_shop_row と同じロジック。
+#   別アプリ・別DB接続のため実装は分かれているが、片方だけを変更すると挙動がずれるので
+#   SQL・マージ方針を変更する際は必ず両方を同時に直す）。
+# ===================================================================
+
+# 削除は無条件には行わない。furimawatch_2rescrape.py側の同名フラグと合わせて
+# 有効化すること（片方だけ有効化しても、もう片方のアプリ経由では削除されない）。
+ENABLE_MST_SELLER_NUMERIC_DELETE = False
+
+SELECT_MST_SELLER_FOR_MERGE_SQL = """
+SELECT is_ng, is_furima_ng, seller_name, rating_count, last_checked_at
+FROM mst.seller WHERE vendor_name = ? AND seller_id = ?
+"""
+
+SELECT_MST_SELLER_OTHER_SHOP_ROWS_SQL = """
+SELECT seller_id FROM mst.seller WHERE vendor_name = ? AND seller_id2 = ? AND seller_id <> ?
+"""
+
+UPDATE_MST_SELLER_MERGE_SQL = """
+UPDATE mst.seller
+SET is_ng = ?, is_furima_ng = ?, seller_name = ?, rating_count = ?
+WHERE vendor_name = ? AND seller_id = ?
+"""
+
+# WHEREが数字IDに一致する行を対象にするため、VPS複数台がほぼ同時に同じセラーを統合しても
+# 2回目以降は対象0件になるだけで安全（UPDATE自体が原子的なので中途半端な付け替えは発生しない）。
+UPDATE_VENDOR_ITEM_RELINK_NUMERIC_TO_SHOP_SQL = """
+UPDATE trx.vendor_item
+SET seller_id = ?
+WHERE vendor_name = ? AND seller_id = ?
+"""
+
+# SELECTで参照0件を確認してからDELETEする2段階方式だと、確認後・削除前に別プロセスが
+# 新たに参照を作る競合に弱いため、NOT EXISTSによる確認をDELETE文自体に含めて原子的に行う。
+DELETE_MST_SELLER_NUMERIC_IF_UNREFERENCED_SQL = """
+DELETE tgt
+FROM mst.seller tgt
+WHERE tgt.vendor_name = ? AND tgt.seller_id = ?
+  AND NOT EXISTS (
+      SELECT 1 FROM trx.vendor_item vi
+      WHERE vi.vendor_name = tgt.vendor_name AND vi.seller_id = tgt.seller_id
+  )
+"""
+
+# 数字ID仮登録行を「正式行としてINSERTし直してから統合する」のではなく、既存の仮登録行を
+# 直接UPDATEしてショップID正式行へ昇格させる（主キーseller_idの値を数字ID→ショップIDへ
+# 書き換えるだけ）。is_ng・is_furima_ngのカラムには一切触れないため、INSERT直後の
+# is_ng=0窓（統合処理が追いつく前に一時的にNG情報が失われて見える状態）が発生しない。
+# ショップID正式行が既に別途存在する場合はNOT EXISTSに該当せず0行のまま終わるため、
+# 呼び出し元は既存の統合処理(merge_numeric_seller_into_shop_row)へフォールバックする。
+# WHERE句が数字ID一致行1件だけを対象にするため、VPS複数台がほぼ同時に昇格を試みても
+# 先に成功した1台以外は対象0件になるだけで安全（中途半端な昇格は発生しない）。
+SQL_PROMOTE_NUMERIC_SELLER_TO_SHOP_SQL = """
+UPDATE mst.seller
+SET seller_id = ?,
+    seller_id2 = ?,
+    seller_name = COALESCE(?, seller_name),
+    rating_count = COALESCE(?, rating_count),
+    last_checked_at = CASE WHEN ? IS NOT NULL THEN SYSDATETIME() ELSE last_checked_at END
+WHERE vendor_name = ? AND seller_id = ?
+  AND NOT EXISTS (
+      SELECT 1 FROM mst.seller s2 WHERE s2.vendor_name = ? AND s2.seller_id = ?
+  )
+"""
+
+
+def promote_numeric_seller_to_shop_row(
+    conn, vendor_name: str, shop_id: str, numeric_id: str,
+    seller_name: Optional[str], rating_count,
+) -> bool:
+    """
+    数字ID仮登録行(seller_id=numeric_id)を直接UPDATEし、seller_id=shop_id・
+    seller_id2=numeric_idへ書き換えてショップID正式行へ昇格させる。
+    is_ng・is_furima_ng・既存のseller_name/rating_count（新値がNoneの場合）は保持される。
+    trx.vendor_itemの数字ID参照もショップIDへ付け替える。
+
+    戻り値: 昇格できたか（Falseの場合、仮登録行が存在しないかショップID正式行が既に
+           別途存在する。呼び出し元はmerge_numeric_seller_into_shop_row()へフォールバックすること）。
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            SQL_PROMOTE_NUMERIC_SELLER_TO_SHOP_SQL,
+            (shop_id, numeric_id, seller_name, rating_count, rating_count,
+             vendor_name, numeric_id, vendor_name, shop_id),
+        )
+        promoted = cur.rowcount == 1
+        if promoted:
+            cur.execute(UPDATE_VENDOR_ITEM_RELINK_NUMERIC_TO_SHOP_SQL, (shop_id, vendor_name, numeric_id))
+    return promoted
+
+
+def merge_numeric_seller_into_shop_row(conn, vendor_name: str, shop_id: str, numeric_id: Optional[str]) -> str:
+    """
+    ラクマの数字ID仮登録行(seller_id=numeric_id, seller_id2=NULL)を、直前に
+    upsert_mst_seller_from_rec()でUPSERTしたショップID正式行(shop_id)へ統合する。
+
+    - is_ng・is_furima_ngはそれぞれ独立にOR統合する（他方の値を混ぜない）。
+    - seller_name・rating_countはlast_checked_atが新しい方の値を優先する。
+    - 数字ID→ショップIDの対応が一意であることを確認してから統合する。複数のショップID行が
+      同じseller_id2(数字ID)に対応付いている異常ケースは統合せず警告ログに記録して終える。
+    - trx.vendor_itemの数字ID参照をショップIDへ付け替える。
+    - 数字ID仮登録行の削除はENABLE_MST_SELLER_NUMERIC_DELETE有効化後のみ行う
+      （現時点では常にFalseのため未到達。有効化はfurimawatch_2rescrape.py側と合わせて行うこと）。
+    - mst.seller主キー(seller_id単独)に対するINSERTはこの関数では行わない（UPDATEのみ）ため、
+      他vendor_nameとのINSERT衝突は発生しない。
+    - 例外は呼び出し元へ伝播させない。失敗時は同一カーソルで明示ROLLBACKしてから数字ID仮登録行を
+      そのまま残すため、次回同じセラーの出品処理で自動的に再試行される（冪等）。
+
+    戻り値: "no_numeric_id"（対象外・数字ID未判明） / "no_numeric_row"（仮登録行なし＝
+           未作成か既に統合・削除済み） / "ambiguous"（対応が一意でない、統合せず） /
+           "merged"（統合成功、trx.vendor_itemの付け替えまで完了） /
+           "merge_failed"（例外発生、警告ログ記録済み・再試行可）
+    """
+    if not numeric_id or not numeric_id.isdigit() or not shop_id or shop_id.isdigit():
+        return "no_numeric_id"
+
+    cur = conn.cursor()
+    try:
+        cur.execute(SELECT_MST_SELLER_OTHER_SHOP_ROWS_SQL, (vendor_name, numeric_id, shop_id))
+        others = [r[0] for r in cur.fetchall()]
+        if others:
+            print(
+                f"[WARN] mst.seller統合: seller_id2={numeric_id} が複数のショップID行に対応しています: "
+                f"{shop_id} 以外に {others}",
+                flush=True,
+            )
+            return "ambiguous"
+
+        cur.execute(SELECT_MST_SELLER_FOR_MERGE_SQL, (vendor_name, numeric_id))
+        numeric_row = cur.fetchone()
+        if numeric_row is None:
+            return "no_numeric_row"
+        num_is_ng, num_is_furima_ng, num_name, num_rating, num_checked = numeric_row
+
+        cur.execute(SELECT_MST_SELLER_FOR_MERGE_SQL, (vendor_name, shop_id))
+        shop_row = cur.fetchone()
+        if shop_row is None:
+            # 直前のupsert_mst_seller_from_rec()で作成されているはずだが、万一無ければ
+            # 統合対象がないため何もしない（次回のupsertで再度ここに来る＝再試行される）。
+            return "no_numeric_row"
+        shop_is_ng, shop_is_furima_ng, shop_name, shop_rating, shop_checked = shop_row
+
+        merged_is_ng = 1 if (num_is_ng or shop_is_ng) else 0
+        merged_is_furima_ng = 1 if (num_is_furima_ng or shop_is_furima_ng) else 0
+        if num_checked is not None and (shop_checked is None or num_checked > shop_checked):
+            merged_name = num_name or shop_name
+            merged_rating = num_rating if num_rating is not None else shop_rating
+        else:
+            merged_name = shop_name or num_name
+            merged_rating = shop_rating if shop_rating is not None else num_rating
+
+        cur.execute(
+            UPDATE_MST_SELLER_MERGE_SQL,
+            (merged_is_ng, merged_is_furima_ng, merged_name, merged_rating, vendor_name, shop_id),
+        )
+        cur.execute(
+            UPDATE_VENDOR_ITEM_RELINK_NUMERIC_TO_SHOP_SQL,
+            (shop_id, vendor_name, numeric_id),
+        )
+        if ENABLE_MST_SELLER_NUMERIC_DELETE:
+            cur.execute(
+                DELETE_MST_SELLER_NUMERIC_IF_UNREFERENCED_SQL,
+                (vendor_name, numeric_id),
+            )
+        conn.commit()
+        return "merged"
+    except Exception as e:
+        try:
+            cur.execute("IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION")
+        except pyodbc.Error:
+            pass
+        print(
+            f"[WARN] mst.seller統合処理に失敗（数字ID仮登録行は残置、次回再試行）: "
+            f"numeric_id={numeric_id} shop_id={shop_id} error={e}",
+            flush=True,
+        )
+        return "merge_failed"
+
 # =========================
 # セラー評価数・High Risk判定：設定値の一元管理
 # mst.vendors / mst.category_groups / mst.presets_brand を唯一の設定元とする。
@@ -1241,13 +1422,39 @@ def heavy_check_detail(
         writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
         return None, debug_unavailable_dump, writes_since_commit, 0, 1
 
-    # ラクマ・メルカリ共通: seller_idがtrx.vendor_itemに既にあっても、mst.seller側に
-    # 実データがあるとは限らない（古い更新でここへ来ていなかった等）。
-    # upsert_mst_seller_from_rec()は無条件のupsertのため、既存有無に関わらず
-    # 都度呼んで問題ない（キャッシュを壊さず最新化するだけ）。
-    upsert_mst_seller_from_rec(conn, vendor_name, rec)
-    writes_since_commit += 1
-    writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
+    # ラクマでショップIDと数字IDの両方が判明した場合、まず既存の数字ID仮登録行を
+    # 直接UPDATEしてショップID正式行へ昇格させることを試みる（is_ng等が失われる窓を作らない）。
+    # 昇格できた場合はupsert_mst_seller_from_rec()の無条件UPSERT（新規INSERT時にis_ng=0で
+    # 作られてしまう）を呼ばずに済ませる。
+    promoted = False
+    if vendor_name == "ラクマ":
+        numeric_id = (rec.get("seller_id2") or "").strip() or None
+        if numeric_id and numeric_id.isdigit() and not seller_id.isdigit() and numeric_id != seller_id:
+            promoted = promote_numeric_seller_to_shop_row(
+                conn, vendor_name, seller_id, numeric_id,
+                (rec.get("seller_name") or "").strip() or None, rec.get("rating_count"),
+            )
+    else:
+        numeric_id = None
+
+    if promoted:
+        writes_since_commit += 1
+        writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
+    else:
+        # ラクマ・メルカリ共通: seller_idがtrx.vendor_itemに既にあっても、mst.seller側に
+        # 実データがあるとは限らない（古い更新でここへ来ていなかった等）。
+        # upsert_mst_seller_from_rec()は無条件のupsertのため、既存有無に関わらず
+        # 都度呼んで問題ない（キャッシュを壊さず最新化するだけ）。
+        upsert_mst_seller_from_rec(conn, vendor_name, rec)
+        writes_since_commit += 1
+        writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
+
+        # 昇格できなかった場合（仮登録行が無い/ショップID正式行が既に存在する等）は、
+        # 既存の統合処理へフォールバックする
+        # （merge_numeric_seller_into_shop_row()が内部でcommit済みのためカウンタをリセット）。
+        if vendor_name == "ラクマ" and numeric_id:
+            merge_numeric_seller_into_shop_row(conn, vendor_name, seller_id, numeric_id)
+            writes_since_commit = 0
 
     # === 1) 価格条件NG (最新価格でのレンジチェック) ===
     # スクレイピングした最新価格が、アカウントの担当レンジ外になっていないか確認
