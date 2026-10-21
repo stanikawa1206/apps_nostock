@@ -67,6 +67,11 @@ class _Tee:
         for s in self._streams:
             s.flush()
 
+# Windows(mouse)では元の stdout/stderr が cp932 のため、絵文字などを print すると UnicodeEncodeError で
+# ワーカーが落ちていた（2026-10-21 send_mail の「📧」で4回）。表現できない文字は置換して出力を続ける。
+sys.stdout.reconfigure(errors="replace")
+sys.stderr.reconfigure(errors="replace")
+
 log_path = os.path.join(LOG_DIR, f"worker_{WORKER_PID}.log")
 _log_file = open(log_path, "a", encoding="utf-8", buffering=1)
 sys.stdout = _Tee(sys.stdout, _log_file)

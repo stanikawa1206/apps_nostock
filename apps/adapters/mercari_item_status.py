@@ -623,6 +623,7 @@ def _is_transient_inventory_error(resp: Dict[str, Any]) -> bool:
 
 
 PRICE_PENDING_PREFIX = "価格更新失敗(再試行待ち)"
+RETRY_AFTER_MAX_SEC = 60
 
 
 def _record_price_update_pending(conn, account: str, listing_id: str, sku: str, error: str) -> None:
@@ -690,7 +691,10 @@ def handle_listing_price_update(
     did_update = False
     resp: Optional[Dict[str, Any]] = None
 
+    retry_after = 0
     for wait in [0, 2, 6, 15]:
+        # 429 の場合は Retry-After を尊重する（ワーカーを長時間止めないよう上限あり）
+        wait = max(wait, retry_after)
         if wait:
             time.sleep(wait)
 
@@ -717,6 +721,7 @@ def handle_listing_price_update(
 
         if not _is_transient_inventory_error(resp or {}):
             break
+        retry_after = min(int(resp.get("retry_after") or 0), RETRY_AFTER_MAX_SEC)
 
     if resp and resp.get("error") == "offer_not_found_for_sku":
 

@@ -1041,6 +1041,49 @@ def _inventory_get_offer_id_by_sku(token: str, sku: str, marketplace_id: str = "
         return offers[0].get("offerId"), data
     return None, data
 
+
+def _retry_after_sec(resp: requests.Response) -> Optional[int]:
+    try:
+        return int(resp.headers.get("Retry-After") or "")
+    except ValueError:
+        return None
+
+
+def _inventory_find_offer_by_sku(token: str, sku: str, marketplace_id: str = "EBAY_US") -> Dict[str, Any]:
+    """
+    getOffers を呼び、HTTPステータスとエラー内容で結果を分類する。
+    kind: found(offer_idあり) / not_found(200でoffer無し・404) / transient(429・5xx・通信エラー) / permanent(その他4xx)
+    以前は HTTPステータスを見ず、エラー応答も「offer無し」と同じ扱いにしていた
+    （2026-10-21 出品中のofferで offer_not_found_for_sku が14件、生レスポンスも記録されていなかった）。
+    """
+    url = "https://api.ebay.com/sell/inventory/v1/offer"
+    try:
+        r = requests.get(url, headers=_ebay_json_headers(token), params={"sku": sku, "marketplaceId": marketplace_id}, timeout=45)
+    except requests.exceptions.RequestException as e:
+        return {"kind": "transient", "error": f"getoffers_request_error:{e}"[:300]}
+
+    data = _safe_json(r)
+    offers = (data or {}).get("offers") or []
+    if r.status_code == 200 and offers:
+        for o in offers:
+            if (o.get("marketplaceId") or "").upper() == marketplace_id:
+                return {"kind": "found", "offer_id": o.get("offerId"), "raw": data}
+        return {"kind": "found", "offer_id": offers[0].get("offerId"), "raw": data}
+
+    if r.status_code == 200:
+        detail = f"getoffers_http_200:offers=0 total={data.get('total')}"
+    else:
+        error_id, error_msg = _extract_error(data)
+        detail = f"getoffers_http_{r.status_code}:{error_id}:{error_msg}"[:300]
+
+    if r.status_code in (200, 404):
+        return {"kind": "not_found", "error": detail, "raw": data}
+    if r.status_code == 429:
+        return {"kind": "transient", "error": detail, "raw": data, "retry_after": _retry_after_sec(r)}
+    if r.status_code >= 500:
+        return {"kind": "transient", "error": detail, "raw": data}
+    return {"kind": "permanent", "error": detail, "raw": data}
+
 def _inventory_get_offer(token: str, offer_id: str) -> dict:
     url = f"https://api.ebay.com/sell/inventory/v1/offer/{offer_id}"
     r = requests.get(url, headers=_ebay_json_headers(token), timeout=45)
@@ -1105,16 +1148,33 @@ def update_ebay_price_rest(
         return {"success": False, "sku": sku, "error": "get_token_failed"}
 
     # 2) offer_id取得
-    offer_id, list_res = _inventory_get_offer_id_by_sku(token, sku)
-    if not offer_id:
+    found = _inventory_find_offer_by_sku(token, sku)
+    if found["kind"] != "found":
+        kind, error = found["kind"], found["error"]
+        # offerが見つからなくても GetItem で出品中(または確認できない)なら、eBay側の一時的な取得失敗として再試行する
+        if kind == "not_found" and expected_listing_id:
+            status = get_listing_status(account, str(expected_listing_id))
+            if status.get("listing_status") == "Active":
+                kind, error = "transient", f"offer_not_found_but_listing_active:{error}"
+            elif not status.get("ok"):
+                kind, error = "transient", f"offer_not_found_getitem_failed:{error} getitem={status.get('error')}"
+        print(
+            f"[PRICE_OFFER_LOOKUP_NG] account={account} sku={sku} kind={kind} error={error} "
+            f"raw={str(found.get('raw'))[:300]}",
+            flush=True,
+        )
         out = {
             "success": False,
             "sku": sku,
-            "error": "offer_not_found_for_sku",
+            "error": "offer_not_found_for_sku" if kind == "not_found" else error,
         }
+        if kind == "transient":
+            out["transient"] = True
+            out["retry_after"] = found.get("retry_after")
         if debug:
-            out["raw"] = list_res
+            out["raw"] = found.get("raw")
         return out
+    offer_id = found["offer_id"]
 
     # 3) offer取得
     offer_obj = _inventory_get_offer(token, offer_id)
