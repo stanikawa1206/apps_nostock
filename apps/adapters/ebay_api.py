@@ -722,13 +722,24 @@ def delete_item_from_ebay(account: str, sku: str) -> Dict[str, Any]:
 # 「eBay側の終了を確認できた時だけDBを削除済みにする」判定に使う。
 _ENDED_LISTING_STATUSES = {"Completed", "Ended"}
 
+# Trading API はアプリ全体で1日5,000回の上限があり、超えると 518 が返る（リセットは太平洋時間0時）。
+# 価格更新後の GetItem 確認で上限に達し、518 のまま GetItem を呼び続けていた（2026-10-22 09:54〜）。
+# 518 を受けたら一定時間このプロセスでは GetItem を呼ばず、取得失敗として返す。
+GETITEM_RATE_LIMIT_COOLDOWN_SEC = 1800
+_getitem_rate_limited_until = 0.0
+
 
 def get_listing_status(account: str, item_id: str) -> Dict[str, Any]:
     """
     GetItem で出品の状態を取得する。
     ended は ListingStatus が Completed/Ended の時だけ True。
     取得に失敗した場合は ok=False / ended=False を返す（終了扱いにはしない）。
+    518(利用上限)の場合は rate_limited=True を付ける。
     """
+    global _getitem_rate_limited_until
+    if time.time() < _getitem_rate_limited_until:
+        return {"ok": False, "ended": False, "rate_limited": True, "error": "getitem_rate_limited(skip)"}
+
     token = get_access_token_new(account)
     if not token:
         return {"ok": False, "ended": False, "error": "no_token"}
@@ -765,6 +776,10 @@ def get_listing_status(account: str, item_id: str) -> Dict[str, Any]:
     if ack not in ("Success", "Warning"):
         code = root.findtext(".//e:Errors/e:ErrorCode", default="", namespaces=ns)
         msg = root.findtext(".//e:Errors/e:LongMessage", default="", namespaces=ns)
+        if code == "518":
+            _getitem_rate_limited_until = time.time() + GETITEM_RATE_LIMIT_COOLDOWN_SEC
+            print(f"[GETITEM_RATE_LIMITED] {GETITEM_RATE_LIMIT_COOLDOWN_SEC}秒間 GetItem を停止", flush=True)
+            return {"ok": False, "ended": False, "rate_limited": True, "error": f"ack={ack} {code} {msg}".strip()}
         return {"ok": False, "ended": False, "error": f"ack={ack} {code} {msg}".strip()}
 
     listing_status = root.findtext(".//e:SellingStatus/e:ListingStatus", default="", namespaces=ns)
@@ -1238,6 +1253,7 @@ def update_ebay_price_rest(
         )
 
     # 4) 価格変更
+    old_price_str = str(((offer_obj.get("pricingSummary") or {}).get("price") or {}).get("value") or "")
     offer_obj.setdefault("pricingSummary", {})
     offer_obj["pricingSummary"]["price"] = {
         "value": price_str,
@@ -1336,20 +1352,38 @@ def update_ebay_price_rest(
                 flush=True,
             )
 
-        # publish の成功だけでなく、eBay上の実際の価格が変わったことを GetItem で確認する
+        # publish の成功だけでなく、eBay上の実際の価格が変わったことを GetItem で確認する。
+        # GetItem はアプリ全体で1日5,000回の上限があり、全価格更新で確認すると上限に達するため、
+        # 未反映だと赤字販売の恐れがある値上げの時だけ確認する（値上げは価格変更の約3%）。
+        # GetItem 自体が取得できない場合(518等)は PUT/publish は成功しているため、未確認のまま成功扱いにする
+        # （以前は失敗扱いで PUT/publish を繰り返し、GetItem の呼び出しとメールが大量に発生していた）。
         verify_listing_id = published_listing_id or offer_listing_id
-        status = get_listing_status(account, verify_listing_id)
         try:
-            price_ok = Decimal(status.get("current_price") or "") == Decimal(price_str)
+            is_price_up = not old_price_str or Decimal(price_str) > Decimal(old_price_str)
         except Exception:
-            price_ok = False
-        if not price_ok:
-            verify_error = (
-                f"price_verify_failed:listing_id={verify_listing_id} expected={price_str} "
-                f"actual={status.get('current_price')} status={status.get('listing_status') or status.get('error')}"
-            )
-            print(f"[PRICE_VERIFY_NG] account={account} sku={sku} {verify_error}", flush=True)
-            return {"success": False, "sku": sku, "error": verify_error, "transient": True}
+            is_price_up = True
+        verified = False
+        if is_price_up:
+            status = get_listing_status(account, verify_listing_id)
+            if status.get("ok"):
+                try:
+                    price_ok = Decimal(status.get("current_price") or "") == Decimal(price_str)
+                except Exception:
+                    price_ok = False
+                if not price_ok:
+                    verify_error = (
+                        f"price_verify_failed:listing_id={verify_listing_id} expected={price_str} "
+                        f"actual={status.get('current_price')} status={status.get('listing_status')}"
+                    )
+                    print(f"[PRICE_VERIFY_NG] account={account} sku={sku} {verify_error}", flush=True)
+                    return {"success": False, "sku": sku, "error": verify_error, "transient": True}
+                verified = True
+            else:
+                print(
+                    f"[PRICE_VERIFY_UNCONFIRMED] account={account} sku={sku} listing_id={verify_listing_id} "
+                    f"{old_price_str}->{price_str} getitem_error={status.get('error')} → PUT/publish成功のため更新済み扱い（実価格未確認）",
+                    flush=True,
+                )
 
         conn = get_sql_server_connection()
         cursor = conn.cursor()
@@ -1368,7 +1402,12 @@ def update_ebay_price_rest(
             account,
         )
         conn.commit()   # ★これ必須
-        conn.close()    # ★これも必須    
+        conn.close()    # ★これも必須
+        print(
+            f"[PRICE_UPDATED] account={account} sku={sku} listing_id={verify_listing_id} "
+            f"{old_price_str}->{price_str} verified={verified}",
+            flush=True,
+        )
 
     if not ok2:
         errors = pub_res.get("errors", [])
@@ -1410,7 +1449,7 @@ def update_ebay_price_rest(
         db_deleted = _delete_listing_after_price_failure(account, sku, error_message, "価格更新失敗")
 
         return {"success":False,"sku":sku,"error":error_message,"db_deleted":db_deleted}
-    return {"success":True,"sku":sku}
+    return {"success":True,"sku":sku,"price_verified":verified}
 
 def update_ebay_price(account: str, ebay_item_id: str, new_price_usd, *, sku: Optional[str] = None) -> dict:
 
