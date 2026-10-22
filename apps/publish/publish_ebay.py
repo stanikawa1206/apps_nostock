@@ -59,7 +59,7 @@ from apps.common.process_watchdog import (
     start_watchdog,
 )
 
-from apps.adapters.ebay_api import ApiHandledError, ListingLimitError, post_one_item
+from apps.adapters.ebay_api import ApiHandledError, ListingLimitError, ListingStateUnknownError, post_one_item
 from apps.adapters.mercari_search import fetch_active_presets
 from apps.adapters.mercari_item_status import (
     MercariItemUnavailableError,
@@ -2008,6 +2008,26 @@ def determine_lens_focus_type(mount: str) -> str:
         return "Manual"
     return "Auto"
 
+def mark_listing_state_unknown(conn, rec: dict, acct: str, sku: str, err: Exception) -> None:
+    """
+    publishOffer が一時的エラーで、eBay側で出品されたかを確認できなかった商品。
+    出品失敗にすると再度出品候補になり、二重出品の恐れがあるため、出品不可にして通知する（要手動確認）。
+    """
+    print(f"⚠️ 出品確認不可: acct={acct} SKU={sku} reason={err}")
+    rec["listing_head"] = "出品確認不可"
+    rec["listing_detail"] = str(err)
+    upsert_vendor_item(conn, rec)
+    with conn.cursor() as cur:
+        cur.execute("UPDATE trx.vendor_item SET 出品不可flg = 1 WHERE vendor_item_id = ?", sku)
+    conn.commit()
+    send_mail(
+        f"【要確認】eBay出品状態を確認できず {acct} {sku}",
+        "publishOffer が一時的エラーを返し、eBay側で出品されたかを確認できませんでした。\n"
+        "二重出品を防ぐため出品不可(出品不可flg=1)にしています。eBayの出品状況を確認してください。\n\n"
+        f"account: {acct}\nsku: {sku}\nerror: {err}\n",
+    )
+
+
 def post_to_ebay(
     *,
     conn,
@@ -2230,6 +2250,12 @@ def post_to_ebay(
             listing_limit_hit,
         )
 
+    except ListingStateUnknownError as e:
+        mark_listing_state_unknown(conn, rec, acct, sku, e)
+        fail_other_delta += 1
+        return (acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
+                fail_other_delta, image_mode, image_error_count, cdn_mode_until, listing_limit_hit)
+
     except ApiHandledError as e:
         err_msg = str(e) or ""
         print(f"❌ 出品失敗(API): acct={acct} SKU={sku} reason={err_msg}")
@@ -2281,6 +2307,11 @@ def post_to_ebay(
                 upsert_vendor_item(conn, rec)
                 writes_since_commit += 1
                 writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
+                fail_other_delta += 1
+                return (acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
+                        fail_other_delta, image_mode, image_error_count, cdn_mode_until, listing_limit_hit)
+            except ListingStateUnknownError as e2:
+                mark_listing_state_unknown(conn, rec, acct, sku, e2)
                 fail_other_delta += 1
                 return (acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
                         fail_other_delta, image_mode, image_error_count, cdn_mode_until, listing_limit_hit)
@@ -2357,6 +2388,11 @@ def post_to_ebay(
                 return (acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
                         fail_other_delta, image_mode, image_error_count, cdn_mode_until, listing_limit_hit)
 
+            except ListingStateUnknownError as e2:
+                mark_listing_state_unknown(conn, rec, acct, sku, e2)
+                fail_other_delta += 1
+                return (acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
+                        fail_other_delta, image_mode, image_error_count, cdn_mode_until, listing_limit_hit)
             except Exception as e2:
                 print(f"[IMG_ERR] CDN retry failed: {e2}")
                 rec["listing_head"] = "出品失敗"

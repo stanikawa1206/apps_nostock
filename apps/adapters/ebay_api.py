@@ -56,7 +56,7 @@ import time
 import random
 import logging
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Dict, Any, Optional, Tuple
 from urllib.parse import urlencode, urlparse, parse_qsl, urlunparse, quote
@@ -118,6 +118,10 @@ class ApiHandledError(Exception):
         self.message = message
 
 class ListingLimitError(Exception):
+    pass
+
+class ListingStateUnknownError(ApiHandledError):
+    """publishOffer が一時的エラー/通信エラーで、eBay側で出品されたかを確認できなかった"""
     pass
 
 # ====== OAuth（refresh→access）======
@@ -459,10 +463,124 @@ def post_one_item(payload: Dict[str, Any], account_name: str, acct_policies: Dic
     register_inventory_item(payload, token)
     offer_id = create_offer(payload, token, acct_policies)
     update_offer(offer_id, payload, token, acct_policies)
-    res = publish_offer(offer_id, token)
+    published_after = datetime.utcnow()
+    try:
+        res = publish_offer(offer_id, token)
+    except ApiHandledError as e:
+        if not _is_publish_state_unknown(e.code, e.message):
+            raise
+        return _confirm_published_listing(account_name, token, payload["CustomLabel"], offer_id, published_after, e)
+    except requests.exceptions.RequestException as e:
+        return _confirm_published_listing(account_name, token, payload["CustomLabel"], offer_id, published_after,
+                                          ApiHandledError(-1, f"publish_request_error:{e}"))
     item_id = res.get("itemId") or res.get("listingId") or ""
-            
+
     return item_id
+
+
+# publishOffer が 25001/25002(System error)を返しても eBay側では出品されていることがあり、
+# 出品失敗として DB に登録せず、在庫管理されない出品が残っていた（2026-09-26〜10-14 に4件。offerはUNPUBLISHEDのまま）。
+PUBLISH_CONFIRM_WAITS = [5, 15, 30]
+
+
+def _is_publish_state_unknown(code: int, message: str) -> bool:
+    m = (message or "").lower()
+    return code in (25001, -1) or (code == 25002 and ("system error" in m or "internal application error" in m))
+
+
+def _find_listing_by_sku_started_since(token: str, sku: str, since_utc: datetime) -> Tuple[bool, Optional[str]]:
+    """
+    GetSellerList で since_utc 以降に開始した出品から SKU が一致する出品中のものを探す。
+    （UNPUBLISHED の offer には listingId が無く、GetItem の SKU 指定も使えないため、開始時刻で絞って探す）
+    戻り値: (確認できたか, 見つかったItemID)。Trading API の利用上限(518)中は (None, None)。
+    """
+    global _getitem_rate_limited_until
+    if time.time() < _getitem_rate_limited_until:
+        return None, None
+    ns = {"e": "urn:ebay:apis:eBLBaseComponents"}
+    headers = {
+        "X-EBAY-API-CALL-NAME": "GetSellerList",
+        "X-EBAY-API-SITEID": "0",
+        "X-EBAY-API-COMPATIBILITY-LEVEL": TRADING_COMPAT_LEVEL,
+        "X-EBAY-API-IAF-TOKEN": token,
+        "Content-Type": "text/xml",
+    }
+    time_from = (since_utc - timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    time_to = (datetime.utcnow() + timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    page = 1
+    while True:
+        body = f"""<?xml version="1.0" encoding="utf-8"?>
+<GetSellerListRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+  <StartTimeFrom>{time_from}</StartTimeFrom>
+  <StartTimeTo>{time_to}</StartTimeTo>
+  <GranularityLevel>Coarse</GranularityLevel>
+  <Pagination><EntriesPerPage>200</EntriesPerPage><PageNumber>{page}</PageNumber></Pagination>
+  <OutputSelector>ItemArray.Item.ItemID</OutputSelector>
+  <OutputSelector>ItemArray.Item.SKU</OutputSelector>
+  <OutputSelector>ItemArray.Item.SellingStatus.ListingStatus</OutputSelector>
+  <OutputSelector>PaginationResult</OutputSelector>
+</GetSellerListRequest>""".encode("utf-8")
+        try:
+            r = requests.post(TRADING_ENDPOINT, headers=headers, data=body, timeout=60)
+            root = ET.fromstring(r.text)
+        except (requests.exceptions.RequestException, ET.ParseError) as e:
+            print(f"[PUBLISH_CONFIRM] GetSellerList失敗 sku={sku} err={e}", flush=True)
+            return False, None
+        if r.status_code != 200 or root.findtext("e:Ack", default="", namespaces=ns) not in ("Success", "Warning"):
+            print(f"[PUBLISH_CONFIRM] GetSellerList失敗 sku={sku} http={r.status_code} body={r.text[:300]}", flush=True)
+            # 518 はアプリ全体の Trading API 上限のため、GetItem と同じく一定時間呼ばない
+            if root.findtext(".//e:Errors/e:ErrorCode", default="", namespaces=ns) == "518":
+                _getitem_rate_limited_until = time.time() + GETITEM_RATE_LIMIT_COOLDOWN_SEC
+                return None, None
+            return False, None
+        for item in root.findall(".//e:ItemArray/e:Item", ns):
+            if (item.findtext("e:SKU", default="", namespaces=ns) == sku
+                    and item.findtext(".//e:ListingStatus", default="", namespaces=ns) == "Active"):
+                return True, item.findtext("e:ItemID", default="", namespaces=ns)
+        pages = int(root.findtext(".//e:PaginationResult/e:TotalNumberOfPages", default="1", namespaces=ns) or 1)
+        if page >= pages:
+            return True, None
+        page += 1
+
+
+def _confirm_published_listing(account_name: str, token: str, sku: str, offer_id: str,
+                               published_after: datetime, publish_error: ApiHandledError) -> str:
+    """
+    publishOffer が一時的エラー/通信エラーの時、eBay側で実際に出品されたかを確認する。
+    出品されていれば ItemID を返す（呼び出し元で通常の出品成功としてDB登録する）。
+    出品されていないと確認できた場合は元のエラーを送出、確認できない場合は ListingStateUnknownError を送出する
+    （確認できないまま出品失敗にすると、再出品で二重出品になる恐れがあるため）。
+    """
+    print(f"[PUBLISH_CONFIRM] account={account_name} sku={sku} offer_id={offer_id} "
+          f"publish_error={publish_error} → eBay側の出品状態を確認", flush=True)
+    confirmed_absent = False
+    for wait in PUBLISH_CONFIRM_WAITS:
+        time.sleep(wait)
+        try:
+            offer = _inventory_get_offer(token, offer_id)
+        except requests.exceptions.RequestException as e:
+            print(f"[PUBLISH_CONFIRM] offer取得失敗 sku={sku} err={e}", flush=True)
+            offer = None
+        listing_id = str(((offer or {}).get("listing") or {}).get("listingId") or "")
+        if (offer or {}).get("status") == "PUBLISHED" and listing_id:
+            print(f"[PUBLISH_CONFIRM][FOUND] account={account_name} sku={sku} listing_id={listing_id} (offer)", flush=True)
+            return listing_id
+        ok, item_id = _find_listing_by_sku_started_since(token, sku, published_after)
+        if ok is None:
+            print(f"[PUBLISH_CONFIRM] Trading API 利用上限中のため確認を打ち切り sku={sku}", flush=True)
+            confirmed_absent = False
+            break
+        if item_id:
+            print(f"[PUBLISH_CONFIRM][FOUND] account={account_name} sku={sku} listing_id={item_id} "
+                  f"(GetSellerList, offer_status={(offer or {}).get('status')})", flush=True)
+            return item_id
+        # 「出品なし」は、offer が UNPUBLISHED と取得でき、かつ GetSellerList を最後まで取得できた時だけ
+        confirmed_absent = ok and (offer or {}).get("status") == "UNPUBLISHED"
+    if confirmed_absent:
+        print(f"[PUBLISH_CONFIRM][ABSENT] account={account_name} sku={sku} → 出品されていないことを確認", flush=True)
+        raise publish_error
+    print(f"[PUBLISH_CONFIRM][UNKNOWN] account={account_name} sku={sku} → 出品状態を確認できず", flush=True)
+    raise ListingStateUnknownError(publish_error.code, f"出品状態を確認できず(publish: {publish_error.message})")
 
 # ====== Trading API（バイヤーへのメッセージ送信）======
 # send_buyer_thankyou_message() 用フォールバックlogger。
