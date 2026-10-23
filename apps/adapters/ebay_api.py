@@ -815,6 +815,9 @@ def delete_item_from_ebay(account: str, sku: str) -> Dict[str, Any]:
         return {"success": False, "error_code": "offer_not_found", "raw_response": data}
 
     offer_id = offers[0]["offerId"]
+    # 削除前の offer の状態（呼び出し元で、offer削除だけで eBay の出品が終了するかの判定に使う）
+    offer_status = offers[0].get("status")
+    offer_listing_id = (offers[0].get("listing") or {}).get("listingId")
 
     # --------------------------------
     # 2 Offer削除
@@ -824,7 +827,8 @@ def delete_item_from_ebay(account: str, sku: str) -> Dict[str, Any]:
     r = requests.delete(delete_url, headers=headers, timeout=30)
 
     if r.status_code in (200, 204):
-        return {"success": True, "offer_id": offer_id}
+        return {"success": True, "offer_id": offer_id,
+                "offer_status": offer_status, "offer_listing_id": offer_listing_id}
 
     return {
         "success": False,

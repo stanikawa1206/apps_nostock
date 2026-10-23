@@ -19,6 +19,7 @@ from datetime import datetime, timezone, timedelta
 # ★ eBay削除API ← 波線エラーの正体はコレ
 from apps.adapters.ebay_api import delete_item_from_ebay
 from apps.adapters.ebay_api import (
+    delete_items_from_ebay_batch,
     get_listing_status,
     mark_listing_deleted_if_ended,
     update_ebay_price_rest,
@@ -581,7 +582,25 @@ def handle_listing_delete(
         "already_ended",
     }
 
-    if not ok:
+    if res.get("success") and not (
+        res.get("offer_status") == "PUBLISHED" and str(res.get("offer_listing_id") or "") == listing_id
+    ):
+        # offer削除で出品が終了するのは、その出品に公開済み(PUBLISHED)の offer だけ。
+        # publishOffer が一時エラーを返しても出品が作成されたケースは offer が UNPUBLISHED のままで、
+        # offer削除だけでは eBay の出品が残り、DBだけ削除済みになっていた（2026-10-22 BUZZ② 800719496487）。
+        # listing_id 指定で終了し、GetItem で終了を確認できた時だけ削除済みにする（確認できなければ管理対象に残す）。
+        end_res = delete_items_from_ebay_batch(account, [listing_id])
+        status = get_listing_status(account, listing_id)
+        ok = bool(status.get("ended"))
+        print(
+            f"[DELETE_{'VERIFIED' if ok else 'NG'}] listing_id={listing_id} account={account} sku={vendor_item_id} "
+            f"reason={reason} offer_status={res.get('offer_status')} offer_listing_id={res.get('offer_listing_id')} "
+            f"end_result={end_res.get('results') or end_res.get('error_code')!r} status={status!r}"
+            f"{'' if ok else ' → DB変更なし'}",
+            flush=True,
+        )
+
+    elif not ok:
         # REST版の削除は offer が既に無い(=eBay側で終了済みの可能性がある)場合も失敗を返し、
         # note(already_deleted)も返さないため、DBが出品中のまま残り再試行でも直らなかった
         # （2026-10-19調査）。GetItem で終了を確認できた時だけ削除済みにする。
