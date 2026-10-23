@@ -664,23 +664,95 @@ def upsert_vendor_item(conn, rec: Dict[str, Any]):
 
 
 
-def record_ebay_listing(listing_id: str, account_name: str, vendor_item_id: str, vendor_name: str, start_price: float):
+RECORD_LISTING_DEADLOCK_WAITS = [0, 1, 3, 6]
+
+
+def _is_deadlock_error(e: Exception) -> bool:
+    return isinstance(e, pyodbc.Error) and (
+        (e.args and e.args[0] == "40001") or "(1205)" in str(e)
+    )
+
+
+def record_ebay_listing(listing_id: str, account_name: str, vendor_item_id: str, vendor_name: str,
+                        start_price: float, is_collectibles=None):
+    """
+    出品成功時の trx.listings 登録と、出品枠の残数(listing_left / additional_listing_left)の減算、
+    当日の出品数が post_target に達した場合の close_reason='DONE' を、1つのトランザクションで行う。
+    以前は登録と減算が別トランザクションで、減算側がデッドロック(1205)で失敗すると
+    登録だけ残って残数が減らず、eBayの残数とずれていた（2026-10-16 谷川④ 137847598624）。
+    デッドロック時はトランザクション全体がロールバックされるため、そのまま再実行しても二重減算にならない。
+    再実行しても記録できない場合は、eBayには出品済みのため、出品失敗として再出品されないよう
+    ListingStateUnknownError を送出する（呼び出し元で出品不可にして通知）。
+    """
     if not listing_id:
         return
 
-    conn = get_sql_server_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
+    last_error = None
+    for wait in RECORD_LISTING_DEADLOCK_WAITS:
+        if wait:
+            time.sleep(wait)
+        conn = get_sql_server_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
 INSERT INTO [trx].[listings]
     ([listing_id], [start_time], [account], [vendor_item_id], [vendor_name], [start_price], [is_deleted])
 VALUES
     (?, SYSDATETIME(), ?, ?, ?, ?, 0);
 """, (listing_id, account_name, vendor_item_id, vendor_name, start_price))
-        conn.commit()
+                if is_collectibles:
+                    cur.execute("""
+                        UPDATE mst.ebay_accounts
+                        SET additional_listing_left = additional_listing_left - 1
+                        OUTPUT 'additional_listing_left', inserted.additional_listing_left
+                        WHERE account = ?
+                    """, account_name)
+                else:
+                    cur.execute("""
+                        UPDATE mst.ebay_accounts
+                        SET listing_left = listing_left - 1
+                        OUTPUT 'listing_left', inserted.listing_left
+                        WHERE account = ?
+                    """, account_name)
+                left = cur.fetchone()
+
+                # 投稿成功直後、その場で当日COUNTを再取得しtarget到達済みならDONEを確定する。
+                # close_reasonがLIMIT中でも上書き対象に含めるのは、このworkerの投稿が
+                # 確定する前に別workerが実際のeBay制限でLIMITを書いていた場合でも、
+                # target到達という事実が判明した時点で必ずDONEへ昇格させるため。
+                cur.execute("""
+                    UPDATE mst.ebay_accounts
+                    SET close_reason = 'DONE'
+                    WHERE account = ?
+                      AND (close_reason IS NULL OR close_reason = 'LIMIT')
+                      AND (
+                          SELECT COUNT(*) FROM trx.listings
+                          WHERE account = ?
+                            AND CAST(start_time AS DATE) = CAST(GETDATE() AS DATE)
+                            AND is_deleted = 0
+                      ) >= (SELECT post_target FROM mst.ebay_accounts WHERE account = ?)
+                """, (account_name, account_name, account_name))
+            conn.commit()
+        except Exception as e:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            if not _is_deadlock_error(e):
+                raise
+            last_error = e
+            print(f"[RECORD_LISTING_DEADLOCK] acct={account_name} listing_id={listing_id} sku={vendor_item_id} → 再実行 err={e}")
+            continue
+        finally:
+            conn.close()
+
         log_listings_change("INSERT", account_name, listing_id, vendor_item_id)
-    finally:
-        conn.close()
+        print(f"[LISTING_LEFT] acct={account_name} listing_id={listing_id} {left[0] if left else '?'}={left[1] if left else '?'}")
+        return
+
+    raise ListingStateUnknownError(
+        1205, f"出品成功(listing_id={listing_id})だがDB記録・残数減算がデッドロックで失敗: {last_error}"
+    )
 
 
 def _truncate_for_db(s: str, limit: int) -> str:
@@ -2146,38 +2218,8 @@ def post_to_ebay(
 
         if item_id_ebay:
             print(f"✅ 出品成功: acct={acct} SKU={sku} listing_id={item_id_ebay}")
-            record_ebay_listing(item_id_ebay, acct, sku, vendor_name, start_price_usd)
-
-            with conn.cursor() as cursor:
-                if is_collectibles:
-                    cursor.execute("""
-                        UPDATE mst.ebay_accounts
-                        SET additional_listing_left = additional_listing_left - 1
-                        WHERE account = ?
-                    """, acct)
-                else:
-                    cursor.execute("""
-                        UPDATE mst.ebay_accounts
-                        SET listing_left = listing_left - 1
-                        WHERE account = ?
-                    """, acct)
-
-                # 投稿成功直後、その場で当日COUNTを再取得しtarget到達済みならDONEを確定する。
-                # close_reasonがLIMIT中でも上書き対象に含めるのは、このworkerの投稿が
-                # 確定する前に別workerが実際のeBay制限でLIMITを書いていた場合でも、
-                # target到達という事実が判明した時点で必ずDONEへ昇格させるため。
-                cursor.execute("""
-                    UPDATE mst.ebay_accounts
-                    SET close_reason = 'DONE'
-                    WHERE account = ?
-                      AND (close_reason IS NULL OR close_reason = 'LIMIT')
-                      AND (
-                          SELECT COUNT(*) FROM trx.listings
-                          WHERE account = ?
-                            AND CAST(start_time AS DATE) = CAST(GETDATE() AS DATE)
-                            AND is_deleted = 0
-                      ) >= (SELECT post_target FROM mst.ebay_accounts WHERE account = ?)
-                """, (acct, acct, acct))
+            # trx.listings 登録・残数減算・close_reason(DONE) は record_ebay_listing 内で1トランザクション
+            record_ebay_listing(item_id_ebay, acct, sku, vendor_name, start_price_usd, is_collectibles)
 
             conn.commit()
 
@@ -2272,20 +2314,7 @@ def post_to_ebay(
                 item_id_ebay = _attempt_post(image_mode, model_name=_model_us)
                 if item_id_ebay:
                     print(f"✅ 出品成功(model_us retry): acct={acct} SKU={sku} listing_id={item_id_ebay}")
-                    record_ebay_listing(item_id_ebay, acct, sku, vendor_name, start_price_usd)
-                    with conn.cursor() as cursor:
-                        if is_collectibles:
-                            cursor.execute("""
-                                UPDATE mst.ebay_accounts
-                                SET additional_listing_left = additional_listing_left - 1
-                                WHERE account = ?
-                            """, acct)
-                        else:
-                            cursor.execute("""
-                                UPDATE mst.ebay_accounts
-                                SET listing_left = listing_left - 1
-                                WHERE account = ?
-                            """, acct)
+                    record_ebay_listing(item_id_ebay, acct, sku, vendor_name, start_price_usd, is_collectibles)
                     conn.commit()
                     rec["processing_by"] = None
                     rec["processing_at"] = None
@@ -2355,7 +2384,8 @@ def post_to_ebay(
                 item_id_ebay = _attempt_post("CDN", model_name=_model_jp)
                 if item_id_ebay:
                     print(f"✅ 出品成功(CDN retry): acct={acct} SKU={sku} listing_id={item_id_ebay}")
-                    record_ebay_listing(item_id_ebay, acct, sku, vendor_name, start_price_usd)
+                    # 以前はこの経路だけ残数を減算していなかった
+                    record_ebay_listing(item_id_ebay, acct, sku, vendor_name, start_price_usd, is_collectibles)
 
                     rec["processing_by"] = None
                     rec["processing_at"] = None
