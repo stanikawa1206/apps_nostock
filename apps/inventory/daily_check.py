@@ -102,7 +102,7 @@ FETCH_ACTIVE = APPS_INV / "fetch_active_ebay.py"
 FETCH_SOLD       = APPS_INV / "fetch_sold_ebay.py"
 CHECK_REMAINING  = APPS_INV / "check_remaining_ebay.py"
 
-# 30日以上経過した古い出品を削除する処理。
+# 29日以上経過した古い出品を削除する処理。
 # LIMIT時に出品枠を確保する make_listing_space.py とは役割が異なり、
 # 「日次の定期清掃」として毎サイクル1回だけ実行する。
 DELETE_SCRIPT = APPS_PUB / "delete_ebay_daily.py"
@@ -1342,7 +1342,7 @@ def should_stop_daily_check(conn) -> bool:
 # ======================
 def run_delete_ebay_daily(conn):
     """
-    30日以上経過した古い出品を削除する（delete_ebay_daily.py）。
+    29日以上経過した古い出品を削除する（delete_ebay_daily.py）。
 
     LIMIT時に出品枠を確保する make_listing_space.py とは役割が全く異なり、
     こちらは「日次の定期清掃」。在庫管理が終わった後、毎サイクル1回だけ実行する。
@@ -1561,7 +1561,7 @@ def run_one_cycle(cycle_no: int, conn):
 
         break
 
-    # 古い出品を削除（30日以上経過したものを毎サイクル1回だけ削除する）
+    # 古い出品を削除（29日以上経過したものを毎サイクル1回だけ削除する）
     print("=" * 40)
     print("🗑 古い出品削除開始")
     print("=" * 40)

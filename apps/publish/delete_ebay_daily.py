@@ -3,7 +3,7 @@
 trim_ebay_listings_30d_all.py
 
 目的:
-- trx.listings から「出品後30日以上」の listing を抽出し、eBayで終了（削除）する。
+- trx.listings から「出品後29日以上」の listing を抽出し、eBayで終了（削除）する。
 - eBay 成功分だけ SQL Server の trx.listings からも DELETE して整合性を維持。
 - 518/429 レート制限に対して GlobalRateLimiter / GlobalCircuitBreaker / defer で保護する。
 - 最後に "✅ 全体合計: XX 件削除" を必ず出力する（inventory_ebay_manager 側が拾う想定）。
@@ -47,8 +47,11 @@ API_CONCURRENCY  = 1        # API同時実行上限（全体）
 
 DEFER_WINDOW_SEC = 1800     # 518/429発生 item_id は30分触らない
 
-# 30日以上（固定）
-DAYS_THRESHOLD = 30
+# 29日以上（固定）
+# eBayのGTC出品は出品から30日後に自動更新され、そのたびに無料出品枠を1件消費する。
+# 30日以上で削除していた時は、削除が自動更新より後になった出品が更新後に終了し、
+# 枠だけ消費していた（2026-10 貴文で847件。Seller HubのUsed一覧と照合）。
+DAYS_THRESHOLD = 29
 
 # ===== グローバル制御 =====
 
@@ -161,7 +164,7 @@ ORDER BY [account], [start_time] ASC;
 
 def fetch_delete_candidates_30d_all():
     """
-    trx.listings から「30日以上」の (account, listing_id) を全部取る。
+    trx.listings から「DAYS_THRESHOLD日以上」の (account, listing_id) を全部取る。
     defer中の listing_id は除外する。
     """
     with get_sql_server_connection() as conn:
@@ -315,7 +318,7 @@ def delete_items_from_ebay_and_sql(account: str, item_ids):
 # ===== メイン =====
 
 def main():
-    # 1) 30日以上の候補を全部取得（accountも一緒に）
+    # 1) DAYS_THRESHOLD日以上の候補を全部取得（accountも一緒に）
     pairs = fetch_delete_candidates_30d_all()
     if not pairs:
         print("✅ 全体合計: 0 件削除")
@@ -326,7 +329,7 @@ def main():
     for acc, iid in pairs:
         by_account[acc].append(iid)
 
-    print("🎯 30日以上：全消し 削除計画（account: 件数）")
+    print(f"🎯 {DAYS_THRESHOLD}日以上：全消し 削除計画（account: 件数）")
     for acc, ids in by_account.items():
         print(f" - {acc}: {len(ids)} 件")
 
