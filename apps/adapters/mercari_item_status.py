@@ -15,10 +15,12 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from datetime import datetime, timezone, timedelta
+from decimal import Decimal
 
 # ★ eBay削除API ← 波線エラーの正体はコレ
 from apps.adapters.ebay_api import delete_item_from_ebay
 from apps.adapters.ebay_api import (
+    _delete_listing_after_price_failure,
     delete_items_from_ebay_batch,
     get_listing_status,
     mark_listing_deleted_if_ended,
@@ -643,33 +645,102 @@ def _is_transient_inventory_error(resp: Dict[str, Any]) -> bool:
 
 PRICE_PENDING_PREFIX = "価格更新失敗(再試行待ち)"
 RETRY_AFTER_MAX_SEC = 60
+# 値下げの失敗は赤字にならないため初回は通知せず、最初の失敗からこの時間を過ぎても失敗した時に1回だけ通知する
+# （2026-10-24 eBay障害の約7分間に、値下げ失敗15件で警告メールが15通送られていた）。
+PRICE_DOWN_NOTIFY_AFTER_SEC = 6 * 3600
 
 
-def _record_price_update_pending(conn, account: str, listing_id: str, sku: str, error: str) -> None:
+def _pending_notify_tag(error_message) -> Optional[str]:
+    """
+    error_message = "価格更新失敗(再試行待ち)[通知状態]:エラー" の通知状態を返す。再試行待ちでなければ None。
+    通知状態の無い旧形式は、初回失敗時に通知済みのため "通知済:旧形式" とみなす。
+    """
+    s = str(error_message or "")
+    if not s.startswith(PRICE_PENDING_PREFIX):
+        return None
+    rest = s[len(PRICE_PENDING_PREFIX):]
+    if rest.startswith("[") and "]" in rest:
+        return rest[1:rest.index("]")]
+    return "通知済:旧形式"
+
+
+def _record_price_update_pending(
+    conn,
+    account: str,
+    listing_id: str,
+    sku: str,
+    error: str,
+    *,
+    category: str,
+    mail_info: str,
+) -> None:
     """
     価格更新できなかった出品中の行に失敗内容を記録する（is_deleted は変えず管理対象に残す）。
-    error_at は最初に失敗した時刻のまま保持し、初回の失敗時だけメールで通知する。
+    error_at は最初に失敗した時刻のまま保持する。
+    通知: 値上げ等は初回から、値下げは最初の失敗から PRICE_DOWN_NOTIFY_AFTER_SEC 経過後の失敗時に通知する。
+    同じ分類(category)で通知済みなら再通知しない。
     """
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT error_message, error_at
+              FROM trx.listings
+             WHERE account = ?
+               AND listing_id = ?
+               AND is_deleted = 0
+        """, (account, listing_id))
+        row = cur.fetchone()
+    if not row:
+        return
+
+    prev_tag = _pending_notify_tag(row[0])
+    first_at = row[1] if prev_tag is not None and row[1] else datetime.now()
+    notified = prev_tag is not None and prev_tag.startswith("通知済")
+
+    if category == "値下げ":
+        notify = (
+            prev_tag is not None
+            and not notified
+            and (datetime.now() - first_at).total_seconds() >= PRICE_DOWN_NOTIFY_AFTER_SEC
+        )
+    else:
+        notify = prev_tag != f"通知済:{category}"
+
+    if notify:
+        tag = f"通知済:{category}"
+    elif notified:
+        tag = prev_tag
+    else:
+        tag = f"未通知:{category}"
+
     with conn.cursor() as cur:
         cur.execute("""
             UPDATE trx.listings
                SET error_message = ?,
-                   error_at = CASE WHEN error_message LIKE ? THEN error_at ELSE SYSDATETIME() END
-            OUTPUT deleted.error_message
+                   error_at = ?
              WHERE account = ?
                AND listing_id = ?
                AND is_deleted = 0
-        """, (f"{PRICE_PENDING_PREFIX}:{error}"[:4000], PRICE_PENDING_PREFIX + "%", account, listing_id))
-        rows = cur.fetchall()
+        """, (f"{PRICE_PENDING_PREFIX}[{tag}]:{error}"[:4000], first_at, account, listing_id))
     conn.commit()
 
-    if rows and not str(rows[0][0] or "").startswith(PRICE_PENDING_PREFIX):
+    print(f"[PRICE_PENDING] account={account} sku={sku} listing_id={listing_id} tag={tag} notify={notify}", flush=True)
+    if notify:
         send_mail(
-            f"【要確認】eBay価格更新失敗 {account} {sku}",
+            f"【要確認】eBay価格更新失敗({category}) {account} {sku}",
             "eBayの価格更新に失敗しました。出品は管理対象のまま残し、次回の価格変更検知・在庫チェックで再試行します。\n"
-            "仕入れ価格が上がっている場合は赤字販売の恐れがあるため、続く場合は出品の終了を検討してください。\n\n"
-            f"account: {account}\nlisting_id: {listing_id}\nsku: {sku}\nerror: {error}\n",
+            "値上げの失敗は赤字販売の恐れがあるため、続く場合は出品の終了を検討してください。\n\n"
+            f"account: {account}\nlisting_id: {listing_id}\nsku: {sku}\n{mail_info}"
+            f"初回失敗: {first_at:%Y-%m-%d %H:%M:%S}\n",
         )
+
+
+def _get_listing_start_price(conn, account: str, listing_id: str) -> Optional[Decimal]:
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT start_price FROM trx.listings WHERE account = ? AND listing_id = ?
+        """, (account, listing_id))
+        row = cur.fetchone()
+    return Decimal(str(row[0])) if row and row[0] is not None else None
 
 
 def _clear_price_update_pending(conn, account: str, listing_id: str) -> None:
@@ -759,24 +830,69 @@ def handle_listing_price_update(
         ):
             return
 
-    if resp and resp.get("db_deleted"):
+    if did_update:
+        _clear_price_update_pending(conn, account, listing_id)
+        return
+
+    resp = resp or {}
+    error = resp.get("error") or "exception"
+
+    # 値上げか値下げか: getOffer で取れたeBayの現在価格、取れなければDBの start_price と比べる。
+    # どちらも無ければ値上げ扱い（赤字の恐れがある側）にする。
+    if resp.get("old_price"):
+        old_usd = Decimal(resp["old_price"])
+    else:
+        old_usd = _get_listing_start_price(conn, account, listing_id)
+    is_up = old_usd is None or Decimal(str(usd)) > old_usd
+
+    # 値上げが販売上限(25002)で失敗した場合は、既存の安全な終了処理で終了する（値下げなら出品維持）。
+    end_reason = resp.get("end_reason")
+    if is_up and resp.get("selling_limit"):
+        end_reason = "販売上限"
+        resp["db_deleted"] = _delete_listing_after_price_failure(account, vendor_item_id, error, "価格更新失敗")
+
+    mail_info = (
+        f"旧価格(USD): {old_usd if old_usd is not None else '不明'}\n"
+        f"新価格(USD): {usd}（{'値上げ' if is_up else '値下げ'}）\n"
+        f"error: {error}\n"
+    )
+
+    if resp.get("db_deleted"):
         # 終了済みofferのため価格更新(再出品)を行わず、GetItem で終了を確認してDBも削除済みにした。
+        # こちらから終了した場合(販売上限・IP違反)は結果を通知する。
+        if end_reason:
+            send_mail(
+                f"【通知】eBay価格更新失敗のため出品終了({end_reason}) {account} {vendor_item_id}",
+                "eBayの価格更新に失敗したため出品を終了し、GetItem で終了を確認してDBも削除済みにしました。\n\n"
+                f"account: {account}\nlisting_id: {listing_id}\nsku: {vendor_item_id}\n{mail_info}"
+                "出品終了: 成功\n",
+            )
         return
 
     # 価格更新できず、eBayで出品中の可能性が残る場合は例外にする。
     # 呼び出し元は vendor_item.price を更新しないため、次回も価格変更として再試行される
     # （以前は listing_not_active / offer_not_found で例外にせず戻り、再試行されなかった）。
-    if not did_update:
-        error = (resp or {}).get("error") or "exception"
-        if resp and "db_deleted" in resp:
-            error += " / eBayの出品終了を確認できずDB削除なし"
-        _record_price_update_pending(conn, account, listing_id, vendor_item_id, error)
-        raise RuntimeError(
-            f"eBay価格更新失敗 sku={vendor_item_id} listing_id={listing_id} account={account} error={error}"
-        )
+    if "db_deleted" in resp:
+        error += " / eBayの出品終了を確認できずDB削除なし"
+    if end_reason:
+        category = "出品終了未確認"
+        mail_info += f"出品終了: 失敗（{end_reason}のため終了を試みたが、eBayの終了を確認できずDB削除なし）\n"
+    elif not is_up:
+        category = "値下げ"
+        mail_info += "出品終了: 未実施（出品維持・再試行待ち）\n"
+    elif resp.get("transient"):
+        category = "値上げ・一時的な障害"
+        mail_info += "出品終了: 未実施（一時的な障害のため出品維持・再試行待ち）\n"
+    else:
+        category = "値上げ・要確認"
+        mail_info += "出品終了: 未実施（原因を判断できないため出品維持・再試行待ち）\n"
+    _record_price_update_pending(
+        conn, account, listing_id, vendor_item_id, error, category=category, mail_info=mail_info
+    )
+    raise RuntimeError(
+        f"eBay価格更新失敗 sku={vendor_item_id} listing_id={listing_id} account={account} error={error}"
+    )
 
-    _clear_price_update_pending(conn, account, listing_id)
-    
 if __name__ == "__main__":
 
     test_url = "https://fril.jp/item/00854aa1c581d2224423c0ce5cf149ad"

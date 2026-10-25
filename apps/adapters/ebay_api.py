@@ -1260,10 +1260,20 @@ def _is_transient_inventory_failure(error_id, error_message: str) -> bool:
     25001(system error)、25002 のうち "System error"、エラー本文の無い失敗(HTTP 5xx等)。
     25002 "System error. Unable to process your request. Please try again later." で
     出品を終了していた（2026-10-19〜21に33回）。
+    25604(Availability not found)・25710(resource not found)・25713(Offer is not available) も、
+    eBay側の障害中に存在する出品に対して返り、出品を終了していた（2026-10-24 14:27〜14:34、2件）。
     """
-    if error_id is None or error_id == 25001:
+    if error_id is None or error_id in (25001, 25604, 25710, 25713):
         return True
     return error_id == 25002 and "system error" in (error_message or "").lower()
+
+
+def _is_selling_limit_failure(error_id, error_message: str) -> bool:
+    """
+    25002 のうち月間の販売上限到達（"...reached the amount you can list..."）か。
+    システム障害の 25002 とは本文で区別する（2026-10-24 BUZZ で実測）。
+    """
+    return error_id == 25002 and "amount you can list" in (error_message or "").lower()
 
 
 def update_ebay_price_rest(
@@ -1413,7 +1423,7 @@ def update_ebay_price_rest(
         # 一時的なエラー → 削除せず再試行に回す
         # =========================
         if _is_transient_inventory_failure(error_id, error_message):
-            return {"success": False, "sku": sku, "error": error_message, "transient": True}
+            return {"success": False, "sku": sku, "error": error_message, "transient": True, "old_price": old_price_str}
 
         # =========================
         # 25097 → 削除＋出品不可
@@ -1433,24 +1443,20 @@ def update_ebay_price_rest(
 
             db_deleted = _delete_listing_after_price_failure(account, sku, error_message, "IP違反")
 
-            return {"success": False, "sku": sku, "error": error_message, "db_deleted": db_deleted}
+            return {
+                "success": False, "sku": sku, "error": error_message, "db_deleted": db_deleted,
+                "end_reason": "IP違反", "old_price": old_price_str,
+            }
 
-        # -------------------------
-        # 出品削除 + DB更新
-        # -------------------------
-        print(
-            "DELETE LISTING:",
-            "account=", account,
-            "sku=", sku,
-            "reason=", error_message
-        )
-        db_deleted = _delete_listing_after_price_failure(account, sku, error_message, "価格更新失敗")
-
+        # 販売上限・その他のエラーでは、ここでは出品を終了しない。
+        # 値上げか値下げかで終了の要否が変わるため、呼び出し元(handle_listing_price_update)で判断する
+        # （以前はエラーコードだけで出品を終了していた）。
         return {
             "success": False,
             "sku": sku,
             "error": error_message,
-            "db_deleted": db_deleted,
+            "selling_limit": _is_selling_limit_failure(error_id, error_message),
+            "old_price": old_price_str,
         }
 
     # 6) publish
@@ -1498,7 +1504,7 @@ def update_ebay_price_rest(
                         f"actual={status.get('current_price')} status={status.get('listing_status')}"
                     )
                     print(f"[PRICE_VERIFY_NG] account={account} sku={sku} {verify_error}", flush=True)
-                    return {"success": False, "sku": sku, "error": verify_error, "transient": True}
+                    return {"success": False, "sku": sku, "error": verify_error, "transient": True, "old_price": old_price_str}
                 verified = True
             else:
                 print(
@@ -1547,7 +1553,7 @@ def update_ebay_price_rest(
 
         # 一時的なエラー → 削除せず再試行に回す
         if _is_transient_inventory_failure(error_id, error_message):
-            return {"success": False, "sku": sku, "error": error_message, "transient": True}
+            return {"success": False, "sku": sku, "error": error_message, "transient": True, "old_price": old_price_str}
 
         # 25097 → 削除＋出品不可
         if error_id == 25097:
@@ -1565,12 +1571,19 @@ def update_ebay_price_rest(
 
             db_deleted = _delete_listing_after_price_failure(account, sku, error_message, "IP違反")
 
-            return {"success": False, "sku": sku, "error": error_message, "db_deleted": db_deleted}
+            return {
+                "success": False, "sku": sku, "error": error_message, "db_deleted": db_deleted,
+                "end_reason": "IP違反", "old_price": old_price_str,
+            }
 
-        # その他 → 従来通り削除
-        db_deleted = _delete_listing_after_price_failure(account, sku, error_message, "価格更新失敗")
-
-        return {"success":False,"sku":sku,"error":error_message,"db_deleted":db_deleted}
+        # その他 → ここでは終了しない（PUT失敗時と同じく呼び出し元で判断する）
+        return {
+            "success": False,
+            "sku": sku,
+            "error": error_message,
+            "selling_limit": _is_selling_limit_failure(error_id, error_message),
+            "old_price": old_price_str,
+        }
     return {"success":True,"sku":sku,"price_verified":verified}
 
 def update_ebay_price(account: str, ebay_item_id: str, new_price_usd, *, sku: Optional[str] = None) -> dict:
