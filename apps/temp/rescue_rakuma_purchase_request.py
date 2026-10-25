@@ -51,6 +51,19 @@ fn_take_one_candidates_base の条件⑦-2（30日間再チェック抑制）に
 
   「購入申請あり（NG維持）」「判定不能・取得失敗」の場合はDBを一切更新しない。
 
+## 楽観ロックの修正（2026-10-22）
+  旧仕様は last_checked_at の一致を楽観ロックに使っていたが、2026-10-22の調査で
+  skipped_modified がログ全16,259行中6,252行（過半）を占めることが判明した。原因は
+  scrape_worker.py の upsert_vendor_items()（在庫スクレイプのMERGE）が
+  [出品状況]/[出品状況詳細] に触れずに last_checked_at だけを頻繁に更新するため、
+  本スクリプトが対象を取得してからUPDATEするまでの間に last_checked_at がずれ、
+  実質的な変更が無いにもかかわらず楽観ロックが外れていたことだった。
+  そのため楽観ロック条件を last_checked_at ではなく [出品状況詳細] = TARGET_DETAIL_TEXT
+  に変更した（WHERE句の [出品状況] = N'NG(購入申請あり)' と合わせて、取得時点の
+  スナップショットと完全一致することを要求する）。他ワーカーが出品状況・出品状況詳細の
+  いずれかを実際に変更していれば更新は0行となり、引き続き skipped_modified として
+  安全にスキップされる。
+
 ## 二重処理防止・再開
   本スクリプト自身の実行ログ（RESULT_LOG_PATH, JSON Lines）を唯一の進捗管理に使う。
   各商品ごとに最新の記録を見て、確定済み（rescued / kept_ng）ならスキップ、
@@ -128,7 +141,7 @@ SET [出品状況] = N'',
 WHERE vendor_name = ?
   AND vendor_item_id = ?
   AND [出品状況] = N'NG(購入申請あり)'
-  AND last_checked_at = ?
+  AND [出品状況詳細] = ?
 """
 
 
@@ -230,7 +243,7 @@ def try_update_rescued(conn, item: dict) -> bool:
         RESCUE_UPDATE_SQL,
         item["vendor_name"],
         item["vendor_item_id"],
-        item["last_checked_at"],
+        TARGET_DETAIL_TEXT,
     )
     updated = cur.rowcount
     conn.commit()
