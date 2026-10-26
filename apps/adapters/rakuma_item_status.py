@@ -205,7 +205,7 @@ def fetch_rakuma_item_html(url: str) -> str:
         timeout=FETCH_TIMEOUT_SEC,
     )
     if resp.status_code == 404:
-        raise RakumaItemUnavailableError(f"item not found (404): {url}", state="deleted")
+        raise RakumaItemUnavailableError(f"item not found (404): {url}", state="削除")
     resp.raise_for_status()
     return resp.text
 
@@ -230,21 +230,29 @@ def check_rakuma_item_status(url: str) -> "tuple[str, Optional[int]]":
       2026-10-15追記: 「存在しない」は本来「購入申請あり」を意味する想定だったが、
       HTML構造の変化など他の要因でも同じ見え方になり得ることが判明したため、ここでは
       確定的に「売り切れ」として削除対象にはしない。安全側に倒し「判定不可」を返して
-      今回のチェックはスキップする（remaining_check_atも更新されず次回再判定される）。
+      出品は維持する（次回の在庫チェックで再判定される。詳細は check_remaining_ebay.py）。
       結果として誤ってeBay出品を削除するより、判定を先送りする方を優先する。
+
+      2026-10-26追記: 購入ボタン(a.btn_buy)が無いだけでは「売り切れ」と断定しない
+      （バリエーション商品は種類選択ボタンに置き換わり、HTML変更でもセレクタが外れ得るため）。
+      判定は次のとおり:
+        - SOLD OUT表示あり → 売り切れ（eBay出品削除）
+        - 404 → RakumaItemUnavailableError（呼び出し側で「削除」としてeBay出品削除）
+        - 購入ボタンあり かつ「すぐに購入可」あり → 販売中（出品維持）
+        - 上記以外 → 判定不可（出品維持・次回の在庫チェックで再確認）
     """
     html = fetch_rakuma_item_html(url)  # 404ならRakumaItemUnavailableErrorが送出される
     soup = BeautifulSoup(html, "html.parser")
 
     sold_marker = soup.select_one("span.type-modal__contents--button--sold")
-    buy_button = soup.select_one("a.btn_buy")
-    if sold_marker is not None or buy_button is None:
+    if sold_marker is not None:
         return "売り切れ", None
 
+    buy_button = soup.select_one("a.btn_buy")
     purchase_ok_el = soup.select_one(".item__icon.request-required")
-    if purchase_ok_el is None:
-        # 購入申請ありの可能性はあるが確定できないため、売り切れ扱いにして削除してしまう
-        # 安全ではない判断は行わない（詳細は関数docstring参照）。
+    if buy_button is None or purchase_ok_el is None:
+        # 購入できると確認できない（購入ボタン無し・購入申請ありの可能性等）。
+        # 売り切れ扱いにして削除してしまう安全ではない判断は行わない（詳細は関数docstring参照）。
         return "判定不可", None
 
     price = None
@@ -277,11 +285,17 @@ def parse_detail_rakuma(url: str, preset: str, vendor_name: str) -> Dict[str, An
     # sold_markerの明示的な出現のみを「売り切れ」の確定条件とし、buy_buttonが単に
     # 見つからない場合（HTML変更等でセレクタが外れた可能性も含む）は売り切れと断定せず
     # 「判定不可」として扱う（安全のため出品は中止するが、恒久的なSOLD OUT扱いにはしない）。
+    #
+    # バリエーション商品（「種類を選択する」）は a.btn_buy の代わりに種類選択ボタンが表示されるため、
+    # 購入ボタンの有無より先に判定する。以前は購入ボタンの判定が先だったため、バリエーション商品が
+    # 「NG(バリエーション商品)」ではなく「判定不可」になり、出品状況にNGが残らないため
+    # 検索で見つかるたびに再チェックされていた（2026-10-26 確認、業者ショップの商品で多発）。
     sold_marker = soup.select_one("span.type-modal__contents--button--sold")
     buy_button = soup.select_one("a.btn_buy")
+    is_variant = _extract_is_variant(soup)
     if sold_marker is not None:
         raise RakumaItemUnavailableError("sold out marker found", state="売り切れ")
-    if buy_button is None:
+    if buy_button is None and not is_variant:
         raise RakumaItemUnavailableError("buy button not found (status undetermined)", state="判定不可")
 
     ld = _extract_ld_json_product(soup) or {}
@@ -326,8 +340,6 @@ def parse_detail_rakuma(url: str, preset: str, vendor_name: str) -> Dict[str, An
     # vendor_created_at/vendor_updated_at はNoneのまま呼び出し元に委ねる）
     time_ago_el = soup.select_one("div.time_ago")
     last_updated_str = time_ago_el.get_text(strip=True) if time_ago_el else None
-
-    is_variant = _extract_is_variant(soup)
 
     rec: Dict[str, Any] = {
         "vendor_name": vendor_name,

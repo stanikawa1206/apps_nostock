@@ -469,11 +469,17 @@ def process_status_and_sync(
         print(f"[STATUS] {url} -> {status} (price_jpy={price_jpy})")
 
         # =====================
-        # ★ 判定不可は即終了（確定しない）
+        # ★ 判定不可: 出品は維持し、status='判定不可' と remaining_check_at を記録してこの回は完了とする
         # =====================
+        # 以前は remaining_check_at を入れずに return していたため、ロック期限切れのたびに
+        # 同じ回の中で再取得され、判定不可が続く商品があると remaining 対象が0件にならず
+        # daily_check の待機（wait_until_remaining_exhausted）が終わらなかった。
+        # status='判定不可' は eBay削除の対象（5.）にも価格改定（3.）にも該当しない（4. で status のみ更新）。
+        # 次回の在庫管理で fetch_active_ebay が出品中の status を NULL に戻し、
+        # reset_remaining_flags が remaining_check_at をクリアするため、必ず再確認される。
+        # 判定不可の件数は daily_check が remaining 終了時にまとめてメール通知する。
         if status == "判定不可":
-            print(f"[INFO] 判定不可のためスキップ sku={sku}")
-            return  # remaining_check_at を入れない
+            print(f"[INFO] 判定不可（出品維持・次回再確認） sku={sku}")
 
         # =====================
         # 2. vendor_item 現在価格取得

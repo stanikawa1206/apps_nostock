@@ -737,6 +737,63 @@ def notify_no_preset_listings(conn):
     return total
 
 
+def notify_undetermined_remaining(conn, rem_start):
+    """
+    今回の remaining（rem_start 以降に在庫チェック済み）で「判定不可」になった出品中の商品を集計し、
+    1件以上あれば1通のメールにまとめて通知する（商品ごとの個別メールは送らない）。
+
+    判定不可の商品は出品を維持し、次回の在庫管理で再確認される（check_remaining_ebay.py 参照）。
+    戻り値: 判定不可の件数
+    """
+    cur = conn.cursor()
+    rows = cur.execute("""
+        SELECT
+            l.account,
+            l.listing_id,
+            v.vendor_name,
+            v.vendor_item_id,
+            CASE v.vendor_name
+                WHEN N'ラクマ'        THEN N'https://item.fril.jp/' + v.vendor_item_id
+                WHEN N'メルカリshops' THEN N'https://jp.mercari.com/shops/product/' + v.vendor_item_id
+                ELSE N'https://jp.mercari.com/item/' + v.vendor_item_id
+            END AS vendor_url,
+            v.remaining_check_at
+        FROM trx.listings AS l
+        INNER JOIN trx.vendor_item AS v
+            ON v.vendor_name = l.vendor_name
+           AND v.vendor_item_id = l.vendor_item_id
+        WHERE l.is_deleted = 0
+          AND v.status = N'判定不可'
+          AND v.remaining_check_at >= ?
+        ORDER BY v.vendor_name, l.account, v.remaining_check_at
+    """, rem_start).fetchall()
+
+    total = len(rows)
+    print(f"🔎 在庫チェックの判定不可（出品維持）: {total} 件")
+    if total == 0:
+        return 0
+
+    lines = [
+        f"{r.vendor_name} | {r.account} | eBay https://www.ebay.com/itm/{r.listing_id} | "
+        f"仕入元 {r.vendor_url} | 確認 {r.remaining_check_at:%m/%d %H:%M}"
+        for r in rows
+    ]
+    body = (
+        f"在庫チェックで仕入元の状態を判定できなかったeBay出品が {total} 件あります"
+        f"（{rem_start:%Y-%m-%d %H:%M} 開始の在庫チェック）。\n"
+        "出品は維持しています（削除・価格改定はしていません）。次回の在庫チェックで再確認します。\n"
+        "続く場合は仕入元ページを確認してください。\n\n"
+        "仕入元 | eBayアカウント | eBay出品 | 仕入元商品 | 確認日時\n"
+        + "\n".join(lines) + "\n"
+    )
+    print(body)
+    if send_mail(f"【要確認】在庫チェック判定不可 {total}件", body):
+        print("📧 判定不可の通知メール送信成功")
+    else:
+        print("❌ 判定不可の通知メール送信失敗")
+    return total
+
+
 def wait_until_remaining_exhausted(conn):
     """
     remaining 対象がなくなるまで待機
@@ -1162,7 +1219,11 @@ def run_inventory_management_round(conn, cycle_no, round_no):
     launch_remaining_workers()
 
     # ★ 3. remaining対象が枯渇するまで待つ
-    processed_count = wait_until_remaining_exhausted(conn)
+    # 待機中に例外で抜けた場合も、ここまでに出た判定不可は必ず通知する（正常終了時も通知はこの1回のみ）。
+    try:
+        processed_count = wait_until_remaining_exhausted(conn)
+    finally:
+        conn.run(notify_undetermined_remaining, rem_start)
 
     rem_end = datetime.now()
 
