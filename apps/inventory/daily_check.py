@@ -585,19 +585,25 @@ def launch_remaining_workers():
     ]
 
 
+    # 画面は出さない（CREATE_NO_WINDOW）が、SSH接続と -tt の端末割り当ては従来どおり維持する。
+    # SSHが切れると check_remaining_ebay.sh が HUP を受けて後片付けするため、接続は終了まで張ったままにする。
     for ip in VPS_LIST:
 
-        vps_cmd = (
-            f'start "{ip}" '
-            f'ssh -tt root@{ip} '
-            '"cd /opt/apps_nostock && '
-            'git pull && '
-            'cd /opt/apps_nostock/apps/inventory && '
-            'chmod +x check_remaining_ebay.sh && '
-            './check_remaining_ebay.sh"'
+        subprocess.Popen(
+            [
+                "ssh",
+                "-tt",
+                f"root@{ip}",
+                (
+                    "cd /opt/apps_nostock && "
+                    "git pull && "
+                    "cd /opt/apps_nostock/apps/inventory && "
+                    "chmod +x check_remaining_ebay.sh && "
+                    "./check_remaining_ebay.sh"
+                ),
+            ],
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
-
-        subprocess.Popen(vps_cmd, shell=True)
 
     print("🚀 remaining worker を全VPSで起動しました")
 

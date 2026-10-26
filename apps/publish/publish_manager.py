@@ -389,22 +389,30 @@ def run_local():
 
 
 def run_vps():
-    """VPS版 publish を全台起動する（起動のみ、完了は待たない）。"""
+    """
+    VPS版 publish を全台起動する（起動のみ、完了は待たない）。
+
+    publish_ebay は VPS の tmux セッション内で動くため、--no-attach で
+    tmux の起動確認だけ行い、SSH はそのまま終了させる（Windows側に画面・SSHを残さない）。
+    """
 
     print("🟢 VPS publish 開始")
 
     for ip in VPS_LIST:
-        cmd = (
-            f'start "{ip}" '
-            f'ssh -tt root@{ip} '
-            '"cd /opt/apps_nostock && '
-            'git pull && '
-            'cd /opt/apps_nostock/apps/publish && '
-            'chmod +x publish_ebay_loop.sh && '
-            './publish_ebay_loop.sh"'
+        subprocess.Popen(
+            [
+                "ssh",
+                f"root@{ip}",
+                (
+                    "cd /opt/apps_nostock && "
+                    "git pull && "
+                    "cd /opt/apps_nostock/apps/publish && "
+                    "chmod +x publish_ebay_loop.sh && "
+                    "./publish_ebay_loop.sh --no-attach"
+                ),
+            ],
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
-
-        subprocess.Popen(cmd, shell=True)
 
     print("🚀 VPS全台で publish 起動完了")
 

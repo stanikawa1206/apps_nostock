@@ -42,5 +42,16 @@ else
     echo "tmux session already exists: $SESSION"
 fi
 
+# --no-attach: 起動確認だけしてアタッチせずに終了する（publish_manager.py から起動する場合）。
+# 出品ループは tmux 内で動き続け、SSH を切っても止まらない。ログは tmux attach -t pub で確認する。
+if [ "$1" = "--no-attach" ]; then
+    if tmux has-session -t $SESSION 2>/dev/null; then
+        echo "tmux session running: $SESSION"
+        exit 0
+    fi
+    echo "tmux session not found: $SESSION"
+    exit 1
+fi
+
 # セッションにアタッチ
 tmux attach -t $SESSION
