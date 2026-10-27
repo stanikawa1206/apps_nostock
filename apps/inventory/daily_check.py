@@ -1661,6 +1661,7 @@ def main():
 
     # presets一覧を準備
     conn.run(refresh_presets_lookup)
+    conn.autocommit = True
 
     try:
         print("=== 🧭 daily_check.py 開始（永久ループ、mst.control で停止制御） ===")
