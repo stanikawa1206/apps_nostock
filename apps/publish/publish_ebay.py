@@ -2517,11 +2517,24 @@ class Account:
     post_target: Optional[int]
 
 
+# mst.execute_pcs の割り当て・解放を全workerで1件ずつ順番に行わせるため、各トランザクションの
+# 最初に execute_pcs 全体（9行）の排他ロックを取り、commitまで保持する。
+# これが無いと、他workerが確定前の割り当てを読めず、MAX_PARALLEL_PC を超えて同じアカウントを
+# 割り当てることがある（RCSI では常に確定済みの値を読むため起こりやすくなる。READCOMMITTEDLOCK
+# だけでは防げないことを一時DBの同時実行テストで確認済み）。解放側も同じ順（execute_pcs →
+# ebay_accounts）でロックを取らないと、RCSI OFF では割り当てとの間でデッドロックが多発する。
+SQL_LOCK_EXECUTE_PCS = """
+SET NOCOUNT ON;
+DECLARE @lock_execute_pcs INT;
+SELECT @lock_execute_pcs = COUNT(*) FROM mst.execute_pcs WITH (TABLOCKX, HOLDLOCK);
+"""
+
+
 def fetch_next_account_and_lock(conn, current_pc):
     """
     並行数が少ないアカウントから優先的に、かつアカウント順に1つ確保する
     """
-    sql = """
+    sql = SQL_LOCK_EXECUTE_PCS + """
     UPDATE TOP (1) mst.execute_pcs
     SET account = Target.account
     OUTPUT inserted.account, Target.preset_group, Target.post_target
@@ -2568,6 +2581,9 @@ def release_pc_and_close_account(conn, current_pc, account_name=None, close_reas
     PCの占有を解除する。close_reasonがある場合はアカウント自体を当日終了とする。
     """
     with conn.cursor() as cur:
+        # 割り当て（fetch_next_account_and_lock）と同じ順でロックを取る（SQL_LOCK_EXECUTE_PCS参照）
+        cur.execute(SQL_LOCK_EXECUTE_PCS)
+
         # 1. アカウント自体の終了フラグ更新 (Limit検知や在庫切れ時)
         if account_name and close_reason:
             if close_reason == "LIMIT":
