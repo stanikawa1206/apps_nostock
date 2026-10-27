@@ -846,9 +846,14 @@ def handle_listing_price_update(
     is_up = old_usd is None or Decimal(str(usd)) > old_usd
 
     # 値上げが販売上限(25002)で失敗した場合は、既存の安全な終了処理で終了する（値下げなら出品維持）。
+    # 重複出品(25002のうち eBay が本文で重複と明示したもの)は再試行しても通らず、価格が古いまま残るため、
+    # 値上げ・値下げに関係なく終了する（2026-10-26 谷川② 227581813798 は値上げが反映されないまま再試行を繰り返していた）。
     end_reason = resp.get("end_reason")
     if is_up and resp.get("selling_limit"):
         end_reason = "販売上限"
+        resp["db_deleted"] = _delete_listing_after_price_failure(account, vendor_item_id, error, "価格更新失敗")
+    elif resp.get("duplicate_listing"):
+        end_reason = "重複出品"
         resp["db_deleted"] = _delete_listing_after_price_failure(account, vendor_item_id, error, "価格更新失敗")
 
     mail_info = (
@@ -859,7 +864,7 @@ def handle_listing_price_update(
 
     if resp.get("db_deleted"):
         # 終了済みofferのため価格更新(再出品)を行わず、GetItem で終了を確認してDBも削除済みにした。
-        # こちらから終了した場合(販売上限・IP違反)は結果を通知する。
+        # こちらから終了した場合(販売上限・重複出品・IP違反)は結果を通知する。
         if end_reason:
             send_mail(
                 f"【通知】eBay価格更新失敗のため出品終了({end_reason}) {account} {vendor_item_id}",

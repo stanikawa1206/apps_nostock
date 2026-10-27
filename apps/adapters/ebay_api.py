@@ -1276,6 +1276,16 @@ def _is_selling_limit_failure(error_id, error_message: str) -> bool:
     return error_id == 25002 and "amount you can list" in (error_message or "").lower()
 
 
+def _is_duplicate_listing_failure(error_id, error_message: str) -> bool:
+    """
+    25002 のうち、同じセラーの同一商品の重複出品だと eBay が本文で明示しているか
+    （"...identical items from the same seller to appear on eBay at the same time..."、
+    2026-10-26 谷川② 227581813798 で実測）。重複は再試行しても通らない。
+    25002 は汎用コードのため、エラー番号だけでは重複と判断しない。
+    """
+    return error_id == 25002 and "identical items from the same seller" in (error_message or "").lower()
+
+
 def update_ebay_price_rest(
     account: str,
     sku: str,
@@ -1456,6 +1466,7 @@ def update_ebay_price_rest(
             "sku": sku,
             "error": error_message,
             "selling_limit": _is_selling_limit_failure(error_id, error_message),
+            "duplicate_listing": _is_duplicate_listing_failure(error_id, error_message),
             "old_price": old_price_str,
         }
 
@@ -1582,6 +1593,7 @@ def update_ebay_price_rest(
             "sku": sku,
             "error": error_message,
             "selling_limit": _is_selling_limit_failure(error_id, error_message),
+            "duplicate_listing": _is_duplicate_listing_failure(error_id, error_message),
             "old_price": old_price_str,
         }
     return {"success":True,"sku":sku,"price_verified":verified}
