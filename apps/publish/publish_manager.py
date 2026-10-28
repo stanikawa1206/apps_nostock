@@ -209,6 +209,10 @@ MONTHLY_TARGET = 10000
 MAX_DAILY_POST_TARGET = 500
 US_EASTERN_TZ = ZoneInfo("America/New_York")
 
+# post_target を自動計算しないアカウント（Access で手入力した mst.ebay_accounts.post_target をそのまま使う）。
+# 貴文③: 2026-10-29 出品開始の新規アカウント。最初の1週間は1日10品、翌週50品と段階的に手動で増やす。
+MANUAL_POST_TARGET_ACCOUNTS = ("貴文③",)
+
 SQL_SELECT_POST_TARGET_ACCOUNTS = """
 SELECT account, listing_left, post_target
 FROM mst.ebay_accounts
@@ -313,6 +317,7 @@ def update_post_targets():
     publish_manager起動直後（reset_close_status()の後、get_active_listings
     開始前）に一度だけ実行する。listing_leftが異常値(NULL・0未満・monthly_target超)
     のアカウントはWARNINGを出してスキップし、post_targetは更新しない。
+    MANUAL_POST_TARGET_ACCOUNTS のアカウントは計算せず、手入力の post_target を残す。
     """
 
     now_et = datetime.now(US_EASTERN_TZ)
@@ -340,6 +345,10 @@ def update_post_targets():
             account = account_info["account"]
             listing_left = account_info["listing_left"]
             current_post_target = account_info["post_target"]
+
+            if account in MANUAL_POST_TARGET_ACCOUNTS:
+                print(f"{account:<10}: {current_post_target}（手動設定のため自動計算しない）")
+                continue
 
             ok, error_message = validate_listing_left(listing_left)
             if not ok:
