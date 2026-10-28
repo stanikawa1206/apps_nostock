@@ -924,10 +924,12 @@ def send_mail(
     receiver_email: str | None = None,
     password: str | None = None,
     attachments: list[str] | None = None,
+    html: str | None = None,
 ) -> bool:
     """
     シンプルなテキストメール送信（添付対応）。
     - attachments: 添付したいファイルパスのリスト。未指定(None)なら本文のみ。
+    - html: 指定するとHTML版の本文も付ける（表示できないメールソフトでは body のテキストを表示）。
 
     戻り値: 送信に成功したら True、失敗したら False。
     認証情報未設定・SMTP通信失敗など、どの理由であっても例外は投げず、
@@ -947,7 +949,13 @@ def send_mail(
     msg["From"] = sender_email
     msg["To"] = receiver_email
     msg["Subject"] = subject
-    msg.attach(MIMEText(body, "plain", "utf-8"))
+    if html is None:
+        msg.attach(MIMEText(body, "plain", "utf-8"))
+    else:
+        alternative = MIMEMultipart("alternative")
+        alternative.attach(MIMEText(body, "plain", "utf-8"))
+        alternative.attach(MIMEText(html, "html", "utf-8"))
+        msg.attach(alternative)
 
     # 添付（あれば）
     if attachments:
