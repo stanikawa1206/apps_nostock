@@ -2713,7 +2713,7 @@ SELECT TOP (?)
 FROM (
     SELECT c.*,
            ROW_NUMBER() OVER (PARTITION BY c.vendor_name, c.vendor_item_id ORDER BY (SELECT NULL)) AS rn
-    FROM dbo.fn_take_one_candidates(?) c
+    FROM dbo.fn_take_one_candidates_for_account(?, ?) c
 ) t
 WHERE t.rn = 1
 OPTION (MAXDOP 1);
@@ -2762,7 +2762,8 @@ LEFT JOIN (
 def take_one_vendor_item(conn, preset_group, processing_by, account_name):
     """
     【TVF委譲版】
-    候補抽出は dbo.fn_take_one_candidates(@preset_group) に全委譲。
+    候補抽出は dbo.fn_take_one_candidates_for_account(@preset_group, @account) に全委譲。
+    （mst.ebay_account_excluded_vendors でアカウントごとに除外した仕入先の商品は候補にならない）
     この関数は TVF が返した候補の中から1件だけをロック・確保して返す（詳細は TAKE_ONE_SQL のコメント）。
 
     None を返すのは「ロックの影響を受けない読み取りで候補が0件だった」時だけ（呼び出し側でEMPTYにする）。
@@ -2776,7 +2777,7 @@ def take_one_vendor_item(conn, preset_group, processing_by, account_name):
         t_start = time.time()
         try:
             with conn.cursor() as cur:
-                cur.execute(TAKE_ONE_SQL, (TAKE_ONE_CANDIDATE_LIMIT, preset_group, processing_by))
+                cur.execute(TAKE_ONE_SQL, (TAKE_ONE_CANDIDATE_LIMIT, preset_group, account_name, processing_by))
                 row = cur.fetchone()
                 columns = [col[0] for col in cur.description]
             conn.commit()

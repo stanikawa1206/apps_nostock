@@ -858,9 +858,18 @@ def refresh_presets_lookup(conn):
     """).fetchall()
 
     brands = cur.execute("""
-        SELECT brand_id, brand_name_ja, default_brand_en, is_active, brand_id_rkm
+        SELECT brand_id, brand_name_ja, default_brand_en, is_active
         FROM mst.presets_brand
         WHERE is_active = 1
+    """).fetchall()
+
+    # 仕入先(vendor_group)ごとの検索用ブランドID。1ブランドに同じ仕入先のIDが複数ありうる（ラクマ1:N）。
+    # primary を先頭にして、primary以外は preset 名の末尾に「#仕入先ブランドID」を付ける。
+    vbm_rows = cur.execute("""
+        SELECT brand_id, vendor_name, vendor_brand_id, is_primary
+        FROM mst.vendor_brand_map
+        WHERE is_active = 1
+        ORDER BY brand_id, vendor_name, is_primary DESC, vendor_brand_id
     """).fetchall()
 
     categories = cur.execute("""
@@ -885,16 +894,24 @@ def refresh_presets_lookup(conn):
         FROM mst.brand_category_groups
     """).fetchall()
 
-    # ラクマ向けpresetでは、mst.presets_brand.brand_id（メルカリ側の採番）ではなく
-    # ラクマ側の採番であるbrand_id_rkmを使わないと、ラクマの検索APIに渡すbrand_idが
-    # 一致しない。vendor_groupに応じてどちらのbrand_idを使うかをここで切り替える。
-    RAKUMA_VENDOR_GROUP = "ラクマ"
+    # グループ所属を一部の仕入先（vendor_group）だけで使う指定。行が無い所属は全仕入先共通。
+    bcgv_rows = cur.execute("""
+        SELECT brand_id, category_group, vendor_name
+        FROM mst.brand_category_group_vendors
+    """).fetchall()
 
-    def resolve_brand_id(brand, vendor_group):
-        """vendor_groupに対応する検索用brand_idを返す。未設定ならNone。"""
-        if vendor_group == RAKUMA_VENDOR_GROUP:
-            return brand.brand_id_rkm
-        return brand.brand_id
+    # 検索APIに渡すbrand_idは仕入先ごとに採番体系が違う（presets_brand.brand_idはメルカリの採番）。
+    # mst.vendor_brand_map の vendor_name は vendor_group（採番体系）を表すので、vendor_groupで引く。
+    vendor_brands = {}
+    for r in vbm_rows:
+        vendor_brands.setdefault((r.brand_id, r.vendor_name), []).append(r)
+
+    def resolve_vendor_brands(brand, vendor_group):
+        """vendor_groupに対応する (検索用brand_id, preset名の末尾) の一覧を返す。未設定なら空。"""
+        return [
+            (r.vendor_brand_id, "" if r.is_primary else f"#{r.vendor_brand_id}")
+            for r in vendor_brands.get((brand.brand_id, vendor_group), [])
+        ]
 
     brand_by_id = {r.brand_id: r for r in brands}
     # category_id はvendor_group（仕入先）ごとに別々の採番体系・定義を持ちうるため、
@@ -912,6 +929,10 @@ def refresh_presets_lookup(conn):
 
     bcg_groups = {r.category_group for r in bcg_rows}
 
+    bcg_vendor_groups = {}
+    for r in bcgv_rows:
+        bcg_vendor_groups.setdefault((r.brand_id, r.category_group), set()).add(r.vendor_name)
+
     rows = []
 
     # 1) brand_category_groupsあり、is_brand_dependent=0
@@ -920,8 +941,13 @@ def refresh_presets_lookup(conn):
         if not brand:
             continue
 
+        allowed_vendor_groups = bcg_vendor_groups.get((bcg.brand_id, bcg.category_group))
+
         for cgc in cgc_by_group.get(bcg.category_group, []):
             if cgc.is_brand_dependent != 0:
+                continue
+
+            if allowed_vendor_groups is not None and cgc.vendor_group not in allowed_vendor_groups:
                 continue
 
             pc = category_by_id.get((cgc.category_id, cgc.vendor_group))
@@ -935,35 +961,33 @@ def refresh_presets_lookup(conn):
                 if v.vendor_group != cgc.vendor_group:
                     continue
 
-                out_brand_id = resolve_brand_id(brand, v.vendor_group)
-                if out_brand_id is None:
-                    # このvendor向けのbrand_id（例: brand_id_rkm）が未設定のためスキップ
-                    continue
+                # このvendor向けのbrand_idが vendor_brand_map に無ければ preset は作らない
+                for out_brand_id, preset_suffix in resolve_vendor_brands(brand, v.vendor_group):
+                    preset = (
+                        (brand.brand_name_ja or "")
+                        + (pc.category_name_ja or "")
+                        + ("men" if pc.department == "Men" else "")
+                        + (v.vendor_code or "")
+                        + preset_suffix
+                    )
 
-                preset = (
-                    (brand.brand_name_ja or "")
-                    + (pc.category_name_ja or "")
-                    + ("men" if pc.department == "Men" else "")
-                    + (v.vendor_code or "")
-                )
-
-                rows.append((
-                    preset,
-                    v.vendor_name,
-                    out_brand_id,
-                    pc.category_id,
-                    cg.mode,
-                    cg.low_usd_target,
-                    cg.high_usd_target,
-                    pc.category_id_ebay,
-                    pc.department,
-                    brand.default_brand_en,
-                    pc.type_ebay,
-                    cg.low_jpy_target,
-                    cg.high_jpy_target,
-                    cg.category_group,
-                    brand.is_active,
-                ))
+                    rows.append((
+                        preset,
+                        v.vendor_name,
+                        out_brand_id,
+                        pc.category_id,
+                        cg.mode,
+                        cg.low_usd_target,
+                        cg.high_usd_target,
+                        pc.category_id_ebay,
+                        pc.department,
+                        brand.default_brand_en,
+                        pc.type_ebay,
+                        cg.low_jpy_target,
+                        cg.high_jpy_target,
+                        cg.category_group,
+                        brand.is_active,
+                    ))
 
     # 2) brand_category_groupsに無いcategory_group、is_brand_dependent=0
     for cgc in cgc_rows:
@@ -1029,34 +1053,32 @@ def refresh_presets_lookup(conn):
                 if v.vendor_group != pc.vendor_group:
                     continue
 
-                out_brand_id = resolve_brand_id(brand, v.vendor_group)
-                if out_brand_id is None:
-                    continue
+                for out_brand_id, preset_suffix in resolve_vendor_brands(brand, v.vendor_group):
+                    preset = (
+                        (brand.brand_name_ja or "")
+                        + (pc.category_name_ja or "")
+                        + ("men" if pc.department == "Men" else "")
+                        + (v.vendor_code or "")
+                        + preset_suffix
+                    )
 
-                preset = (
-                    (brand.brand_name_ja or "")
-                    + (pc.category_name_ja or "")
-                    + ("men" if pc.department == "Men" else "")
-                    + (v.vendor_code or "")
-                )
-
-                rows.append((
-                    preset,
-                    v.vendor_name,
-                    out_brand_id,
-                    pc.category_id,
-                    cg.mode,
-                    cg.low_usd_target,
-                    cg.high_usd_target,
-                    pc.category_id_ebay,
-                    pc.department,
-                    brand.default_brand_en,
-                    pc.type_ebay,
-                    cg.low_jpy_target,
-                    cg.high_jpy_target,
-                    cg.category_group,
-                    brand.is_active,
-                ))
+                    rows.append((
+                        preset,
+                        v.vendor_name,
+                        out_brand_id,
+                        pc.category_id,
+                        cg.mode,
+                        cg.low_usd_target,
+                        cg.high_usd_target,
+                        pc.category_id_ebay,
+                        pc.department,
+                        brand.default_brand_en,
+                        pc.type_ebay,
+                        cg.low_jpy_target,
+                        cg.high_jpy_target,
+                        cg.category_group,
+                        brand.is_active,
+                    ))
 
     cur.fast_executemany = True
     cur.executemany("""
