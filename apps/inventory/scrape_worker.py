@@ -80,6 +80,13 @@ sys.stderr = _Tee(sys.stderr, _log_file)
 # ステータスファイル
 STATUS_FILE = os.path.join(BASE_DIR, f"worker_status_{WORKER_PID}.txt")
 
+# ブラウザ応答待ちファイル（メルカリ検索の1回の取得の間だけ存在する）。
+# resp.json() などブラウザへの呼び出しが戻らなくなると、このワーカー自身は時間切れを判定できない。
+# watchdog がこのファイルの開始時刻から一定時間（watchdog.BROWSER_HANG_SEC）経っても消えないのを見て、
+# このワーカーが起動したブラウザだけを終了させる。止まっていた呼び出しはエラーで戻り、
+# 既存の BROWSER_BROKEN（ブラウザ再作成・ジョブを pending へ戻す）に進む。
+BROWSER_WAIT_FILE = os.path.join(BASE_DIR, f"worker_browserwait_{WORKER_PID}.txt")
+
 # ログ削除（3日）
 LOG_RETENTION_SEC = 3 * 24 * 60 * 60
 for file in glob.glob(os.path.join(LOG_DIR, "worker_*.log")):
@@ -93,6 +100,20 @@ def write_status(job_id, page):
         f.write(f"job_id={job_id}\n")
         f.write(f"page={page}\n")
         f.write(f"updated_at={datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+
+
+def begin_browser_wait(job_id):
+    with open(BROWSER_WAIT_FILE, "w", encoding="utf-8") as f:
+        f.write(f"pid={WORKER_PID}\n")
+        f.write(f"job_id={job_id}\n")
+        f.write(f"started={time.time():.3f}\n")
+
+
+def end_browser_wait():
+    try:
+        os.remove(BROWSER_WAIT_FILE)
+    except OSError:
+        pass
 
 JST = timezone(timedelta(hours=9))
 def now_jst():
@@ -598,14 +619,16 @@ def fetch_page_json(page, url, conn, job_id):
     page.on("requestfinished", on_request_done)
     page.on("requestfailed", on_request_done)
     try:
-        return _fetch_page_json_attempts(page, url, finished_requests)
+        return _fetch_page_json_attempts(page, url, finished_requests, job_id)
     finally:
         page.remove_listener("requestfinished", on_request_done)
         page.remove_listener("requestfailed", on_request_done)
 
-def _fetch_page_json_attempts(page, url, finished_requests):
+def _fetch_page_json_attempts(page, url, finished_requests, job_id=None):
 
     for attempt in range(2):
+        # 1回の取得（最長: 応答待ち30秒＋本文の受信完了待ち30秒＋json）の間だけ応答待ちファイルを置く
+        begin_browser_wait(job_id)
         try:
             print(f"A: expect_response start {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             # 1. 応答を待機する「入れ物」だけ用意
@@ -641,7 +664,9 @@ def _fetch_page_json_attempts(page, url, finished_requests):
             print(f"D: exception {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} {type(e)} {e}")
             if attempt == 1:
                 raise RuntimeError("BROWSER_BROKEN")
-        
+        finally:
+            end_browser_wait()
+
 
 def extract_items_from_json(json_data):
 
@@ -1155,6 +1180,29 @@ def run_fetch_sold_rakuma(payload: dict, job_id: int) -> Tuple[int, int]:
 
 
 # =========================
+# ブラウザ
+# =========================
+# 初回の起動も、25ジョブごと・異常時の作り直しも、同じ設定で起動する
+BROWSER_LAUNCH_ARGS = [
+    "--disable-dev-shm-usage",  # 共有メモリ不足によるクラッシュを防止
+    "--disable-gpu",            # 不要なGPUプロセスの排除
+    "--no-sandbox",             # VPS環境での安定性向上
+]
+
+
+def launch_browser(p):
+    return p.chromium.launch(headless=True, args=BROWSER_LAUNCH_ARGS)
+
+
+def open_search_page(browser):
+    page = browser.new_page()
+    page.set_default_timeout(10000)
+    page.on("request", lambda r: "entities:search" in r.url and print("REQ:", r.url, flush=True))
+    page.on("response", lambda r: "entities:search" in r.url and print("RES:", r.url, flush=True))
+    return page
+
+
+# =========================
 # Worker main loop
 # =========================
 def main():
@@ -1165,29 +1213,10 @@ def main():
 
     # Playwright は worker lifetime で1回だけ起動
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=[
-                "--disable-dev-shm-usage",  # 共有メモリ不足によるクラッシュを防止
-                "--disable-gpu",            # 不要なGPUプロセスの排除
-                "--no-sandbox"              # VPS環境での安定性向上
-            ]
-        )
-
-        page = browser.new_page()
-        page.set_default_timeout(10000)  
+        browser = launch_browser(p)
+        page = open_search_page(browser)
         browser_job_count = 0
         page_job_count = 0
-
-        page.on(
-            "request",
-            lambda r: "entities:search" in r.url and print("REQ:", r.url, flush=True)
-        )
-
-        page.on(
-            "response",
-            lambda r: "entities:search" in r.url and print("RES:", r.url, flush=True)
-        )
 
         while True:
             conn = get_sql_server_connection()
@@ -1259,12 +1288,8 @@ def main():
                         except Exception:
                             pass
 
-                        browser = p.chromium.launch(headless=True)
-                        page = browser.new_page()
-                        page.set_default_timeout(10000)
-
-                        page.on("request", lambda r: "entities:search" in r.url and print("REQ:", r.url, flush=True))
-                        page.on("response", lambda r: "entities:search" in r.url and print("RES:", r.url, flush=True))
+                        browser = launch_browser(p)
+                        page = open_search_page(browser)
 
                         # statusファイルは release_job() 成功後に消す。先に消すと、release_job() が
                         # DB接続断(08S01)で失敗してワーカーが落ちた際、ジョブが running のまま
@@ -1310,17 +1335,7 @@ def main():
                     except Exception:
                         pass
 
-                    page = browser.new_page()
-                    page.set_default_timeout(10000)
-                    page.on(
-                        "request",
-                        lambda r: "entities:search" in r.url and print("REQ:", r.url, flush=True)
-                    )
-
-                    page.on(
-                        "response",
-                        lambda r: "entities:search" in r.url and print("RES:", r.url, flush=True)
-                    )
+                    page = open_search_page(browser)
 
                     page_job_count = 0
 
@@ -1338,18 +1353,8 @@ def main():
                     except Exception:
                         pass
 
-                    browser = p.chromium.launch(headless=True)
-                    page = browser.new_page()
-                    page.set_default_timeout(10000)
-                    page.on(
-                        "request",
-                        lambda r: "entities:search" in r.url and print("REQ:", r.url, flush=True)
-                    )
-
-                    page.on(
-                        "response",
-                        lambda r: "entities:search" in r.url and print("RES:", r.url, flush=True)
-                    )
+                    browser = launch_browser(p)
+                    page = open_search_page(browser)
 
                     browser_job_count = 0
                     page_job_count = 0

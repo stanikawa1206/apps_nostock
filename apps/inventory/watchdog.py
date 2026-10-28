@@ -50,6 +50,18 @@ ORPHAN_GRACE_SEC = 300     # locked_at からこの秒数未満のジョブは�
 ORPHAN_CONFIRM_SEC = 60    # 1回目の検知からこの秒数以上あけた再確認でも同じ判定なら回収する
 CLOCK_MARGIN_SEC = 2       # locked_at は datetime2(0)（秒丸め）なので時刻比較に持たせる余裕
 KILL_WAIT_SEC = 10         # kill 後、プロセス終了を待つ秒数
+
+# =========================
+# ブラウザ応答待ちの見張り
+# =========================
+# メルカリ検索の resp.json() などブラウザへの呼び出しが戻らず、ワーカーが止まることがある
+# （2026-10-20〜28 に各VPSで1日3〜5回。呼び出しに時間制限がなく、ワーカー自身は時間切れを判定できない）。
+# ワーカーは1回の取得の間だけ worker_browserwait_<pid>.txt を置く。開始からこの秒数経っても消えなければ、
+# そのワーカーが起動したブラウザ（子孫の chrome プロセス）だけを終了させる。止まっていた呼び出しは
+# エラーで戻り、ワーカーの BROWSER_BROKEN（ブラウザ再作成・ジョブを pending へ戻す）に進む。
+# 1回の取得の正常な最長は約81秒（応答待ち30秒＋本文の受信完了待ち30秒＋json 実測最大21秒）。
+# それでも戻らない場合は、従来どおり statusファイル更新停止（TIMEOUT_SEC）でワーカーごと終了させる。
+BROWSER_HANG_SEC = 90
 DB_LOCK_TIMEOUT_MS = 10000 # 死んだワーカーの未確定トランザクションがロックを持っていても無期限に待たない
 
 JST = timezone(timedelta(hours=9))
@@ -181,6 +193,32 @@ def parse_status_file(path):
             return None
 
     return {"path": path, "pid": pid, "job_id": _int("job_id"), "page": _int("page"), "mtime": mtime}
+
+
+def parse_browser_wait_file(path):
+    """worker_browserwait_<pid>.txt を読む。読めない・書き込み途中なら None"""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return None
+    data = dict(line.split("=", 1) for line in lines if "=" in line)
+    try:
+        return {"path": path, "pid": int(data["pid"]), "job_id": data.get("job_id"), "started": float(data["started"])}
+    except (KeyError, ValueError):
+        return None
+
+
+def worker_browser_processes(proc):
+    """ワーカー(proc)が起動したブラウザのプロセス（子孫のうち chrome のもの）。Playwright の driver(node) は含めない"""
+    found = []
+    for c in proc.children(recursive=True):
+        try:
+            if "chrome" in c.name().lower():
+                found.append(c)
+        except psutil.Error:
+            pass
+    return found
 
 
 def read_status_files() -> dict:
@@ -349,7 +387,8 @@ def process_file(path):
     2. TIMEOUT超えてたら「止まった」と判断
     3. ファイルを書いたプロセスがまだ生きていれば kill し、終了を確認する
        （終了を確認できなければ、ジョブは戻さず次回再確認）
-    4. 担当していた可能性のあるワーカーが全員いなくなったことを確認できた場合だけ、
+    4. 担当していた可能性のあるワーカーが全員いなくなったことを確認できた場合、または
+       終了したこのファイルの書き手が現在のロックの担当だったと確定できた場合（owner_proved_by_file）だけ、
        DBの状態（running・このホスト・同じlocked_at）を条件に pending に戻す
     5. statusファイル削除
     """
@@ -387,6 +426,10 @@ def process_file(path):
             rlog(f"[CLEAN] {path}")
             return
 
+        # このファイルの書き手が終了済みか（kill 確認済み・既に終了・同じ pid の別プロセス）
+        writer = get_live_worker_process(pid)
+        writer_gone = writer is None or writer.create_time() > info["mtime"] + 1
+
         # =========================
         # DB更新（jobをやり直し状態に戻す）
         # =========================
@@ -412,6 +455,12 @@ def process_file(path):
             locked_at = row[2]
             t_lock = locked_at_epoch(locked_at)
             ok, states = judge_requeue(job_id, t_lock, live, files)
+            reason = "statusファイル更新停止・担当プロセス終了確認"
+            if not ok and owner_proved_by_file(info, t_lock, writer_gone, states):
+                # 他の生存ワーカーに担当不明（unknown）がいても、このファイルの書き手が現在のロックの担当だったと
+                # 確定でき、その書き手は終了済み。running のジョブは他のワーカーに取られないので戻してよい。
+                ok = True
+                reason = "終了したワーカーのstatusファイルが現在のロックの担当を記録"
             if not ok:
                 if "owner" in states.values():
                     rlog(f"[STALE] job={job_id} は別の生存ワーカーが担当中（{format_states(states)}）→ statusファイルのみ削除")
@@ -429,7 +478,7 @@ def process_file(path):
 
         if n == 1:
             rlog(f"[RECOVER][OK] job={job_id} worker={HOST_WORKER_NAME} pid={pid} "
-                 f"理由=statusファイル更新停止・担当プロセス終了確認 → pending (current_page={page_hint})")
+                 f"理由={reason}（{format_states(states)}）→ pending (current_page={page_hint})")
         else:
             rlog(f"[RECOVER][SKIP] job={job_id} 判定後に状態が変わっていたため更新せず")
         _remove(path)
@@ -438,6 +487,65 @@ def process_file(path):
     except Exception as e:
         # ファイルは残し、次回ループで再確認する
         rlog(f"[ERROR] {path}: {e}")
+
+
+def owner_proved_by_file(info, t_lock, writer_gone, states) -> bool:
+    """
+    statusファイルの書き手が、DB の現在のロック（running・このホスト・locked_at=t_lock）の担当だったと確定できるか。
+      - 書き手は終了済み（kill 確認済み、または既にいない）
+      - ファイル（このジョブを指す）がロック時刻以降に書かれている
+        （ワーカーはジョブ取得後に書き、running のジョブは誰も取得しないので、ロック後に書けるのは担当者だけ）
+      - 生きているワーカーに、このジョブを担当中（owner）のものがいない
+    """
+    return (
+        writer_gone
+        and info["mtime"] + CLOCK_MARGIN_SEC >= t_lock
+        and "owner" not in states.values()
+    )
+
+
+# =========================
+# ブラウザ応答待ちの見張り（ハング時にそのワーカーのブラウザだけ終了）
+# =========================
+_browser_killed = set()  # 終了させた (pid, started)。同じ待ちに対して繰り返さない
+
+
+def check_browser_waits():
+    seen = set()
+    for path in glob.glob(os.path.join(BASE_DIR, "worker_browserwait_*.txt")):
+        info = parse_browser_wait_file(path)
+        if info is None:
+            continue
+        pid, started = info["pid"], info["started"]
+        proc = get_live_worker_process(pid)
+        if proc is None or proc.create_time() > started + 1:
+            # 書き手のワーカーはもういない（同じ pid の別プロセスを含む）
+            _remove(path)
+            continue
+
+        key = (pid, started)
+        seen.add(key)
+        waited = time.time() - started
+        if waited < BROWSER_HANG_SEC or key in _browser_killed:
+            continue
+
+        _browser_killed.add(key)
+        targets = worker_browser_processes(proc)
+        if not targets:
+            rlog(f"[BROWSER HANG] pid={pid} job={info['job_id']} 応答待ち {int(waited)}秒 だがブラウザのプロセスなし")
+            continue
+        for t in targets:
+            try:
+                t.kill()
+            except psutil.Error:
+                pass
+        gone, alive = psutil.wait_procs(targets, timeout=KILL_WAIT_SEC)
+        rlog(f"[BROWSER HANG][KILL] pid={pid} job={info['job_id']} 応答待ち {int(waited)}秒 → "
+             f"ブラウザ終了 {len(gone)}/{len(targets)} プロセス（ワーカーは BROWSER_BROKEN で復帰する想定）")
+
+    for key in list(_browser_killed):
+        if key not in seen:
+            _browser_killed.discard(key)
 
 
 # =========================
@@ -528,7 +636,8 @@ def check_orphan_jobs():
 def main():
     print("[WATCHDOG START]")
 
-    for _ in range(TARGET_WORKERS):
+    # watchdog だけを再起動した場合、動いているワーカーはそのまま引き継ぐ（足りない分だけ起動する）
+    for _ in range(TARGET_WORKERS - count_process()):
         start_worker()
         time.sleep(1)
 
@@ -539,6 +648,11 @@ def main():
 
         for path in files:
             process_file(path)
+
+        try:
+            check_browser_waits()
+        except Exception as e:
+            rlog(f"[BROWSER HANG][ERROR] {e}")
 
         if time.time() - last_orphan_check >= ORPHAN_CHECK_INTERVAL_SEC:
             last_orphan_check = time.time()
