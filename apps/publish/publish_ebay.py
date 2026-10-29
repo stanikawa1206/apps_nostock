@@ -2677,8 +2677,13 @@ DEADLOCK_SQLSTATE = "40001"
 # 同じ理由でworker間のデッドロック(40001)も多発し、プロセスが落ちていた。
 #
 # 現実装は2段階に分ける:
-#   ① 候補の確定: TVFの結果を @cand へ読むだけ（ロックヒント無しの READ COMMITTED）。
-#      他workerの未commit行は「飛ばさず待つ」ので、@cand が0件 = 本当に候補が無い。
+#   ① 候補の確定: 候補集合を @all へ読むだけ（ロックヒント無しの READ COMMITTED）。
+#      DBはRCSIなので他workerの未commit行は確保前の版（processing_at IS NULL）で見え、待たずに候補に入る。
+#      そのため @cand が0件 = 本当に候補が無い。
+#      候補集合は fn_take_one_candidates_for_account と同じ条件（base関数＋アカウントの除外仕入先）で
+#      1回だけ評価し、最小優先度とキー順の先頭N件は @all から取る。TVFを直接 TOP(N) で読むと
+#      行目標のせいで vendor_item をキー順に全件近く読み、Allowed も2回評価していた（2026-10-29 実測で
+#      1回15〜23秒。@all 経由は2〜8秒で、候補50件は全アカウントで一致）。
 #   ② 1件の確保: @cand を順に Nested Loops で vendor_item の主キーへ当て、UPDLOCK/READPAST で
 #      最初に確保できた1行だけを更新する（途中に集約を挟まないよう結合順・方式・索引を固定）。
 #      ①の後に他workerが確保済みにした行は processing_at IS NULL の再確認で除外する。
@@ -2702,20 +2707,59 @@ DECLARE @cand TABLE (
     is_collectibles  BIT           NULL,
     PRIMARY KEY (vendor_name, vendor_item_id)
 );
+DECLARE @all TABLE (
+    vendor_name      NVARCHAR(100) NOT NULL,
+    vendor_item_id   NVARCHAR(200) NOT NULL,
+    preset           NVARCHAR(200) NULL,
+    mode             NVARCHAR(50)  NULL,
+    default_brand_en NVARCHAR(200) NULL,
+    category_id_ebay NVARCHAR(50)  NULL,
+    department       NVARCHAR(50)  NULL,
+    type_ebay        NVARCHAR(200) NULL,
+    category_group   NVARCHAR(100) NULL,
+    low_jpy_target   INT           NULL,
+    high_jpy_target  INT           NULL,
+    is_ok_logic      BIT           NULL,
+    is_collectibles  BIT           NULL,
+    prio             INT           NULL
+);
 DECLARE @pick TABLE (vendor_name NVARCHAR(100) NOT NULL, vendor_item_id NVARCHAR(200) NOT NULL);
 
--- ① 候補の確定（ロックヒント無し）。TVFは同一商品を複数行返し得るため1商品1行に絞る。
+-- ① 候補の確定（ロックヒント無し）。
+-- fn_take_one_candidates_for_account の Allowed と同じ条件の候補集合を1回だけ読む。
+INSERT INTO @all
+SELECT
+    t.vendor_name, t.vendor_item_id, t.preset, t.mode, t.default_brand_en, t.category_id_ebay,
+    t.department, t.type_ebay, t.category_group, t.low_jpy_target, t.high_jpy_target,
+    t.is_ok_logic, t.is_collectibles,
+    t.publish_priority * 1000 + t.category_priority
+FROM dbo.fn_take_one_candidates_base(?) t
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM mst.ebay_account_excluded_vendors x
+    INNER JOIN mst.vendors vd
+        ON vd.vendor_code = x.vendor_code
+    WHERE x.account = ?
+      AND vd.vendor_name = t.vendor_name
+)
+OPTION (MAXDOP 1);
+
+-- 最小優先度の候補をキー順に先頭N件。base関数は同一商品を複数行返し得るため1商品1行に絞る。
+DECLARE @min_prio INT = (SELECT MIN(prio) FROM @all);
+
 INSERT INTO @cand
 SELECT TOP (?)
     t.vendor_name, t.vendor_item_id, t.preset, t.mode, t.default_brand_en, t.category_id_ebay,
     t.department, t.type_ebay, t.category_group, t.low_jpy_target, t.high_jpy_target,
     t.is_ok_logic, t.is_collectibles
 FROM (
-    SELECT c.*,
-           ROW_NUMBER() OVER (PARTITION BY c.vendor_name, c.vendor_item_id ORDER BY (SELECT NULL)) AS rn
-    FROM dbo.fn_take_one_candidates_for_account(?, ?) c
+    SELECT a.*,
+           ROW_NUMBER() OVER (PARTITION BY a.vendor_name, a.vendor_item_id ORDER BY (SELECT NULL)) AS rn
+    FROM @all a
+    WHERE a.prio = @min_prio
 ) t
 WHERE t.rn = 1
+ORDER BY t.vendor_name, t.vendor_item_id
 OPTION (MAXDOP 1);
 
 DECLARE @cand_count INT = @@ROWCOUNT;
@@ -2762,7 +2806,8 @@ LEFT JOIN (
 def take_one_vendor_item(conn, preset_group, processing_by, account_name):
     """
     【TVF委譲版】
-    候補抽出は dbo.fn_take_one_candidates_for_account(@preset_group, @account) に全委譲。
+    候補抽出は dbo.fn_take_one_candidates_for_account(@preset_group, @account) と同じ条件を
+    TAKE_ONE_SQL 内で1回だけ評価する（base関数＋アカウントの除外仕入先、最小優先度のみ）。
     （mst.ebay_account_excluded_vendors でアカウントごとに除外した仕入先の商品は候補にならない）
     この関数は TVF が返した候補の中から1件だけをロック・確保して返す（詳細は TAKE_ONE_SQL のコメント）。
 
@@ -2777,7 +2822,7 @@ def take_one_vendor_item(conn, preset_group, processing_by, account_name):
         t_start = time.time()
         try:
             with conn.cursor() as cur:
-                cur.execute(TAKE_ONE_SQL, (TAKE_ONE_CANDIDATE_LIMIT, preset_group, account_name, processing_by))
+                cur.execute(TAKE_ONE_SQL, (preset_group, account_name, TAKE_ONE_CANDIDATE_LIMIT, processing_by))
                 row = cur.fetchone()
                 columns = [col[0] for col in cur.description]
             conn.commit()
