@@ -15,6 +15,7 @@ DB・eBay・ブラウザには接続しない（DBはモック。プロセスの
 
 import inspect
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -326,6 +327,51 @@ class PublishEbayTest(unittest.TestCase):
                                encoding="utf-8", timeout=120, env={**os.environ, "PYTHONIOENCODING": "utf-8"})
             self.assertEqual(r.returncode, 10)
             self.assertIn("アカウント開始: 川島", r.stdout)
+
+    def test_console_log_lines_have_time_prefix_only_in_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "publish_ebay_20261031.log"
+            script = textwrap.dedent(f"""
+                import sys
+                sys.path.insert(0, {str(PROJECT_ROOT)!r})
+                from apps.publish.publish_ebay import tee_console_to_file
+                tee_console_to_file({str(log_path)!r})
+                print("[DEBUG] url=https://item.fril.jp/x", "06:44:45")
+                sys.stdout.write("part1 ")
+                sys.stdout.write("part2\\nline3\\n")
+                print("err line", file=sys.stderr)
+                print("a\\nb")
+                sys.exit(10)
+            """)
+            r = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
+                               encoding="utf-8", timeout=120, env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+            self.assertEqual(r.returncode, 10)
+            self.assertIn("part1 part2\nline3\n", r.stdout)  # 画面側は従来どおり時刻なし
+            lines = log_path.read_text(encoding="utf-8").splitlines()
+            self.assertRegex(lines[0], r"^===== \d{4}-\d\d-\d\d \d\d:\d\d:\d\d publish_ebay 開始 host=\S+ pid=\d+$")
+            body = [re.sub(r"^\d\d:\d\d:\d\d ", "", l) for l in lines[1:]]
+            self.assertTrue(all(re.match(r"^\d\d:\d\d:\d\d ", l) for l in lines[1:]), lines)
+            self.assertEqual(body, ["[DEBUG] url=https://item.fril.jp/x 06:44:45", "part1 part2", "line3",
+                                    "err line", "a", "b"])
+
+    def test_run_local_removes_only_old_local_logs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            old = d / "publish_ebay_local_20260901.log"
+            new = d / "publish_ebay_local_20261030.log"
+            other = d / "publish_manager.log"
+            for f in (old, new, other):
+                f.write_text("x")
+            past = time.time() - (pm.LOCAL_PUBLISH_LOG_KEEP_DAYS + 1) * 86400
+            os.utime(old, (past, past))
+            os.utime(other, (past, past))
+            with mock.patch.object(pm, "LOCAL_PUBLISH_LOG_DIR", d), \
+                 mock.patch.object(pm.subprocess, "Popen", return_value=FakePopen(pid=777)), \
+                 mock.patch.object(pm, "_pm_log", lambda m: None):
+                pm.run_local()
+            self.assertFalse(old.exists())
+            self.assertTrue(new.exists())
+            self.assertTrue(other.exists())
 
     def test_fatal_renderer_paths_use_descendant_kill(self):
         from apps.publish import publish_ebay as pe

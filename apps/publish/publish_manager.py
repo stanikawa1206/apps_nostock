@@ -77,6 +77,8 @@ PUBLISH_SCRIPT = BASE_DIR / "apps" / "publish" / "publish_ebay.py"
 
 # ローカル publish_ebay の画面出力の保存先（publish_ebay側は環境変数 PUBLISH_EBAY_LOG_PATH で受け取る）
 LOCAL_PUBLISH_LOG_DIR = PROJECT_ROOT / "logs"
+# この日数より古い publish_ebay_local_*.log は run_local の起動時に削除する（VPS側の publish_ebay_loop.sh と同じ日数）
+LOCAL_PUBLISH_LOG_KEEP_DAYS = 30
 GET_ACTIVE_LISTINGS_SCRIPT = BASE_DIR / "apps" / "publish" / "get_active_listings.py"
 
 # ======================
@@ -395,7 +397,13 @@ def run_local():
 
     print("🟢 LOCAL publish 開始")
 
-    log_path = LOCAL_PUBLISH_LOG_DIR / f"publish_ebay_local_{datetime.now():%Y%m%d}.log"
+    cutoff = time.time() - LOCAL_PUBLISH_LOG_KEEP_DAYS * 86400
+    for old_log in LOCAL_PUBLISH_LOG_DIR.glob("publish_ebay_local_*.log"):
+        if old_log.stat().st_mtime < cutoff:
+            old_log.unlink()
+            _pm_log(f"[run_local] removed old log {old_log.name}")
+
+    log_path =LOCAL_PUBLISH_LOG_DIR / f"publish_ebay_local_{datetime.now():%Y%m%d}.log"
     proc = subprocess.Popen(
         [PYTHON, str(PUBLISH_SCRIPT)],
         cwd=str(BASE_DIR),

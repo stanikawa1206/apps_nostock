@@ -9,6 +9,7 @@ from __future__ import annotations
 import random
 import re
 import sys
+import traceback
 import time
 import socket
 from datetime import datetime
@@ -242,7 +243,8 @@ ITEM_WATCHDOG_TIMEOUT_SEC = 30 * 60
 # 自己終了の記録（理由・終了コード・担当アカウント/SKU・全スレッドのスタック）。異常終了時だけ追記される。
 EXIT_REPORT_PATH = _PROJECT_ROOT / "logs" / "publish_ebay_exit.log"
 
-# publish_manager.py がローカルで起動した時だけ設定される、画面出力の保存先（VPSでは設定されない）
+# 画面出力の保存先。ローカルは publish_manager.py（logs/publish_ebay_local_YYYYMMDD.log）、
+# VPS は publish_ebay_loop.sh（logs/publish_ebay/publish_ebay_YYYYMMDD.log）が設定する
 CONSOLE_LOG_PATH_ENV = "PUBLISH_EBAY_LOG_PATH"
 
 
@@ -3141,6 +3143,7 @@ def main():
                         )
 
                         if heavy:
+                            print(f"[STEP] 確認OK → eBay登録開始 account={acct.account} SKU={sku}")
                             (
                                 acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
                                 _, image_mode, image_error_count, cdn_mode_until, listing_limit_hit,
@@ -3204,6 +3207,7 @@ def main():
                             print(f"[FATAL] SKU={sku} 致命エラー: {e!r} → exit 1", flush=True)
                             kill_own_descendants_and_exit(f"致命エラー account={acct.account} SKU={sku}: {e!r}", 1)
                         print(f" [ERROR] SKU={sku} 処理中に例外発生: {e}")
+                        print(traceback.format_exc().rstrip())
 
                     finally:
                         try:
@@ -3261,15 +3265,30 @@ def main():
         conn.close()
 
 class _TeeStream:
-    """画面への出力はそのまま流し、同じ内容をファイルにも書く（os._exit 直前の行も残るよう行単位で書き出す）。"""
+    """
+    画面への出力はそのまま流し、同じ内容をファイルにも書く（os._exit 直前の行も残るよう行単位で書き出す）。
+    ファイル側だけ各行の先頭に時刻を付ける（後から工程ごとの所要時間を追えるようにするため）。
+    stdout と stderr は同じファイルに書くので、行頭かどうかはファイル単位で共有する。
+    """
+
+    _at_line_start = {}
 
     def __init__(self, stream, log_file):
         self._stream = stream
         self._log_file = log_file
+        _TeeStream._at_line_start.setdefault(id(log_file), True)
 
     def write(self, s):
         n = self._stream.write(s)
-        self._log_file.write(s)
+        key = id(self._log_file)
+        stamp = datetime.now().strftime("%H:%M:%S ")
+        out = []
+        for part in s.splitlines(keepends=True):
+            if _TeeStream._at_line_start[key]:
+                out.append(stamp)
+            out.append(part)
+            _TeeStream._at_line_start[key] = part.endswith("\n")
+        self._log_file.write("".join(out))
         return n
 
     def flush(self):
@@ -3282,7 +3301,7 @@ class _TeeStream:
 
 def tee_console_to_file(path) -> None:
     log_file = open(path, "a", encoding="utf-8", errors="replace", buffering=1)
-    log_file.write(f"===== {datetime.now():%Y-%m-%d %H:%M:%S} publish_ebay 開始 pid={os.getpid()}\n")
+    log_file.write(f"===== {datetime.now():%Y-%m-%d %H:%M:%S} publish_ebay 開始 host={socket.gethostname()} pid={os.getpid()}\n")
     sys.stdout = _TeeStream(sys.stdout, log_file)
     sys.stderr = _TeeStream(sys.stderr, log_file)
 
@@ -3295,4 +3314,5 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         print(f"[UNHANDLED ERROR] {e}")
+        print(traceback.format_exc().rstrip())
         sys.exit(1)
