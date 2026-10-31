@@ -106,6 +106,12 @@ CLIENT_ID = _require_env("EBAY_CLIENT_ID")
 CLIENT_SECRET = _require_env("EBAY_CLIENT_SECRET")
 TOKEN_URL = _require_env("EBAY_TOKEN_URL")
 
+# 上の既定アプリ以外の Developer アプリで refresh_token を発行したアカウントと、その認証情報の .env 接頭辞。
+# refresh_token は発行したアプリの CLIENT_ID/SECRET でしか更新できない（他のアプリだと invalid_grant）。
+ACCOUNT_APP_ENV_PREFIX = {
+    "貴文③": "EBAY_TAKAFUMI_",
+}
+
 # Trading API
 TRADING_ENDPOINT = _require_env("EBAY_TRADING_ENDPOINT")
 TRADING_COMPAT_LEVEL = os.getenv("EBAY_TRADING_COMPAT_LEVEL", "1149")
@@ -140,7 +146,20 @@ def _get_refresh_token(account: str) -> Optional[str]:
     finally:
         conn.close()
 
-def _fetch_access_token_from_refresh(refresh_token: str) -> Tuple[Optional[str], Optional[int]]:
+def _app_credentials(account: str) -> Optional[Tuple[str, str]]:
+    """account の refresh_token を発行した Developer アプリの (CLIENT_ID, CLIENT_SECRET)。"""
+    prefix = ACCOUNT_APP_ENV_PREFIX.get(account.strip())  # _get_refresh_token と同じく前後の空白は無視
+    if prefix is None:
+        return CLIENT_ID, CLIENT_SECRET
+    client_id = os.getenv(f"{prefix}CLIENT_ID")
+    client_secret = os.getenv(f"{prefix}CLIENT_SECRET")
+    if not client_id or not client_secret:
+        # このアカウントだけ取得失敗にする（他アカウントの処理を止めないよう、例外にしない）
+        print(f"❌ {prefix}CLIENT_ID / {prefix}CLIENT_SECRET が .env にありません: {account}")
+        return None
+    return client_id, client_secret
+
+def _fetch_access_token_from_refresh(refresh_token: str, client_id: str, client_secret: str) -> Tuple[Optional[str], Optional[int]]:
     data = {
         "grant_type": "refresh_token",
         "refresh_token": refresh_token
@@ -149,7 +168,7 @@ def _fetch_access_token_from_refresh(refresh_token: str) -> Tuple[Optional[str],
     resp = requests.post(
         TOKEN_URL,
         data=data,
-        auth=(CLIENT_ID, CLIENT_SECRET),
+        auth=(client_id, client_secret),
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         timeout=20,
     )
@@ -173,7 +192,10 @@ def get_access_token_new(account: str) -> Optional[str]:
     if not rt:
         print(f"❌ refresh_token が DB にありません: {account}")
         return None
-    token, expires_in = _fetch_access_token_from_refresh(rt)
+    credentials = _app_credentials(account)
+    if credentials is None:
+        return None
+    token, expires_in = _fetch_access_token_from_refresh(rt, *credentials)
     if not token:
         print("❌ access_token 取得失敗")
         return None
