@@ -30,7 +30,8 @@ import os
 import time
 import traceback
 import pyodbc
-import psutil  # LIMIT監視専用モード(--limit-only)の二重起動防止チェックに使用
+import psutil  # LIMIT監視専用モード(--limit-only)の二重起動防止チェック、ローカルpublish_ebayの生存確認に使用
+import socket
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -73,6 +74,9 @@ BASE_DIR = PROJECT_ROOT
 PYTHON = sys.executable
 
 PUBLISH_SCRIPT = BASE_DIR / "apps" / "publish" / "publish_ebay.py"
+
+# ローカル publish_ebay の画面出力の保存先（publish_ebay側は環境変数 PUBLISH_EBAY_LOG_PATH で受け取る）
+LOCAL_PUBLISH_LOG_DIR = PROJECT_ROOT / "logs"
 GET_ACTIVE_LISTINGS_SCRIPT = BASE_DIR / "apps" / "publish" / "get_active_listings.py"
 
 # ======================
@@ -384,17 +388,122 @@ def run_local():
     ローカル publish (publish_ebay.py) を起動する（起動のみ、完了は待たない）。
 
     publish はローカルでも常駐して出品を続けるため、publish_manager 側はここで待機しない。
+    起動した Popen を返す（LIMIT監視ループが終了を検知して担当行を解放するため。
+    check_local_publish_exit 参照）。画面出力は従来どおりコンソールに出しつつ、
+    logs/publish_ebay_local_YYYYMMDD.log にも残させる。
     """
 
     print("🟢 LOCAL publish 開始")
 
-    subprocess.Popen(
+    log_path = LOCAL_PUBLISH_LOG_DIR / f"publish_ebay_local_{datetime.now():%Y%m%d}.log"
+    proc = subprocess.Popen(
         [PYTHON, str(PUBLISH_SCRIPT)],
         cwd=str(BASE_DIR),
-        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+        env={**os.environ, "PYTHONIOENCODING": "utf-8", "PUBLISH_EBAY_LOG_PATH": str(log_path)},
     )
 
-    print("🚀 LOCAL publish 起動完了")
+    _pm_log(f"[run_local] publish_ebay started pid={proc.pid} log={log_path}")
+    print(f"🚀 LOCAL publish 起動完了（pid={proc.pid}）")
+
+    return proc
+
+
+# ======================
+# ローカル publish_ebay の終了検知と担当行の解放
+# ======================
+# publish_ebay は監視による自己終了（30分監視・Playwright driver監視・Renderer異常）では
+# os._exit() で終わるため、自分の mst.execute_pcs 行（account）を解放できない。
+# VPS は publish_ebay_loop.sh が再起動し、次のアカウント取得で自分の行を上書きするので残らないが、
+# ローカルは再起動しない（多数のプログラムが常駐しているため、自動再起動は行わない方針）。
+# 行が残ると、そのアカウントが LIMIT になった時に「まだ1台が処理中」と数えられ、
+# 出品枠確保が永久に始まらない（2026-10-31 川島で発生）。
+# そのため publish_manager が自分で起動したローカル publish_ebay の終了を確認したら、この行を解放する。
+LOCAL_EXECUTE_PC = socket.gethostname().strip()  # publish_ebay の current_pc と同じ値
+
+SQL_RELEASE_LOCAL_EXECUTE_PC = """
+UPDATE mst.execute_pcs
+SET account = NULL
+OUTPUT deleted.account
+WHERE execute_pc = ?
+  AND account IS NOT NULL
+"""
+
+LOCAL_PUBLISH_EXIT_CODE_MEANINGS = {
+    10: "正常終了（処理できるアカウントもLIMIT中のアカウントも無い）",
+    2: "30分監視による自己終了（1商品の処理が終わらなかった。logs/publish_ebay_exit.log にスタックあり）",
+    1: "異常終了（Renderer異常・Playwright driver監視・未処理の例外。logs/publish_ebay_exit.log または画面出力ログ参照）",
+}
+
+
+def find_local_publish_ebay_pids():
+    """このPCで動いている publish_ebay（python publish_ebay.py / python -m ...publish_ebay）のPID一覧。"""
+    pids = []
+    for p in psutil.process_iter(["pid", "name", "cmdline"]):
+        try:
+            if not (p.info["name"] or "").lower().startswith("python"):
+                continue
+            cmdline = p.info["cmdline"] or []
+            for i, arg in enumerate(cmdline):
+                if i > 0 and cmdline[i - 1] == "-m":
+                    base = arg.rsplit(".", 1)[-1].lower() + ".py"
+                else:
+                    base = os.path.basename(arg).lower()
+                if base == "publish_ebay.py":
+                    pids.append(p.info["pid"])
+                    break
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    return pids
+
+
+def release_local_execute_pc():
+    """このPCの mst.execute_pcs 行の担当(account)を空にし、空にする前の担当を返す（担当が無ければ None）。"""
+
+    def _work(conn):
+        with conn.cursor() as cur:
+            cur.execute(SQL_RELEASE_LOCAL_EXECUTE_PC, LOCAL_EXECUTE_PC)
+            row = cur.fetchone()
+        conn.commit()
+        return row[0] if row else None
+
+    return _run_with_deadlock_retry("release_local_execute_pc", _work)
+
+
+def check_local_publish_exit(local_proc):
+    """
+    ローカル publish_ebay が終了していれば、終了コード・時刻を記録し、このPCの担当行を解放する。
+
+    戻り値: まだ見張る必要がある Popen（終了を処理し終えたら None）。
+    解放するのは次の両方を確認できた時だけ（実行中の担当を誤って消さないため）:
+      1. 自分が起動したプロセスが終了している（poll() が終了コードを返した）
+      2. このPCで他の publish_ebay も動いていない（手動起動などが同じ行を使っている可能性を除く）
+    正常終了(10)の時は publish_ebay 自身が解放済みなので、解放対象は通常無い。
+    再起動はしない（このPCの担当分は、以後VPSが引き継ぐ）。
+    """
+
+    if local_proc is None:
+        return None
+
+    exit_code = local_proc.poll()
+    if exit_code is None:
+        return local_proc
+
+    meaning = LOCAL_PUBLISH_EXIT_CODE_MEANINGS.get(exit_code, "想定外の終了コード")
+    _pm_log(f"[check_local_publish_exit] publish_ebay exited pid={local_proc.pid} exit_code={exit_code} ({meaning})")
+    print(f"{'🟢' if exit_code == 10 else '❌'} LOCAL publish_ebay(pid={local_proc.pid}) が終了しました: exit_code={exit_code} {meaning}")
+
+    others = find_local_publish_ebay_pids()
+    if others:
+        _pm_log(f"[check_local_publish_exit] other publish_ebay running pids={others}, execute_pcs not released")
+        print(f"⚠️ このPCで別の publish_ebay(pid={others}) が動いているため、{LOCAL_EXECUTE_PC} の担当は解放しません")
+        return None
+
+    released_account = release_local_execute_pc()
+    _pm_log(f"[check_local_publish_exit] execute_pc={LOCAL_EXECUTE_PC} released_account={released_account}")
+    if released_account:
+        print(f"🟢 {LOCAL_EXECUTE_PC} の担当（{released_account}）を解放しました。このアカウントの残りはVPSが引き継ぎます")
+
+    return None
 
 
 def run_vps():
@@ -889,7 +998,7 @@ def is_all_accounts_finished():
 # ======================
 # LIMIT監視ループ
 # ======================
-def monitor_limit_accounts():
+def monitor_limit_accounts(local_proc=None):
     """
     LIMITになったアカウントを一定間隔で監視し続けるループ。
 
@@ -907,6 +1016,10 @@ def monitor_limit_accounts():
     worker数）を確認し、全workerの処理が終わって active_workers == 0 になって
     初めて出品枠確保を行う。active_workers > 0 の間は何もせず、次のこの監視サイクルに委ねる。
 
+    local_proc（run_localで起動したローカル publish_ebay）が終了していれば、毎サイクルの最初に
+    担当行を解放する（check_local_publish_exit）。LIMIT判定より前に行うため、終了済みのローカルが
+    active_workers に数えられ続けることはない。
+
     このループには終了条件がある。DONE補正のあと、is_excluded=0の全アカウントの
     close_reasonがDONE/EMPTYだけになっていれば（＝LIMIT・未処理が1件も残って
     いなければ）、publish_managerの役目は終わったとみなしループを抜ける。
@@ -919,6 +1032,9 @@ def monitor_limit_accounts():
     while True:
         loop_no += 1
         _pm_log(f"[monitor_limit_accounts] loop start loop_no={loop_no}")
+
+        # ローカル publish_ebay の終了検知（終了していれば担当行を解放する）
+        local_proc = check_local_publish_exit(local_proc)
 
         # LIMITアカウント取得
         limit_accounts = get_limit_accounts()
@@ -1066,13 +1182,13 @@ def main():
 
     # 出品処理を開始する（VPS・ローカルとも常駐して出品を続ける）
     run_vps()
-    run_local()
+    local_proc = run_local()
 
     # LIMITを監視する（publish を再度起動することはない）。
     # LIMIT検知 → 必要件数の計算 → 出品枠確保 → LIMIT状態解除、という一連の対応を
     # monitor_limit_accounts() が繰り返し行う。publish_ebay側は待機しているだけなので、
     # LIMIT状態を解除すれば自動的に出品を再開する。
-    monitor_limit_accounts()
+    monitor_limit_accounts(local_proc)
 
     _pm_log("[main] completed normally")
 

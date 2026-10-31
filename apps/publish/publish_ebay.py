@@ -54,8 +54,11 @@ from apps.common.utils import (
     log_listings_change,
 )
 from apps.common.process_watchdog import (
+    kill_own_descendants_and_exit,
     playwright_driver_is_dead,
     playwright_driver_monitor,
+    set_exit_context,
+    set_exit_report,
     start_watchdog,
 )
 
@@ -235,6 +238,12 @@ class FatalRendererError(Exception):
 # 30分は実測最大の20倍以上かつ OpenAI 1呼び出し分の最悪時間を上回るため、
 # これを超えた場合は「処理が進まなくなった」とみなす。
 ITEM_WATCHDOG_TIMEOUT_SEC = 30 * 60
+
+# 自己終了の記録（理由・終了コード・担当アカウント/SKU・全スレッドのスタック）。異常終了時だけ追記される。
+EXIT_REPORT_PATH = _PROJECT_ROOT / "logs" / "publish_ebay_exit.log"
+
+# publish_manager.py がローカルで起動した時だけ設定される、画面出力の保存先（VPSでは設定されない）
+CONSOLE_LOG_PATH_ENV = "PUBLISH_EBAY_LOG_PATH"
 
 
 # ========= 詳細解析（Shops / 通常） =========
@@ -2887,6 +2896,9 @@ def main():
     current_pc = socket.gethostname().strip()
     processing_by = get_processing_by()
     start_time = datetime.now()
+
+    # 監視による自己終了（30分監視・Playwright driver監視・Renderer異常）の理由とスタックを残す
+    set_exit_report(EXIT_REPORT_PATH)
     
     # --- 修正ポイント2: .strip() で目に見えないゴミを削除 ---
     r2_endpoint    = os.getenv("R2_ENDPOINT", "").strip()
@@ -3076,6 +3088,10 @@ def main():
                     # 1商品の処理が ITEM_WATCHDOG_TIMEOUT_SEC 以内に終わらなければ自己終了する。
                     # Playwright/Selenium の同期呼び出しが例外も出さず戻らなくなった場合の最後の備え。
                     # 下の finally の最後で解除する（意図した待機である LIMIT待ち等は対象外）。
+                    set_exit_context(
+                        account=acct.account, sku=sku, vendor_name=vendor_name,
+                        item_started_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    )
                     item_watchdog = start_watchdog(
                         ITEM_WATCHDOG_TIMEOUT_SEC,
                         f"1商品の処理が{ITEM_WATCHDOG_TIMEOUT_SEC}秒以内に終わりませんでした SKU={sku}",
@@ -3175,10 +3191,10 @@ def main():
                         # （publish_ebay_loop.shの15秒後リスタートに制御が戻らない）。
                         # os._exit(1) はfinallyを一切実行せずOSレベルで即座にプロセスを終える
                         # ため、この異常経路に限りcleanup処理への依存を断ち切る。
+                        # quit() の代わりに、このプロセスが起動した子孫（chromedriver・Chrome・
+                        # Playwright driver）だけを kill してから終える（以前は残り続けていた）。
                         print("[FATAL] Renderer crash → exit 1", flush=True)
-                        sys.stdout.flush()
-                        sys.stderr.flush()
-                        os._exit(1)
+                        kill_own_descendants_and_exit(f"Renderer異常 account={acct.account} SKU={sku}", 1)
 
                     except Exception as e:
                         if is_fatal_renderer_error(e):
@@ -3186,9 +3202,7 @@ def main():
                             # 上の FatalRendererError と同じ理由で、finally の close() に進まず即終了する
                             # （Playwright driver 死亡後の close() は永久に空回りする）。
                             print(f"[FATAL] SKU={sku} 致命エラー: {e!r} → exit 1", flush=True)
-                            sys.stdout.flush()
-                            sys.stderr.flush()
-                            os._exit(1)
+                            kill_own_descendants_and_exit(f"致命エラー account={acct.account} SKU={sku}: {e!r}", 1)
                         print(f" [ERROR] SKU={sku} 処理中に例外発生: {e}")
 
                     finally:
@@ -3211,6 +3225,7 @@ def main():
                             pass
 
                         item_watchdog.cancel()
+                        set_exit_context(account=acct.account, sku=None)
 
                 # このアカウントの処理はここで終わり（close_reason: DONE/EMPTY/LIMITのいずれか）。
                 # release_pc_and_close_account が close_reason を書き込む。
@@ -3245,7 +3260,36 @@ def main():
             driver.quit()
         conn.close()
 
+class _TeeStream:
+    """画面への出力はそのまま流し、同じ内容をファイルにも書く（os._exit 直前の行も残るよう行単位で書き出す）。"""
+
+    def __init__(self, stream, log_file):
+        self._stream = stream
+        self._log_file = log_file
+
+    def write(self, s):
+        n = self._stream.write(s)
+        self._log_file.write(s)
+        return n
+
+    def flush(self):
+        self._stream.flush()
+        self._log_file.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+def tee_console_to_file(path) -> None:
+    log_file = open(path, "a", encoding="utf-8", errors="replace", buffering=1)
+    log_file.write(f"===== {datetime.now():%Y-%m-%d %H:%M:%S} publish_ebay 開始 pid={os.getpid()}\n")
+    sys.stdout = _TeeStream(sys.stdout, log_file)
+    sys.stderr = _TeeStream(sys.stderr, log_file)
+
+
 if __name__ == "__main__":
+    if os.environ.get(CONSOLE_LOG_PATH_ENV):
+        tee_console_to_file(os.environ[CONSOLE_LOG_PATH_ENV])
     print("--- Python Program Started ver ready対応  ---")
     try:
         main()
