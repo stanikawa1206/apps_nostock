@@ -14,6 +14,7 @@ NOTE:
 ■ 例外（必要最小限）
 - ApiHandledError: eBay API 側の明示エラー。
 - ListingLimitError: 出品上限などのリミット系エラー。
+- AccountListingBlockedError: ポリシー違反によるアカウントの新規出品制限（25019 Tutorial_Block_7D_NR）。
 
 ■ 関数一覧（補助関数は除外）
 - get_access_token_new(account:str) -> Optional[str]
@@ -129,6 +130,18 @@ class ListingLimitError(Exception):
 class ListingStateUnknownError(ApiHandledError):
     """publishOffer が一時的エラー/通信エラーで、eBay側で出品されたかを確認できなかった"""
     pass
+
+class AccountListingBlockedError(ApiHandledError):
+    """
+    publishOffer が「ポリシー違反のため約7日間、新規出品を制限」で拒否された（商品ではなくアカウント単位の失敗）。
+    2026-11-03 に BUZZ で実測: errorId=25019 の parameters に 'Tutorial_Block_7D_NR' と
+    'eBay has restricted your ability to list new items for approximately seven days ...' が入る。
+    ApiHandledError の派生にしているので、この例外を個別に扱わない呼び出し元は従来どおり ApiHandledError として扱う。
+    """
+    def __init__(self, code: int, message: str, block_name: str, detail: str):
+        super().__init__(code, message)
+        self.block_name = block_name
+        self.detail = detail
 
 # ====== OAuth（refresh→access）======
 _TOKEN_CACHE: dict[str, dict] = {}
@@ -250,6 +263,28 @@ def _is_listing_limit(code: int, msg: str) -> bool:
         m = (msg or "").lower()
         return all(phrase in m for phrase in _SELLING_LIMIT_PHRASES)
     return False
+
+# アカウントの新規出品制限（AccountListingBlockedError のコメント参照）
+ACCOUNT_LISTING_BLOCK_ERROR_ID = 25019
+ACCOUNT_LISTING_BLOCK_NAME = "Tutorial_Block_7D_NR"
+
+def _find_account_listing_block(err: Dict[str, Any]) -> Optional[tuple[str, str]]:
+    """
+    エラー応答が 25019 + Tutorial_Block_7D_NR なら (制限名, 制限の説明文) を返す。それ以外は None。
+    25019 自体は「タイトル・説明文に不適切な語」等の商品単位の失敗でも使われるため、制限名の一致で判定する。
+    """
+    for e in (err.get("errors") or []):
+        if not isinstance(e, dict) or e.get("errorId") != ACCOUNT_LISTING_BLOCK_ERROR_ID:
+            continue
+        values = [str(p.get("value") or "") for p in (e.get("parameters") or []) if isinstance(p, dict)]
+        if ACCOUNT_LISTING_BLOCK_NAME not in values:
+            continue
+        # 説明文は HTML 版とテキスト版が入っている。テキスト版（タグなし）を優先する
+        texts = [v for v in values if "restricted your ability" in v]
+        plain = [v for v in texts if "<" not in v]
+        detail = (plain or texts or [e.get("message") or ""])[0].strip()
+        return ACCOUNT_LISTING_BLOCK_NAME, detail
+    return None
 
 # ====== Inventory API（出品・更新・公開）======
 def register_inventory_item(row: Dict[str, Any], token: str) -> Dict[str, Any]:
@@ -469,6 +504,9 @@ def publish_offer(offer_id: str, token: str) -> Dict[str, Any]:
     code, msg = _extract_error(err)
     if _is_listing_limit(code, msg):
         raise ListingLimitError(f"Listing limit (publish): {code} {msg}")
+    block = _find_account_listing_block(err)
+    if block:
+        raise AccountListingBlockedError(code, msg, block[0], block[1])
     raise ApiHandledError(code, msg)
 
 def post_one_item(payload: Dict[str, Any], account_name: str, acct_policies: Dict[str, Any]) -> str:

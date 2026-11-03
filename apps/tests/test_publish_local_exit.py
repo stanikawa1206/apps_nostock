@@ -142,6 +142,7 @@ class MonitorLoopTest(unittest.TestCase):
              mock.patch.object(pm, "clear_close_status", db.clear_close_status), \
              mock.patch.object(pm, "auto_fix_done_accounts", return_value=[]), \
              mock.patch.object(pm, "is_all_accounts_finished", is_all_finished), \
+             mock.patch.object(pm, "log_blocked_accounts", return_value=[]), \
              mock.patch.object(pm.time, "sleep", lambda s: None):
             pm.monitor_limit_accounts(local_proc)
 

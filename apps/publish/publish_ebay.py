@@ -63,7 +63,9 @@ from apps.common.process_watchdog import (
     start_watchdog,
 )
 
-from apps.adapters.ebay_api import ApiHandledError, ListingLimitError, ListingStateUnknownError, post_one_item
+from apps.adapters.ebay_api import (
+    AccountListingBlockedError, ApiHandledError, ListingLimitError, ListingStateUnknownError, post_one_item,
+)
 from apps.adapters.mercari_search import fetch_active_presets
 from apps.adapters.mercari_item_status import (
     MercariItemUnavailableError,
@@ -2303,6 +2305,20 @@ def post_to_ebay(
             listing_limit_hit,
         )
 
+    except AccountListingBlockedError as e:
+        # アカウント単位の新規出品制限（25019 Tutorial_Block_7D_NR）。商品の問題ではないため、
+        # ListingLimit と同じくロックを外して商品を候補に戻し、呼び出し元（main）へ伝えて当日の処理を終える。
+        print(f"⛔ 出品制限(アカウント): acct={acct} SKU={sku} errorId={e.code} block={e.block_name} detail={e.detail}")
+
+        rec["listing_head"] = "出品停止(出品制限)"
+        rec["listing_detail"] = str(e)
+        rec["processing_by"] = None
+        rec["processing_at"] = None
+
+        upsert_vendor_item(conn, rec)
+        conn.commit()
+        raise
+
     except ListingStateUnknownError as e:
         mark_listing_state_unknown(conn, rec, acct, sku, e)
         fail_other_delta += 1
@@ -2587,9 +2603,11 @@ def fetch_next_account_and_lock(conn, current_pc):
             return Account(account=row[0].strip(), preset_group=row[1].strip(), post_target=row[2])
     return None
 
-def release_pc_and_close_account(conn, current_pc, account_name=None, close_reason=None):
+def release_pc_and_close_account(conn, current_pc, account_name=None, close_reason=None, close_detail=None):
     """
     PCの占有を解除する。close_reasonがある場合はアカウント自体を当日終了とする。
+    close_reason="BLOCKED"（eBayの新規出品制限）の時だけ close_detail（エラー内容）も記録する。
+    close_detail=None なら記録済みの内容を残す（他workerが検知済みで止まっただけの場合）。
     """
     with conn.cursor() as cur:
         # 割り当て（fetch_next_account_and_lock）と同じ順でロックを取る（SQL_LOCK_EXECUTE_PCS参照）
@@ -2617,6 +2635,13 @@ def release_pc_and_close_account(conn, current_pc, account_name=None, close_reas
                         END
                     WHERE account = ?
                 """, (account_name, account_name))
+            elif close_reason == "BLOCKED":
+                cur.execute("""
+                    UPDATE mst.ebay_accounts
+                    SET close_reason = 'BLOCKED',
+                        close_detail = COALESCE(?, close_detail)
+                    WHERE account = ?
+                """, (close_detail, account_name))
             else:
                 cur.execute("""
                     UPDATE mst.ebay_accounts
@@ -2962,6 +2987,7 @@ def main():
             # アカウントの状態は DONE / EMPTY / LIMIT の3つ。
             #   DONE  : 当日の目標件数を達成 → 今日はもう処理しない（終了）
             #   EMPTY : 出品候補が無くなった → 今日はもう処理しない（終了）
+            #   BLOCKED: eBayのポリシー違反による新規出品制限（25019 Tutorial_Block_7D_NR）→ 今日はもう処理しない（終了）
             #   LIMIT : eBay側の出品制限 → 「一時停止」であり終了ではない。
             #           publish_manager.py が古い出品を削除して出品枠を確保し、
             #           close_reason をクリアすれば、そのアカウントは再び取得できる。
@@ -3028,17 +3054,29 @@ def main():
                 #   "DONE"  : 目標達成（今日は終了）
                 #   "EMPTY" : 出品候補が無い（今日は終了）
                 #   "LIMIT" : eBay側の出品制限（一時停止。publish_managerが解除すれば再開）
+                #   "BLOCKED": eBayのポリシー違反による新規出品制限（25019 Tutorial_Block_7D_NR。今日は終了）
+                close_detail = None
                 while not stop_all:
                     with conn.cursor() as cur:
                         cur.execute("""
-                            SELECT COUNT(*) 
-                            FROM trx.listings 
-                            WHERE account = ?
-                            AND CAST(start_time AS DATE) = CAST(GETDATE() AS DATE)
-                            AND is_deleted = 0
-                        """, (acct.account,))
-                        
-                        sent_now = cur.fetchone()[0]
+                            SELECT
+                                (SELECT COUNT(*)
+                                 FROM trx.listings
+                                 WHERE account = ?
+                                 AND CAST(start_time AS DATE) = CAST(GETDATE() AS DATE)
+                                 AND is_deleted = 0),
+                                (SELECT close_reason FROM mst.ebay_accounts WHERE account = ?)
+                        """, (acct.account, acct.account))
+
+                        sent_now, current_close_reason = cur.fetchone()
+
+                    # [アカウント終了⓪: BLOCKED] 同じアカウントを処理中の別workerが新規出品制限を検知済み。
+                    # 制限中は出品が全件失敗するため、このworkerも次の商品へ進まずに終える
+                    # （記録済みのエラー内容は close_detail=None で残す）。
+                    if current_close_reason == "BLOCKED":
+                        close_reason = "BLOCKED"
+                        print(f"⛔ {acct.account} は別workerが新規出品制限を検知済みのため終了します。")
+                        break
 
                     # [アカウント終了①: DONE] 当日の post_target に到達済み（DB上の実件数で判定）
                     # → close_reason="DONE"。今日はもう処理しない
@@ -3180,6 +3218,20 @@ def main():
                         if writes_since_commit > 0:
                             conn.commit()
 
+                    except AccountListingBlockedError as e:
+                        # [アカウント終了④] eBayの新規出品制限（25019 Tutorial_Block_7D_NR）。
+                        # 制限中はこのアカウントの出品が全件失敗するため、当日の処理を終える
+                        # → close_reason="BLOCKED"。LIMITと違い publish_manager は出品枠確保をせず、
+                        # 完了判定では終了扱い。翌日は publish_manager 起動時のリセットで再判定される。
+                        close_reason = "BLOCKED"
+                        close_detail = _truncate_for_db(
+                            f"{datetime.now():%Y-%m-%d %H:%M:%S} errorId={e.code} {e.block_name} "
+                            f"SKU={sku} pc={current_pc}: {e.detail}",
+                            1000,
+                        )
+                        print(f"⛔ {acct.account} eBayの新規出品制限を検知しました。当日の出品を終了します。 {close_detail}")
+                        break
+
                     except FatalRendererError:
                         # [publish_ebay 全体の終了③] ブラウザ(renderer)側の致命的クラッシュ。
                         # 個別アカウント終了ではなく、プロセスそのものを即座に異常終了させる
@@ -3231,13 +3283,13 @@ def main():
                         item_watchdog.cancel()
                         set_exit_context(account=acct.account, sku=None)
 
-                # このアカウントの処理はここで終わり（close_reason: DONE/EMPTY/LIMITのいずれか）。
+                # このアカウントの処理はここで終わり（close_reason: DONE/EMPTY/LIMIT/BLOCKEDのいずれか）。
                 # release_pc_and_close_account が close_reason を書き込む。
-                # DONE/EMPTYは今日はもう再取得されない。LIMITも同様にclose_reasonが立つが、
+                # DONE/EMPTY/BLOCKEDは今日はもう再取得されない。LIMITも同様にclose_reasonが立つが、
                 # 「終了」ではなく「一時停止」であり、publish_manager.py が出品枠を確保して
                 # close_reason をクリアすれば、このアカウントは再び取得できるようになる。
                 # 外側 while はここでは終わらず、次のアカウントを取りに戻る。
-                release_pc_and_close_account(conn, current_pc, acct.account, close_reason)
+                release_pc_and_close_account(conn, current_pc, acct.account, close_reason, close_detail)
                 summary_success[acct.account] = summary_success.get(acct.account, 0) + acct_success.get(acct.account, 0)
                 print(f"🏁 アカウント終了: {acct.account} (Reason: {close_reason})")
 

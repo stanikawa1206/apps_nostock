@@ -446,12 +446,15 @@ def build_publish_manager_account_summary(conn) -> str:
         cur = conn.cursor()
 
         cur.execute("""
-            SELECT account, close_reason, post_target
+            SELECT account, close_reason, post_target, close_detail
             FROM mst.ebay_accounts
             WHERE ISNULL(is_excluded, 0) = 0
             ORDER BY account
         """)
-        accounts = cur.fetchall()
+        rows = cur.fetchall()
+        accounts = [(r[0], r[1], r[2]) for r in rows]
+        # BLOCKED = eBayの新規出品制限（25019 Tutorial_Block_7D_NR）で当日の出品を終えたアカウント
+        blocked = [(r[0], r[3]) for r in rows if r[1] == "BLOCKED"]
 
         cur.execute("""
             SELECT account, COUNT(*) AS today_posted
@@ -473,7 +476,15 @@ def build_publish_manager_account_summary(conn) -> str:
 
         limit_now_count = sum(1 for _, close_reason, _ in accounts if close_reason == "LIMIT")
 
-        lines = ["【アカウント別状況】"]
+        lines = []
+        if blocked:
+            lines.append("【⛔ eBayの新規出品制限で当日の出品を終了したアカウント】")
+            for account, close_detail in blocked:
+                lines.append(f"- {account}: {close_detail or '(エラー内容の記録なし)'}")
+            lines.append("  → My eBay のメッセージで違反内容を確認してください。翌日の出品で自動的に再判定します。")
+            lines.append("")
+
+        lines.append("【アカウント別状況】")
         for account, close_reason, post_target in accounts:
             posted = today_posted_map.get(account, 0)
             lines.append(

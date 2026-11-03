@@ -121,15 +121,19 @@ GET_ACTIVE_LISTINGS_TIMEOUT_SECONDS = 90 * 60
 SQL_RESET_CLOSE_STATUS = """
 UPDATE mst.ebay_accounts
 SET
-    close_reason = NULL
+    close_reason = NULL,
+    close_detail = NULL
 WHERE
     close_reason IS NOT NULL
+    OR close_detail IS NOT NULL
 """
 
 
 def reset_close_status():
     """
     前日までのLIMIT/当日終了状態を全アカウント分クリアする。
+    BLOCKED（新規出品制限）とその内容(close_detail)もクリアし、当日の出品で改めて判定する
+    （制限が続いていれば、最初の出品失敗で再び BLOCKED になる）。
 
     publish_manager 起動時に一度だけ呼び出す。
     """
@@ -972,18 +976,47 @@ def auto_fix_done_accounts():
     return fixed_accounts
 
 
+SQL_SELECT_BLOCKED_ACCOUNTS = """
+SELECT account, close_detail
+FROM mst.ebay_accounts
+WHERE ISNULL(is_excluded, 0) = 0
+  AND close_reason = 'BLOCKED'
+ORDER BY account
+"""
+
+
+def log_blocked_accounts():
+    """
+    eBayの新規出品制限（25019 Tutorial_Block_7D_NR）で当日の出品を終えたアカウントと、
+    そのエラー内容(close_detail)を publish_manager.log に残す（出品の終了時に1回呼ぶ）。
+    """
+
+    def _work(conn):
+        with conn.cursor() as cur:
+            cur.execute(SQL_SELECT_BLOCKED_ACCOUNTS)
+            return [(r[0], r[1]) for r in cur.fetchall()]
+
+    blocked = _run_with_deadlock_retry("log_blocked_accounts", _work)
+    for account, close_detail in blocked:
+        _pm_log(f"[blocked_account] account={account} detail={close_detail}")
+        print(f"⛔ eBayの新規出品制限で当日の出品を終了: {account} {close_detail}")
+    return blocked
+
+
 SQL_SELECT_UNFINISHED_ACCOUNT = """
 SELECT TOP 1 account
 FROM mst.ebay_accounts
 WHERE ISNULL(is_excluded, 0) = 0
-  AND (close_reason IS NULL OR close_reason NOT IN ('DONE', 'EMPTY'))
+  AND (close_reason IS NULL OR close_reason NOT IN ('DONE', 'EMPTY', 'BLOCKED'))
 """
 
 
 def is_all_accounts_finished():
     """
-    is_excluded=0 の全アカウントについて、close_reason が DONE か EMPTY だけに
+    is_excluded=0 の全アカウントについて、close_reason が DONE か EMPTY か BLOCKED だけに
     なっているかどうかを判定する。
+    BLOCKED は eBay のポリシー違反による新規出品制限（25019 Tutorial_Block_7D_NR）で当日の出品を
+    終えたアカウント。LIMIT と違って出品枠を確保しても解除されないため、終了扱いにする。
 
     close_reason が NULL（未処理）または LIMIT のアカウントが1件でも残っていれば
     False。auto_fix_done_accounts() による補正の後に呼び出すことで、
@@ -1029,7 +1062,7 @@ def monitor_limit_accounts(local_proc=None):
     active_workers に数えられ続けることはない。
 
     このループには終了条件がある。DONE補正のあと、is_excluded=0の全アカウントの
-    close_reasonがDONE/EMPTYだけになっていれば（＝LIMIT・未処理が1件も残って
+    close_reasonがDONE/EMPTY/BLOCKEDだけになっていれば（＝LIMIT・未処理が1件も残って
     いなければ）、publish_managerの役目は終わったとみなしループを抜ける。
     """
 
@@ -1064,6 +1097,7 @@ def monitor_limit_accounts(local_proc=None):
             print("All publish accounts finished.")
             print("publish_manager exiting.")
             _pm_log(f"[monitor_limit_accounts] all accounts finished, breaking loop loop_no={loop_no}")
+            log_blocked_accounts()
             break
 
         # 少し待ってからもう一度確認する
