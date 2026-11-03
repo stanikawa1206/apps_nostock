@@ -1937,10 +1937,36 @@ def build_pic_urls(
     cdn_cache[sku] = cdn_urls
     return cdn_urls
 
-def classify_ebay_error(err_msg: str):
-    if "Cannot revise listing" in err_msg or "cannot contain javascript" in err_msg.lower():
+# アカウント単位の制限を示す文言（25019 の parameters に入る）。2026-11-03 の BUZZ で実測。
+# 25019 は商品ごとの違反（"like new" の語・象牙・特殊文字など）とアカウント制限で同じ message になるため、
+# これらを含む 25019 は商品の問題ではないとして ポリシーNG（恒久的に候補から除外）にしない。
+# 7日間制限（Tutorial_Block_7D_NR）は ebay_api で AccountListingBlockedError になり、ここには来ない。
+ACCOUNT_RESTRICTION_MARKERS = ("restricted your ability to list", "Tutorial_Block")
+
+
+def classify_ebay_error(e: ApiHandledError):
+    """
+    eBay の出品失敗を、商品自体の問題で今後も出品できない「ポリシーNG」かどうかに分類する。
+      - 25019（商品の内容がeBayのポリシーに違反）: ポリシーNG。ただしアカウント制限の文言を含むものは除く
+      - "cannot contain javascript"（説明文に禁止文字列。25002で返る）: ポリシーNG（従来どおり）
+    それ以外は None（呼び出し側で「出品失敗」）。
+    以前は message に "Cannot revise listing" を含むだけで判定していたため、
+    アカウント制限の 25019 も商品ごとにポリシーNGにしていた（2026-11-03 BUZZ の 2,729件）。
+    """
+    msg = e.message or ""
+    if e.code == 25019:
+        texts = [msg, *e.details]
+        if any(m in t for t in texts for m in ACCOUNT_RESTRICTION_MARKERS):
+            return None
+        return "ポリシーNG"
+    if "cannot contain javascript" in msg.lower():
         return "ポリシーNG"
     return None
+
+
+def format_ebay_error_detail(e: ApiHandledError) -> str:
+    """出品状況詳細に保存する内容。「コード: メッセージ」に eBay の説明文（parameters）があれば続ける。"""
+    return " / ".join([str(e), *e.details])
 
 def extract_camera_model(title_jp: str, description_jp: str) -> dict:
     """
@@ -2463,14 +2489,12 @@ def post_to_ebay(
                         fail_other_delta, image_mode, image_error_count, cdn_mode_until, listing_limit_hit)
 
         # ★ 通常のAPI失敗確定
-        policy = classify_ebay_error(err_msg)
-
-        if policy:
-            rec["listing_head"] = policy
-            rec["listing_detail"] = ""
-        else:
-            rec["listing_head"] = "出品失敗"
-            rec["listing_detail"] = err_msg
+        # 出品状況詳細にはエラーコード・メッセージと eBay の説明文を残す（ポリシーNGも理由が後から分かるように）
+        policy = classify_ebay_error(e)
+        rec["listing_head"] = policy or "出品失敗"
+        rec["listing_detail"] = format_ebay_error_detail(e)
+        if e.details:
+            print(f"   └ 詳細: {' / '.join(e.details)}")
 
         upsert_vendor_item(conn, rec)
         writes_since_commit += 1

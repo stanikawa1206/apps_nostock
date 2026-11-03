@@ -167,7 +167,9 @@ class PostToEbayTest(unittest.TestCase):
             result = _call_post_to_ebay(mock.Mock(), heavy)
         self.assertEqual(len(result), 10)
         self.assertFalse(result[9])  # listing_limit_hit
-        self.assertEqual(heavy["rec"]["listing_head"], "出品失敗")
+        # 商品単位の 25019 は ポリシーNG（2026-11-03 にコードで判定する形へ変更。test_policy_ng_classification 参照）
+        self.assertEqual(heavy["rec"]["listing_head"], "ポリシーNG")
+        self.assertEqual(heavy["rec"]["listing_detail"], "25019: improper words")
         self.assertEqual(heavy["rec"]["processing_at"], "2026-11-03")  # 当日は再取得しない（従来どおり）
 
 

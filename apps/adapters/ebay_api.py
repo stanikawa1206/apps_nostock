@@ -53,6 +53,7 @@ NOTE:
 # --- Standard library ---
 import os
 import re
+import html
 import time
 import random
 import logging
@@ -119,10 +120,13 @@ TRADING_COMPAT_LEVEL = os.getenv("EBAY_TRADING_COMPAT_LEVEL", "1149")
 
 # ====== 例外 ======
 class ApiHandledError(Exception):
-    def __init__(self, code: int, message: str):
+    def __init__(self, code: int, message: str, details: Optional[list] = None):
         super().__init__(f"{code}: {message}")
         self.code = code
         self.message = message
+        # eBay応答の parameters に入っている説明文（HTMLを除いたテキスト）。publishOffer の失敗だけ設定する。
+        # 25019 は message が共通の定型文で、商品ごとの違反理由やアカウント制限の内容はここにしか無い。
+        self.details = list(details or [])
 
 class ListingLimitError(Exception):
     pass
@@ -139,7 +143,7 @@ class AccountListingBlockedError(ApiHandledError):
     ApiHandledError の派生にしているので、この例外を個別に扱わない呼び出し元は従来どおり ApiHandledError として扱う。
     """
     def __init__(self, code: int, message: str, block_name: str, detail: str):
-        super().__init__(code, message)
+        super().__init__(code, message, [detail])
         self.block_name = block_name
         self.detail = detail
 
@@ -263,6 +267,35 @@ def _is_listing_limit(code: int, msg: str) -> bool:
         m = (msg or "").lower()
         return all(phrase in m for phrase in _SELLING_LIMIT_PHRASES)
     return False
+
+_EBAY_RULE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+$")  # 例: LP_KWS_LikeNew, Tutorial_Block_7D_NR
+_EBAY_ERROR_REF_RE = re.compile(r"\{e\d+-\d+x\}")                            # 例: {e301542-1246334x}
+
+
+def _extract_error_details(err: Dict[str, Any]) -> list:
+    """
+    最初のエラーの parameters から [説明文, eBayの規則名] を取り出す（無いものは省く）。
+    parameters には同じ説明文の HTML版・テキスト版、URL、リンク文字列、内部IDが並ぶため
+    （2026-11-03 の 25019 で実測）、説明文は最初の長い文1つ（HTMLタグ・文字参照を除く）、
+    規則名は「英数字_英数字…」の形の値だけにする。
+    """
+    try:
+        first = (err.get("errors") or [{}])[0]
+        params = first.get("parameters") or []
+    except Exception:
+        return []
+    values = [str(p.get("value") or "") for p in params if isinstance(p, dict)]
+    text = None
+    rules = []
+    for v in values:
+        s = _EBAY_ERROR_REF_RE.sub("", html.unescape(re.sub(r"<[^>]*>", " ", v)))
+        s = re.sub(r"\s+", " ", s).strip()
+        if _EBAY_RULE_NAME_RE.match(s):
+            if s not in rules:
+                rules.append(s)
+        elif text is None and len(s) >= 40 and not s.startswith("http"):
+            text = s
+    return ([text] if text else []) + rules
 
 # アカウントの新規出品制限（AccountListingBlockedError のコメント参照）
 ACCOUNT_LISTING_BLOCK_ERROR_ID = 25019
@@ -507,7 +540,7 @@ def publish_offer(offer_id: str, token: str) -> Dict[str, Any]:
     block = _find_account_listing_block(err)
     if block:
         raise AccountListingBlockedError(code, msg, block[0], block[1])
-    raise ApiHandledError(code, msg)
+    raise ApiHandledError(code, msg, _extract_error_details(err))
 
 def post_one_item(payload: Dict[str, Any], account_name: str, acct_policies: Dict[str, Any]) -> str:
     token = get_access_token_new(account_name)
