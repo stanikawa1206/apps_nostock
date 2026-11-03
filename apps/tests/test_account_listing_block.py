@@ -186,6 +186,8 @@ SCHEMA_SQL = [
     "CREATE TABLE mst.execute_pcs (execute_pc NVARCHAR(100) NOT NULL PRIMARY KEY, account NVARCHAR(100), is_active BIT)",
     """CREATE TABLE trx.listings (id INT IDENTITY PRIMARY KEY, account NVARCHAR(100), start_time DATETIME,
         is_deleted BIT, delete_reason NVARCHAR(100), deleted_at DATETIME)""",
+    # main() が起動時に読み込む（2026-11-03 にタイトル置換ルールの読み込みを復活）
+    "CREATE TABLE mst.title_replace_rules (rule_id INT NOT NULL PRIMARY KEY, pattern NVARCHAR(200), replacement NVARCHAR(200))",
 ]
 
 

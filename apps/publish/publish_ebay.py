@@ -803,10 +803,17 @@ def clean_for_ebay(text: str) -> str:
     return s
 
 def _replace_literal_ignorecase(text: str, old: str, new: str) -> str:
+    """
+    old を大文字小文字を区別せずに文字どおり置換する。
+    old の先頭・末尾が英数字のときは、その側が単語の途中に当たる箇所は置換しない
+    （'Portefeuille Sara' → 'Portefeuille Sarah' が既に正しい 'Sarah' を 'Sarahh' にしないように）。
+    """
     if not text or not old:
         return text or ""
-    pattern = re.compile(re.escape(old), flags=re.IGNORECASE)
-    return pattern.sub(new, text)
+    head = r"(?<![A-Za-z0-9])" if old[0].isalnum() else ""
+    tail = r"(?![A-Za-z0-9])" if old[-1].isalnum() else ""
+    pattern = re.compile(head + re.escape(old) + tail, flags=re.IGNORECASE)
+    return pattern.sub(lambda _m: new, text)
 
 def apply_title_rules_literal_ci(title_en: str, rules: List[Tuple[str, str]]) -> str:
     s = title_en or ""
@@ -814,6 +821,45 @@ def apply_title_rules_literal_ci(title_en: str, rules: List[Tuple[str, str]]) ->
         s = _replace_literal_ignorecase(s, pat, rep)
     s = re.sub(r"\s+", " ", s).strip()
     return s
+
+# eBay がタイトルで拒否する表現（25019 / 2026-11-03 調査で、成功した出品には1件も無かったもの）。
+#  - "like new" 系（LP_KWS_LikeNew）: 新品の検索結果に出る表現として禁止。"Excellent" に置き換える
+#  - ★・ハート・絵文字などの装飾記号（LP_SNB_CutsieCharacters）: 削除する
+# ×・【】・°・℃・® など意味のある記号は残す。Ivory（色名）はここでは扱わない。
+_TITLE_LIKE_NEW_RE = re.compile(
+    r"[\[\(\u3010]?\s*\b(?:like|almost|near(?:ly)?)[\s\-]*new\b\s*[\]\)\u3011]?",  # [ ( 【 で囲まれていれば囲みごと
+    flags=re.IGNORECASE,
+)
+_TITLE_TIMES_LIKE_RE = re.compile("[\u2716\u2715]")  # ✖ ✕（「A ✖ B」のコラボ表記）→ x
+_TITLE_DECORATIVE_RE = re.compile(
+    "["
+    "\u203c\u2049"            # ‼ ⁉
+    "\u25a0-\u25ff"           # ●○◆◇■□◎ などの図形
+    "\u2600-\u27bf"           # ☆★♥♦♪☺ ✨❤❣✴ などの記号・絵文字
+    "\u2b00-\u2bff"           # ⭐⬜ など
+    "\ufe0e\ufe0f\u200d\u20e3"  # 絵文字の異体字セレクタ・結合文字（目に見えない）
+    "\U0001f000-\U0001faff"   # 絵文字
+    "]"
+)
+
+def sanitize_title_policy_words(title: str) -> str:
+    s = _TITLE_LIKE_NEW_RE.sub(" Excellent ", title or "")
+    s = _TITLE_TIMES_LIKE_RE.sub(" x ", s)
+    s = _TITLE_DECORATIVE_RE.sub(" ", s)
+    s = re.sub(r"\bExcellent(?:\s+Excellent\b)+", "Excellent", s, flags=re.IGNORECASE)
+    s = re.sub(r"\s+", " ", s).strip()
+    return re.sub(r" ([,.;:!?])", r"\1", s)
+
+def finalize_title_en(title_en: str) -> str:
+    """
+    出品に使う英語タイトルの最終整形。新しく翻訳したタイトルにも、DB に保存済みのタイトルにも適用する。
+      1) eBay が拒否する表現・記号の除去（sanitize_title_policy_words。記号は空白に置き換えて単語がくっつかないようにする）
+      2) mst.title_replace_rules（TITLE_RULES。main() の起動時に読み込む）
+      3) 80文字に収める
+    """
+    s = sanitize_title_policy_words(title_en or "")
+    s = apply_title_rules_literal_ci(s, TITLE_RULES)
+    return smart_truncate80(s)
 
 def shipping_usd_from_jpy(jpy: int, usd_jpy_rate: float) -> str:
     usd = (Decimal(jpy) / Decimal(str(usd_jpy_rate))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
@@ -1783,7 +1829,8 @@ def heavy_check_detail(
     # === 6) 翻訳/整形（OKルート） ===
     existing_en = fetch_existing_title_en(conn, vendor_name, sku)
     if existing_en:
-        rec["title_en"] = clean_for_ebay(existing_en)
+        # 保存済みのタイトルにも置換ルールと禁止表現の除去を出品時に適用する（結果は upsert で DB にも残る）
+        rec["title_en"] = clean_for_ebay(finalize_title_en(existing_en))
     else:
         expected_brand_en = default_brand_en
         title_en_raw = translate_to_english(
@@ -1801,12 +1848,7 @@ def heavy_check_detail(
             return None, debug_unavailable_dump, writes_since_commit, 0, 1
 
         title_en_post = postprocess_title(rec.get("title_jp") or "", rec.get("description") or "", title_en_raw)
-        title_en = smart_truncate80(
-            apply_title_rules_literal_ci(
-                sanitize_title_dangerous_words(title_en_post),
-                TITLE_RULES
-            )
-        )
+        title_en = finalize_title_en(sanitize_title_dangerous_words(title_en_post))
         rec["title_en"] = clean_for_ebay(title_en)
 
     # カメラモデル取得 (デジカメのみ)
@@ -2994,6 +3036,11 @@ def main():
 
     try:
         from selenium.webdriver.chrome.options import Options
+        # タイトル置換ルール（mst.title_replace_rules）。2026-02-20 のループ書き換えで読み込みが抜け、
+        # 11/3 まで1件も適用されていなかった（★・"Like new" 入りのタイトルがポリシーNGになっていた）。
+        global TITLE_RULES
+        TITLE_RULES = load_title_rules(conn)
+        print(f"[INFO] タイトル置換ルール {len(TITLE_RULES)}件を読み込みました")
         presets = fetch_active_presets(conn)
         options = Options()
         options.add_argument("--headless=new")
