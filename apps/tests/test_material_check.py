@@ -48,14 +48,22 @@ class Stage1Test(unittest.TestCase):
         # タイトルは型押し、説明文はクロコのレザー（フランクミュラーの交換ベルト）
         self.assertEqual(s1("フランクミュラー レザー 型押しクロコ ベルト", "購入した時のクロコのレザーベルトです"), "HOLD")
 
-    def test_allow_materials_do_not_stop(self):
-        self.assertEqual(s1("FENDI ポンポンチャーム", "素材：リアルファー（フォックスファー）"), "OK")
-        self.assertEqual(s1("BOTTEGA VENETA エイ革 ガルーシャ 長財布"), "OK")
-        self.assertEqual(s1("エルメス メドール バングル オーストリッチ"), "OK")
+    def test_declaration_materials_hold(self):
+        # 米国輸入時に USFWS 申告・指定港通関が必要（出品者側で対応できない）→ 保留
+        self.assertEqual(s1("BOTTEGA VENETA エイ革 ガルーシャ 長財布"), "HOLD")
+        self.assertEqual(s1("エルメス メドール バングル オーストリッチ"), "HOLD")
+        self.assertEqual(s1("ボッテガヴェネタ 財布", "素材: アイヤーズスネーク / ラム"), "HOLD")
+        self.assertEqual(s1("オーストリッチ型押し 財布"), "OK")
+
+    def test_declaration_switch(self):
+        with mock.patch.object(mc, "HOLD_WILDLIFE_DECLARATION", False):
+            self.assertEqual(s1("エルメス メドール バングル オーストリッチ"), "OK")
 
     def test_no_false_hits(self):
         for t in ["ヘビーユーズ品 蛇腹 カメラ", "蛇の目傘", "象牙色 ネックレス", "珊瑚礁 柄 スカーフ",
-                  "クロス バッグ", "ワニスで仕上げ", "#クロコ #パイソン 財布", "ミンクオイル 手入れ済み"]:
+                  "クロス バッグ", "ワニスで仕上げ", "#クロコ #パイソン 財布", "ミンクオイル 手入れ済み",
+                  "シェーファー 万年筆", "ファーバーカステル 鉛筆", "タイムグラファー 計測", "ファースナー金具",
+                  "ピーターラビット キーホルダー", "起毛皮革のケース"]:
             self.assertEqual(mc.detect_hits(t, ""), [], t)
 
     def test_keyword_list_line_ignored(self):
@@ -70,6 +78,49 @@ class Stage1Test(unittest.TestCase):
         self.assertEqual(s1("バングル", "", [{"text": "素材", "value": "素材：パイソン"}]), "NG")
 
 
+class FurTest(unittest.TestCase):
+    def check(self, title, desc="", cond=None):
+        return mc.check_material(title, desc, None, [], client_factory=mock.MagicMock(side_effect=AssertionError("AI")),
+                                 item_condition_id=cond).result
+
+    def test_unused_real_fur_is_ng(self):
+        self.assertEqual(self.check("【未使用品】ルイヴィトン ポルトクレ ミンクファー", cond=1), "NG")
+        self.assertEqual(self.check("FENDI FOXストール", "未使用でございます。素材：フォックスファー"), "NG")
+
+    def test_unknown_usage_is_hold(self):
+        self.assertEqual(self.check("FENDI ポンポンチャーム リアルファー フォックスファー", cond=2), "HOLD")
+        self.assertEqual(self.check("CHANEL ラビットファー ストール", "素材：ラビットファー100%"), "HOLD")
+
+    def test_used_rabbit_ok_other_species_hold(self):
+        self.assertEqual(self.check("プラダ ファーバッグチャーム ラビット 尻尾", "【素材】ラビット レザー", cond=3), "OK")
+        self.assertEqual(self.check("LV ポルトクレ ミンクファー", "使用感があります", cond=4), "HOLD")
+
+    def test_rank_table_ignored(self):
+        desc = "\n".join(["S…未使用品(弊社の検品基準による)", "SA…極美品…数回使用した程度のUSED品", "●素材 ラビットファー100%"])
+        # ランク基準表（S…未使用品 など）は使用歴として扱わない（未使用とも中古とも決めない）
+        self.assertEqual(mc.usage_state("CHANEL ストール", desc, None), "UNKNOWN")
+        self.assertEqual(mc.usage_state("新品で購入しました", "数回使用", None), "USED")
+
+    def test_fake_fur_ok(self):
+        self.assertEqual(self.check("フェイクファー ティペット", cond=1), "OK")
+        self.assertEqual(self.check("エコファー バッグチャーム", cond=1), "OK")
+        self.assertEqual(self.check("ムートン ファー ポーチ", cond=1), "OK")
+
+    def test_generic_fur_goes_to_ai_and_ai_decides(self):
+        resp = mock.MagicMock(output_text='{"materials":[{"material":"毛皮","verdict":"real","species":"rabbit","confidence":0.9}]}')
+        resp.usage.input_tokens, resp.usage.output_tokens = 4000, 60
+        client = mock.MagicMock()
+        client.responses.create.return_value = resp
+        r = mc.check_material("FENDI ファー チャーム", "", None, [], client_factory=lambda: client, item_condition_id=1)
+        self.assertEqual((r.result, r.stage), ("NG", 2))
+        r = mc.check_material("FENDI ファー チャーム", "", None, [], client_factory=lambda: client, item_condition_id=4)
+        self.assertEqual(r.result, "OK")
+        self.assertEqual(mc.material_labels(r), ["ラビット"])
+        resp.output_text = '{"materials":[{"material":"毛皮","verdict":"unknown","confidence":0.3}]}'
+        r = mc.check_material("FENDI ファー チャーム", "", None, [], client_factory=lambda: client, item_condition_id=4)
+        self.assertEqual(r.result, "HOLD")
+
+
 class AiJudgeTest(unittest.TestCase):
     def test_judge_ai(self):
         j = mc.judge_ai
@@ -80,6 +131,18 @@ class AiJudgeTest(unittest.TestCase):
         self.assertEqual(j({"materials": []}, ["ヘビ"])[0], "HOLD")
         self.assertEqual(j({"materials": [{"material": "ヘビ", "verdict": "not_real", "confidence": 0.9},
                                           {"material": "ワニ", "verdict": "real", "confidence": 0.9}]}, ["ヘビ"])[0], "NG")
+
+    def test_no_image_not_real_is_hold(self):
+        j = mc.judge_ai
+        ai = {"materials": [{"material": "サンゴ", "verdict": "not_real", "confidence": 0.9}], "_images": 0}
+        self.assertEqual(j(ai, ["サンゴ"])[0], "HOLD")
+        ai["_images"] = 3
+        self.assertEqual(j(ai, ["サンゴ"])[0], "OK")
+
+    def test_coral_jewelry_is_real(self):
+        self.assertEqual(s1("美品 ミキモト 珊瑚 リーフ ブローチ ベビーパール シルバー"), "NG")
+        self.assertEqual(s1("セーラー 万年筆 うさぎや 限定 珊瑚"), "AI")
+        self.assertEqual(s1("珊瑚色 スカーフ"), "OK")
 
     def test_ai_error_is_hold(self):
         client = mock.MagicMock()
@@ -94,8 +157,12 @@ class AiJudgeTest(unittest.TestCase):
         resp.usage.input_tokens, resp.usage.output_tokens = 4000, 60
         client = mock.MagicMock()
         client.responses.create.return_value = resp
-        r = mc.check_material("GUCCI 財布 スネーク", "", None, [], client_factory=lambda: client)
+        with mock.patch.object(mc, "_image_b64", return_value="eA=="):
+            r = mc.check_material("GUCCI 財布 スネーク", "", None, ["https://example/1.jpg"], client_factory=lambda: client)
         self.assertEqual((r.result, r.stage, r.ai_input_tokens), ("OK", 2, 4000))
+        # 写真が無い時は、対象外の回答でも保留
+        r = mc.check_material("GUCCI 財布 スネーク", "", None, [], client_factory=lambda: client)
+        self.assertEqual(r.result, "HOLD")
 
     def test_stage1_real_does_not_call_ai(self):
         client = mock.MagicMock()
@@ -121,7 +188,7 @@ class CacheTest(unittest.TestCase):
     def test_same_text_uses_cache(self):
         title, desc = "GUCCI 財布 スネーク", ""
         h = mc.text_hash(mc.build_text(title, desc))
-        conn, cur = self._conn((h, "OK", 2, "AI: 対象外"))
+        conn, cur = self._conn((h, "OK", 2, "AI: 対象外", None))
         with mock.patch.object(mc, "check_material") as cm:
             r = mc.check_material_with_cache(conn, "メルカリ", "m1", title, desc)
         cm.assert_not_called()
@@ -129,20 +196,20 @@ class CacheTest(unittest.TestCase):
         self.assertEqual(r.result, "OK")
 
     def test_changed_text_rejudged_but_ng_sticks(self):
-        conn, cur = self._conn(("x" * 64, "NG", 1, "ワニ: 本物"))
+        conn, cur = self._conn(("x" * 64, "NG", 1, "ワニ: 本物", None))
         with mock.patch.object(mc, "check_material") as cm:
             r = mc.check_material_with_cache(conn, "メルカリ", "m1", "GUCCI 財布 スネーク", "")
         cm.assert_not_called()
         self.assertEqual(r.result, "NG")
 
-        conn, cur = self._conn(("x" * 64, "HOLD", 2, "AI: 判断不能"))
+        conn, cur = self._conn(("x" * 64, "HOLD", 2, "AI: 判断不能", None))
         with mock.patch.object(mc, "check_material", return_value=mc.MaterialCheckResult("OK", 2, "AI")) as cm:
             r = mc.check_material_with_cache(conn, "メルカリ", "m1", "GUCCI 財布 スネーク", "")
         cm.assert_called_once()
         self.assertEqual(r.result, "OK")
 
     def test_manual_result_wins(self):
-        conn, cur = self._conn(("x" * 64, "OK", 9, "手動確認"))
+        conn, cur = self._conn(("x" * 64, "OK", 9, "手動確認", None))
         with mock.patch.object(mc, "check_material") as cm:
             r = mc.check_material_with_cache(conn, "メルカリ", "m1", "エルメス 素材：アリゲーター", "")
         cm.assert_not_called()
@@ -169,6 +236,21 @@ class TitleTest(unittest.TestCase):
         r = self.r("エルメス メドール バングル オーストリッチ")
         self.assertEqual(mc.adjust_title_materials("Hermes Medor Bangle Ostrich Leather", r), "Hermes Medor Bangle Ostrich Leather")
 
+    def test_labels_for_real_allowed_material(self):
+        r = mc.check_material("プラダ ファーバッグチャーム ラビット 尻尾", "【素材】ラビット レザー", item_condition_id=3)
+        keys = mc.material_labels(r)
+        self.assertEqual(keys, ["ラビット"])
+        self.assertEqual(mc.ensure_title_labels("Prada Fur Bag Charm Key Holder Tail Border Black Pink", keys),
+                         "Prada Fur Bag Charm Key Holder Tail Border Black Pink Rabbit Fur")
+        long = "Prada Fur Bag Charm Key Holder Tail Border Triangle Logo Plate Gold Black Pink Extra"
+        out = mc.ensure_title_labels(long, keys)
+        self.assertLessEqual(len(out), 80)
+        self.assertTrue(out.endswith("Rabbit Fur"))
+        self.assertEqual(mc.ensure_title_labels("PRADA Rabbit Fur Charm", keys), "PRADA Rabbit Fur Charm")
+        self.assertIn("Oryctolagus cuniculus", mc.description_material_note(keys))
+        self.assertIn("Fur origin", mc.description_material_note(keys))
+        self.assertEqual(mc.material_labels(mc.check_material("SEIKO", "クロコ型押しベルト")), [])
+
     def test_ivory_untouched(self):
         self.assertEqual(mc.adjust_title_materials("Hermes Natural Ivory Bangle", None), "Hermes Natural Ivory Bangle")
 
@@ -179,6 +261,8 @@ class PublishIntegrationTest(unittest.TestCase):
         src = inspect.getsource(pe.heavy_check_detail)
         self.assertIn("check_material_with_cache(", src)
         self.assertIn('"保留(素材確認)"', src)
+        self.assertIn("item_condition_id=rec.get(\"item_condition_id\")", src)
+        self.assertIn("description_material_note(material_label_keys)", src)
         self.assertNotIn("RISKY_MATERIAL_TARGET_CATEGORY_GROUPS", inspect.getsource(pe))
         self.assertNotIn("sanitize_title_dangerous_words", inspect.getsource(pe))
 

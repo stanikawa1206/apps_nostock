@@ -72,7 +72,9 @@ from apps.adapters.mercari_item_status import (
 )
 from apps.adapters.mercari_item_status import fetch_shops_api_data,fetch_mercari_api_data,_parse_status_from_res,detect_status_from_mercari_shops
 from apps.adapters.rakuma_item_status import parse_detail_rakuma, RakumaItemUnavailableError, is_rakuma_update_too_old
-from apps.publish.material_check import adjust_title_materials, check_material_with_cache
+from apps.publish.material_check import (
+    adjust_title_materials, check_material_with_cache, description_material_note, ensure_title_labels, material_labels,
+)
 from datetime import datetime
 
 # ========= 固定値／運用設定 =========
@@ -1744,7 +1746,9 @@ def heavy_check_detail(
     material_result = check_material_with_cache(
         conn, vendor_name, sku, jp_title, desc_jp,
         rec.get("item_attributes"), rec.get("images") or [],
+        item_condition_id=rec.get("item_condition_id"),
     )
+    material_label_keys = material_labels(material_result)  # 出品可の本物の動物素材（英語タイトル・説明文に明記する）
     if material_result.result != "OK" or material_result.stage:
         print(
             f"  └─ [MATERIAL] {material_result.result} stage={material_result.stage}"
@@ -1817,7 +1821,8 @@ def heavy_check_detail(
     existing_en = fetch_existing_title_en(conn, vendor_name, sku)
     if existing_en:
         # 保存済みのタイトルにも置換ルールと禁止表現の除去を出品時に適用する（結果は upsert で DB にも残る）
-        rec["title_en"] = clean_for_ebay(finalize_title_en(adjust_title_materials(existing_en, material_result)))
+        rec["title_en"] = clean_for_ebay(ensure_title_labels(
+            finalize_title_en(adjust_title_materials(existing_en, material_result)), material_label_keys))
     else:
         expected_brand_en = default_brand_en
         title_en_raw = translate_to_english(
@@ -1836,7 +1841,7 @@ def heavy_check_detail(
 
         title_en_post = postprocess_title(rec.get("title_jp") or "", rec.get("description") or "", title_en_raw)
         title_en = finalize_title_en(adjust_title_materials(title_en_post, material_result))
-        rec["title_en"] = clean_for_ebay(title_en)
+        rec["title_en"] = clean_for_ebay(ensure_title_labels(title_en, material_label_keys))
 
     # カメラモデル取得 (デジカメのみ)
     camera_models = None
@@ -1905,6 +1910,9 @@ def heavy_check_detail(
             "Please contact us via eBay messages for details.\n"
             "Ships from Japan with tracking."
         )
+    if material_label_keys:
+        # 動物素材の種と毛皮の原産国（eBay 動物製品ポリシー・米国の毛皮製品表示法）
+        desc_en = desc_en.rstrip() + "\n\n" + description_material_note(material_label_keys)
     rec["description_en"] = desc_en
     heavy = {
         "vendor_name": vendor_name,
