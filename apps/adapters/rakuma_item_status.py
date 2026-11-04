@@ -18,6 +18,9 @@ rakuma_item_status.py — ラクマ(fril.jp)商品詳細ページ取得・パー
   なっていた（＝常に「存在しない」＝NG(購入申請あり)と誤判定）。タグを問わずclass名のみで
   判定するよう修正済み（".item__icon.request-required"）。
 
+  2026-11-04: 購入申請の有無は出品時（parse_detail_rakuma → publish_ebay）だけで確認する。
+  出品後の在庫確認（check_rakuma_item_status）では見ず、購入申請ありに変わっても販売中なら出品を続ける。
+
 【seller_idの取得方式（2026-10-16変更）】
   旧方式: 商品詳細ページの img.user[data-original] (プロフィール画像URL) から
   数字のユーザーID(/user/<digits>/)を抽出してseller_idとしていた。プロフィール画像が
@@ -240,6 +243,16 @@ def check_rakuma_item_status(url: str) -> "tuple[str, Optional[int]]":
         - 404 → RakumaItemUnavailableError（呼び出し側で「削除」としてeBay出品削除）
         - 購入ボタンあり かつ「すぐに購入可」あり → 販売中（出品維持）
         - 上記以外 → 判定不可（出品維持・次回の在庫チェックで再確認）
+
+      2026-11-04変更: 購入申請の有無（「すぐに購入可」の要素）は在庫判定に使わない（出品時だけ確認する方針）。
+      購入申請ありの商品が毎回 判定不可 になり、価格改定も行われていなかった。
+      HTML異常（取得できても中身が商品ページでない・構造が変わった等）を販売中と誤判定しないよう、
+      販売中は「商品名・JSON-LDの商品データ・購入ボタン・価格」がすべて取れた時だけにする:
+        - SOLD OUT表示あり → 売り切れ（eBay出品削除）
+        - 404 → RakumaItemUnavailableError（呼び出し側で「削除」としてeBay出品削除）
+        - 商品名・商品データ・購入ボタン・価格がすべてある → 販売中（購入申請の有無は問わない）
+        - 上記以外 → 判定不可（出品維持・次回の在庫チェックで再確認）
+      取得失敗（404以外のHTTPエラー・通信エラー）は従来どおり例外を送出する。
     """
     html = fetch_rakuma_item_html(url)  # 404ならRakumaItemUnavailableErrorが送出される
     soup = BeautifulSoup(html, "html.parser")
@@ -248,15 +261,15 @@ def check_rakuma_item_status(url: str) -> "tuple[str, Optional[int]]":
     if sold_marker is not None:
         return "売り切れ", None
 
+    item_name = soup.select_one("h1.item__name")
+    ld = _extract_ld_json_product(soup)
     buy_button = soup.select_one("a.btn_buy")
-    purchase_ok_el = soup.select_one(".item__icon.request-required")
-    if buy_button is None or purchase_ok_el is None:
-        # 購入できると確認できない（購入ボタン無し・購入申請ありの可能性等）。
+    if item_name is None or ld is None or buy_button is None:
+        # 商品ページとして読めない、または購入ボタンが無い（バリエーション商品・HTML変更の可能性等）。
         # 売り切れ扱いにして削除してしまう安全ではない判断は行わない（詳細は関数docstring参照）。
         return "判定不可", None
 
     price = None
-    ld = _extract_ld_json_product(soup) or {}
     offers = ld.get("offers") if isinstance(ld.get("offers"), dict) else None
     if offers and offers.get("price") is not None:
         try:
@@ -268,6 +281,8 @@ def check_rakuma_item_status(url: str) -> "tuple[str, Optional[int]]":
         if price_el:
             digits = re.sub(r"[^\d]", "", price_el.get_text())
             price = int(digits) if digits else None
+    if price is None:
+        return "判定不可", None
 
     return "販売中", price
 
