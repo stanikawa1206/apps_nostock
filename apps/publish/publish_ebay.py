@@ -64,6 +64,7 @@ from apps.common.process_watchdog import (
 
 from apps.adapters.ebay_api import (
     AccountListingBlockedError, ApiHandledError, ListingLimitError, ListingStateUnknownError, post_one_item,
+    OrphanRepublishPendingError, retry_orphan_republish, _orphan_log,
 )
 from apps.adapters.mercari_search import fetch_active_presets
 from apps.adapters.mercari_item_status import (
@@ -2163,11 +2164,16 @@ def determine_lens_focus_type(mount: str) -> str:
         return "Manual"
     return "Auto"
 
-def mark_listing_state_unknown(conn, rec: dict, acct: str, sku: str, err: Exception) -> None:
+def mark_listing_state_unknown(conn, rec: dict, acct: str, sku: str, err: Exception, is_collectibles=None) -> None:
     """
     publishOffer が一時的エラーで、eBay側で出品されたかを確認できなかった商品。
     出品失敗にすると再度出品候補になり、二重出品の恐れがあるため、出品不可にして通知する（要手動確認）。
+    UNPUBLISHED出品の作り直しで再公開できなかった商品（OrphanRepublishPendingError）は、
+    出品不可にせず保留（UNPUBLISHED再公開待ち）にする（mark_orphan_republish_pending）。
     """
+    if isinstance(err, OrphanRepublishPendingError):
+        mark_orphan_republish_pending(conn, rec, acct, sku, err, is_collectibles)
+        return
     print(f"⚠️ 出品確認不可: acct={acct} SKU={sku} reason={err}")
     rec["listing_head"] = "出品確認不可"
     rec["listing_detail"] = str(err)
@@ -2181,6 +2187,152 @@ def mark_listing_state_unknown(conn, rec: dict, acct: str, sku: str, err: Except
         "二重出品を防ぐため出品不可(出品不可flg=1)にしています。eBayの出品状況を確認してください。\n\n"
         f"account: {acct}\nsku: {sku}\nerror: {err}\n",
     )
+
+
+# ===== UNPUBLISHED出品の再公開待ち（保留）と再処理 =====
+# offer と結び付いていない出品を終了した後に再公開できなかった商品は、eBayに出品が無い状態。
+# trx.unpublished_recovery に保留として残し、一時的な失敗なら出品処理の中で後から再公開する。
+# 保留中は他の商品として候補に出ないよう 出品不可flg=1 にし、再公開できた時に 0 に戻す。
+#   status: pending（再処理待ち）/ running（処理中）/ done（出品済み）/
+#           gave_up（再試行の上限に達した）/ stopped（人の確認が必要）
+# gave_up / stopped は status='pending', attempts=0, next_at=SYSDATETIME() に戻せば再処理される。
+ORPHAN_RETRY_BACKOFF_MIN = [30, 120]          # 1回目・2回目の失敗後の待ち時間
+ORPHAN_RETRY_MAX_ATTEMPTS = len(ORPHAN_RETRY_BACKOFF_MIN) + 1
+ORPHAN_RETRY_CHECK_INTERVAL_SEC = 300         # 出品処理の中で保留を確認する間隔
+ORPHAN_RETRY_STALE_MIN = 30                   # running のまま止まった行を回収するまでの時間
+ORPHAN_PENDING_HEAD = "UNPUBLISHED再公開待ち"
+_orphan_retry_checked_at: Dict[str, float] = {}
+
+
+def _notify_orphan_pending(subject: str, row: dict, detail: str) -> None:
+    send_mail(
+        f"【要確認】{subject} {row['account']} {row['vendor_item_id']}",
+        "publishOffer がエラーでも出品されていた（offer が UNPUBLISHED）ため元の出品を終了して作り直しましたが、\n"
+        "再公開できていません（eBayに出品はありません）。\n\n"
+        f"account: {row['account']}\nsku: {row['vendor_item_id']}\noffer_id: {row['offer_id']}\n"
+        f"元の出品番号: {row['orphan_listing_id']}\n試行回数: {row.get('attempts')}\n状況: {detail}\n\n"
+        "再処理するには trx.unpublished_recovery の行を status='pending', attempts=0, next_at=SYSDATETIME() に戻してください。\n"
+        "ログ: logs/unpublished_recovery.log\n",
+    )
+
+
+def mark_orphan_republish_pending(conn, rec: dict, acct: str, sku: str, err, is_collectibles=None) -> None:
+    status = "pending" if err.retryable else "stopped"
+    print(f"⏸ UNPUBLISHED再公開待ち: acct={acct} SKU={sku} status={status} reason={err}")
+    rec["listing_head"] = ORPHAN_PENDING_HEAD
+    rec["listing_detail"] = str(err)
+    rec["processing_by"] = None
+    rec["processing_at"] = None
+    upsert_vendor_item(conn, rec)
+    with conn.cursor() as cur:
+        cur.execute("UPDATE trx.vendor_item SET 出品不可flg = 1 WHERE vendor_item_id = ?", sku)
+        cur.execute("""
+            MERGE trx.unpublished_recovery WITH (HOLDLOCK) AS T
+            USING (SELECT ? AS account, ? AS vendor_item_id) AS S
+               ON T.account = S.account AND T.vendor_item_id = S.vendor_item_id
+            WHEN MATCHED THEN UPDATE SET
+                vendor_name = ?, offer_id = ?, orphan_listing_id = ?, since_utc = ?, is_collectibles = ?,
+                status = ?, attempts = 0, next_at = DATEADD(MINUTE, ?, SYSDATETIME()), last_error = ?,
+                new_listing_id = NULL, updated_at = SYSDATETIME()
+            WHEN NOT MATCHED THEN INSERT
+                (account, vendor_item_id, vendor_name, offer_id, orphan_listing_id, since_utc, is_collectibles,
+                 status, attempts, next_at, last_error)
+                VALUES (S.account, S.vendor_item_id, ?, ?, ?, ?, ?, ?, 0, DATEADD(MINUTE, ?, SYSDATETIME()), ?);
+        """, (acct, sku,
+              rec.get("vendor_name"), err.offer_id, err.orphan_id, err.since_utc, is_collectibles,
+              status, ORPHAN_RETRY_BACKOFF_MIN[0], str(err)[:1000],
+              rec.get("vendor_name"), err.offer_id, err.orphan_id, err.since_utc, is_collectibles,
+              status, ORPHAN_RETRY_BACKOFF_MIN[0], str(err)[:1000]))
+    conn.commit()
+    _orphan_log(f"[ORPHAN_RECOVERY][PENDING] account={acct} sku={sku} status={status} reason={err}")
+    if status == "stopped":
+        _notify_orphan_pending("UNPUBLISHED出品の再公開を中止",
+                               {"account": acct, "vendor_item_id": sku, "offer_id": err.offer_id,
+                                "orphan_listing_id": err.orphan_id, "attempts": 0}, str(err))
+
+
+def _claim_orphan_retry(conn, acct: str) -> Optional[dict]:
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE TOP (1) trx.unpublished_recovery WITH (UPDLOCK, READPAST)
+               SET status = 'running', updated_at = SYSDATETIME()
+            OUTPUT inserted.account, inserted.vendor_item_id, inserted.vendor_name, inserted.offer_id,
+                   inserted.orphan_listing_id, inserted.since_utc, inserted.is_collectibles, inserted.attempts
+             WHERE account = ?
+               AND ((status = 'pending' AND next_at <= SYSDATETIME())
+                    OR (status = 'running' AND updated_at < DATEADD(MINUTE, ?, SYSDATETIME())))
+        """, (acct, -ORPHAN_RETRY_STALE_MIN))
+        row = cur.fetchone()
+        cols = [c[0] for c in cur.description] if row else []
+    conn.commit()
+    return dict(zip(cols, row)) if row else None
+
+
+def _finish_orphan_retry(conn, row: dict, status: str, *, error=None, new_listing_id=None, next_min=None) -> None:
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE trx.unpublished_recovery
+               SET status = ?, attempts = attempts + 1, last_error = ?, new_listing_id = ?,
+                   next_at = CASE WHEN ? IS NULL THEN next_at ELSE DATEADD(MINUTE, ?, SYSDATETIME()) END,
+                   updated_at = SYSDATETIME()
+             WHERE account = ? AND vendor_item_id = ?
+        """, (status, (error or "")[:1000] or None, new_listing_id, next_min, next_min,
+              row["account"], row["vendor_item_id"]))
+    conn.commit()
+
+
+def retry_pending_orphan_republishes(conn, acct: str) -> None:
+    """
+    このアカウントの保留（UNPUBLISHED再公開待ち）のうち、再処理の時刻が来たものを再公開する。
+    出品処理の中で ORPHAN_RETRY_CHECK_INTERVAL_SEC ごとに呼ぶ。失敗しても通常の出品処理は止めない。
+    """
+    now = time.time()
+    if now - _orphan_retry_checked_at.get(acct, 0) < ORPHAN_RETRY_CHECK_INTERVAL_SEC:
+        return
+    _orphan_retry_checked_at[acct] = now
+    try:
+        while True:
+            row = _claim_orphan_retry(conn, acct)
+            if not row:
+                return
+            _retry_one_orphan(conn, row)
+    except Exception as e:
+        print(f"[ORPHAN_RECOVERY] 保留の再処理でエラー（通常の出品は続ける）: account={acct} err={e!r}", flush=True)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+
+def _retry_one_orphan(conn, row: dict) -> None:
+    acct, sku = row["account"], row["vendor_item_id"]
+    res = retry_orphan_republish(acct, sku, row["offer_id"], row["orphan_listing_id"], row["since_utc"])
+    attempts = row["attempts"] + 1
+    if res["result"] == "listed":
+        listing_id = res["listing_id"]
+        record_ebay_listing(listing_id, acct, sku, row["vendor_name"], res.get("price"), row["is_collectibles"])
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE trx.vendor_item SET 出品不可flg = 0, [出品状況] = N'出品', [出品状況詳細] = NULL
+                 WHERE vendor_item_id = ? AND [出品状況] = ?
+            """, (sku, ORPHAN_PENDING_HEAD))
+        conn.commit()
+        _finish_orphan_retry(conn, row, "done", error=res.get("warn"), new_listing_id=listing_id)
+        _orphan_log(f"[ORPHAN_RECOVERY][RETRY_DONE] account={acct} sku={sku} listing_id={listing_id} attempts={attempts}")
+        if res.get("warn"):
+            _notify_orphan_pending("UNPUBLISHED出品の再公開（要確認）", dict(row, attempts=attempts), res["warn"])
+        return
+    if res["result"] == "retry" and attempts < ORPHAN_RETRY_MAX_ATTEMPTS:
+        wait = ORPHAN_RETRY_BACKOFF_MIN[attempts - 1]
+        _finish_orphan_retry(conn, row, "pending", error=res["error"], next_min=wait)
+        _orphan_log(f"[ORPHAN_RECOVERY][RETRY_LATER] account={acct} sku={sku} attempts={attempts} "
+                    f"next={wait}分後 error={res['error']}")
+        return
+    status = "gave_up" if res["result"] == "retry" else "stopped"
+    _finish_orphan_retry(conn, row, status, error=res["error"])
+    _orphan_log(f"[ORPHAN_RECOVERY][{status.upper()}] account={acct} sku={sku} attempts={attempts} error={res['error']}")
+    _notify_orphan_pending("UNPUBLISHED出品の再公開に失敗" if status == "gave_up" else "UNPUBLISHED出品の再公開を中止",
+                           dict(row, attempts=attempts), res["error"])
 
 
 def post_to_ebay(
@@ -2390,7 +2542,7 @@ def post_to_ebay(
         raise
 
     except ListingStateUnknownError as e:
-        mark_listing_state_unknown(conn, rec, acct, sku, e)
+        mark_listing_state_unknown(conn, rec, acct, sku, e, is_collectibles)
         fail_other_delta += 1
         return (acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
                 fail_other_delta, image_mode, image_error_count, cdn_mode_until, listing_limit_hit)
@@ -2437,7 +2589,7 @@ def post_to_ebay(
                 return (acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
                         fail_other_delta, image_mode, image_error_count, cdn_mode_until, listing_limit_hit)
             except ListingStateUnknownError as e2:
-                mark_listing_state_unknown(conn, rec, acct, sku, e2)
+                mark_listing_state_unknown(conn, rec, acct, sku, e2, is_collectibles)
                 fail_other_delta += 1
                 return (acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
                         fail_other_delta, image_mode, image_error_count, cdn_mode_until, listing_limit_hit)
@@ -2516,7 +2668,7 @@ def post_to_ebay(
                         fail_other_delta, image_mode, image_error_count, cdn_mode_until, listing_limit_hit)
 
             except ListingStateUnknownError as e2:
-                mark_listing_state_unknown(conn, rec, acct, sku, e2)
+                mark_listing_state_unknown(conn, rec, acct, sku, e2, is_collectibles)
                 fail_other_delta += 1
                 return (acct_targets, acct_success, total_listings, stop_all, writes_since_commit,
                         fail_other_delta, image_mode, image_error_count, cdn_mode_until, listing_limit_hit)
@@ -3130,6 +3282,8 @@ def main():
                 #   "BLOCKED": eBayのポリシー違反による新規出品制限（25019 Tutorial_Block_7D_NR。今日は終了）
                 close_detail = None
                 while not stop_all:
+                    # UNPUBLISHED再公開待ち（保留）の再処理。当日の目標達成（DONE）の判定より前に行う
+                    retry_pending_orphan_republishes(conn, acct.account)
                     with conn.cursor() as cur:
                         cur.execute("""
                             SELECT
