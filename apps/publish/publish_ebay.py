@@ -1936,11 +1936,18 @@ def build_pic_urls(
     PicURL用のURLリストを作る。
     - NORMAL: mercariの画像URLをそのまま返す
     - CDN   : R2へuploadしてCDN URLを返す（SKU単位でキャッシュ）
+
+    URLの ?以降（メルカリの ?<更新時刻> 等）は外さない。画像サイズの確認（500px未満の除外）は ?付きURLで
+    行っているため、同じURLを渡さないと確認した画像とeBayが受け取る画像が一致しない。
+    メルカリは写真を差し替えてもファイル名が同じで ? の値だけが変わり、画像サーバーが10年キャッシュするため、
+    ?なしURLでは差し替え前の古い画像が返ることがある（2026-10-26 川島 237145561379 で464pxの古い画像が
+    eBayに渡り、以後の価格更新が 25002 画像500px未満で永久に失敗した）。
+    ?付きURLの出品は 2026-11-04 に谷川③・川島で実出品して確認済み（画像サイズも元画像と一致）。
     """
     src_urls = []
     for u in (rec.get("images") or []):
         if isinstance(u, str) and u.strip().startswith("http"):
-            clean = u.strip().split("?")[0].split("#")[0]
+            clean = u.strip().split("#")[0]
             src_urls.append(clean)
         if len(src_urls) >= PIC_LIMIT:
             break
