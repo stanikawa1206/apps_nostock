@@ -50,7 +50,6 @@ from apps.common.utils import (
     get_sql_server_connection,
     send_mail,
     translate_to_english,
-    contains_risky_word,
     get_openai_client,
     log_listings_change,
 )
@@ -73,6 +72,7 @@ from apps.adapters.mercari_item_status import (
 )
 from apps.adapters.mercari_item_status import fetch_shops_api_data,fetch_mercari_api_data,_parse_status_from_res,detect_status_from_mercari_shops
 from apps.adapters.rakuma_item_status import parse_detail_rakuma, RakumaItemUnavailableError, is_rakuma_update_too_old
+from apps.publish.material_check import adjust_title_materials, check_material_with_cache
 from datetime import datetime
 
 # ========= 固定値／運用設定 =========
@@ -129,13 +129,6 @@ CARD_BRAND_TO_GAME: Dict[str, str] = {
     "Pokémon":   "Pokémon TCG",
     "Yu-Gi-Oh!": "Yu-Gi-Oh! TCG",
     "Konami":    "Yu-Gi-Oh! TCG",
-}
-
-# ========= 危険素材（NG素材）判定 対象カテゴリグループ定義 =========
-# 財布・財布メンズのみ判定対象。それ以外（デジカメ/ペン/スカーフ/スカーフメンズ等）はスキップ。
-RISKY_MATERIAL_TARGET_CATEGORY_GROUPS: Set[str] = {
-    "財布",
-    "財布メンズ",
 }
 
 # グレード数値 → conditionDescriptorValueId (descriptor 27502: Grade)
@@ -936,30 +929,14 @@ def postprocess_common_title(jp_title: str, desc_jp: str, title_en: str) -> str:
     if not any(k in jp or k in desc for k in ["ヴェルニ", "エナメル", "vernis"]):
         t = re.sub(r"\bVernis\b", "", t, flags=re.IGNORECASE)
 
-    t = re.sub(r"\bPython\b", "", t, flags=re.IGNORECASE)
+    # Python・crocodile 等の素材名は、ここでは消さない（2026-11-04 まで一律に削除し、本物でも素材名を隠して出品していた）。
+    # 本物の規制素材は 4.9 の素材判定で止め、柄・誤訳は adjust_title_materials で直す。
     t = re.sub(r"\s{2,}", " ", t).strip()
     return t
 
 def postprocess_title(jp_title: str, desc_jp: str, title_en: str) -> str:
     title_en = postprocess_common_title(jp_title or "", desc_jp or "", title_en or "")
     return re.sub(r"\s+", " ", title_en or "").strip()
-
-DANGEROUS_TITLE_WORDS = {
-    r"\bpython\b": "",
-    r"\bsnakeskin\b": "",
-    r"\bcrocodile\b": "",
-    r"\balligator\b": "",
-    r"\blizard\b": "",
-    r"\bostrich\b": "",
-    r"\bstingray\b": "",
-}
-
-def sanitize_title_dangerous_words(title: str) -> str:
-    s = title or ""
-    for pat, repl in DANGEROUS_TITLE_WORDS.items():
-        s = re.sub(pat, repl, s, flags=re.IGNORECASE)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
 
 SQL_UPSERT_MST_SELLER = """
 MERGE INTO mst.seller AS tgt
@@ -1757,16 +1734,26 @@ def heavy_check_detail(
 
             return None, debug_unavailable_dump, writes_since_commit, 1, 0
 
-    # === 4.9) 危険素材判定（財布・財布メンズのみ対象） ===
+    # === 4.9) 危険素材・規制素材判定（全カテゴリー。2026-11-04 apps/publish/material_check.py） ===
+    # 一次: 日本語タイトル・説明文・素材欄のキーワードを前後の語で判定。疑わしい商品だけ二次: 写真と説明文をAIで確認。
+    # NG(本物) → NG(危険素材)、判断不能・AIエラー・記載の矛盾 → 保留(素材確認)。どちらも候補から外れる。
+    # 結果は trx.material_check に保存し、同じ文面なら再判定しない。
     jp_title = (rec.get("title_jp") or "").strip()
     desc_jp = (rec.get("description") or "").strip()
 
-    if (
-        category_group in RISKY_MATERIAL_TARGET_CATEGORY_GROUPS
-        and contains_risky_word(jp_title, desc_jp)
-    ):
-        rec["listing_head"] = "NG(危険素材)"
-        rec["listing_detail"] = "エキゾチック/危険素材キーワード検出"
+    material_result = check_material_with_cache(
+        conn, vendor_name, sku, jp_title, desc_jp,
+        rec.get("item_attributes"), rec.get("images") or [],
+    )
+    if material_result.result != "OK" or material_result.stage:
+        print(
+            f"  └─ [MATERIAL] {material_result.result} stage={material_result.stage}"
+            f"{' (前回の判定)' if material_result.cached else ''} {material_result.reason[:150]}",
+            flush=True,
+        )
+    if material_result.result in ("NG", "HOLD"):
+        rec["listing_head"] = "NG(危険素材)" if material_result.result == "NG" else "保留(素材確認)"
+        rec["listing_detail"] = material_result.reason
         upsert_vendor_item(conn, rec)
         writes_since_commit += 1
         writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
@@ -1830,7 +1817,7 @@ def heavy_check_detail(
     existing_en = fetch_existing_title_en(conn, vendor_name, sku)
     if existing_en:
         # 保存済みのタイトルにも置換ルールと禁止表現の除去を出品時に適用する（結果は upsert で DB にも残る）
-        rec["title_en"] = clean_for_ebay(finalize_title_en(existing_en))
+        rec["title_en"] = clean_for_ebay(finalize_title_en(adjust_title_materials(existing_en, material_result)))
     else:
         expected_brand_en = default_brand_en
         title_en_raw = translate_to_english(
@@ -1848,7 +1835,7 @@ def heavy_check_detail(
             return None, debug_unavailable_dump, writes_since_commit, 0, 1
 
         title_en_post = postprocess_title(rec.get("title_jp") or "", rec.get("description") or "", title_en_raw)
-        title_en = finalize_title_en(sanitize_title_dangerous_words(title_en_post))
+        title_en = finalize_title_en(adjust_title_materials(title_en_post, material_result))
         rec["title_en"] = clean_for_ebay(title_en)
 
     # カメラモデル取得 (デジカメのみ)

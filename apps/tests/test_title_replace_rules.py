@@ -119,8 +119,8 @@ class CallSitesTest(unittest.TestCase):
     def test_both_paths_use_finalize(self):
         import inspect
         src = inspect.getsource(pe)
-        self.assertIn('rec["title_en"] = clean_for_ebay(finalize_title_en(existing_en))', src)
-        self.assertIn("title_en = finalize_title_en(sanitize_title_dangerous_words(title_en_post))", src)
+        self.assertIn('rec["title_en"] = clean_for_ebay(finalize_title_en(adjust_title_materials(existing_en, material_result)))', src)
+        self.assertIn("title_en = finalize_title_en(adjust_title_materials(title_en_post, material_result))", src)
 
 
 if __name__ == "__main__":
