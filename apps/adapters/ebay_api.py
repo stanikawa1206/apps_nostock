@@ -65,7 +65,7 @@ from urllib.parse import urlencode, urlparse, parse_qsl, urlunparse, quote
 import xml.etree.ElementTree as ET
 
 # 自前ユーティリティ（pyodbc統一）
-from apps.common.utils import get_sql_server_connection, log_listings_change
+from apps.common.utils import get_sql_server_connection, log_listings_change, send_mail
 
 from dotenv import load_dotenv, find_dotenv
 load_dotenv(find_dotenv())
@@ -666,7 +666,7 @@ def _confirm_published_listing(account_name: str, token: str, sku: str, offer_id
         if item_id:
             print(f"[PUBLISH_CONFIRM][FOUND] account={account_name} sku={sku} listing_id={item_id} "
                   f"(GetSellerList, offer_status={(offer or {}).get('status')})", flush=True)
-            return item_id
+            return _recover_orphan_listing(account_name, token, sku, offer_id, item_id)
         # 「出品なし」は、offer が UNPUBLISHED と取得でき、かつ GetSellerList を最後まで取得できた時だけ
         confirmed_absent = ok and (offer or {}).get("status") == "UNPUBLISHED"
     if confirmed_absent:
@@ -674,6 +674,141 @@ def _confirm_published_listing(account_name: str, token: str, sku: str, offer_id
         raise publish_error
     print(f"[PUBLISH_CONFIRM][UNKNOWN] account={account_name} sku={sku} → 出品状態を確認できず", flush=True)
     raise ListingStateUnknownError(publish_error.code, f"出品状態を確認できず(publish: {publish_error.message})")
+
+
+# 上の確認で見つかった出品は offer が UNPUBLISHED のままで、offer と出品が結び付いていない。
+# この出品は Inventory API でも Trading API(ReviseFixedPriceItem は 21919474 MANAGE_BY_INVENTORY)でも
+# 価格を変えられず、価格更新が永久に失敗する（2026-11-04 実測）。
+# 出品直後（ウォッチ・販売がまだ無い）に「終了 → 終了確認 → offer再公開」で正常な出品に作り直す
+# （2026-11-04 に BUZZ② 800868349502・谷川③ 227590488345 を同じ手順で手動復旧済み）。
+# 各段階の結果は publish のログとは別に、ローテーションしないファイルにも残す。
+ORPHAN_RECOVERY_LOG_PATH = Path(__file__).resolve().parents[2] / "logs" / "unpublished_recovery.log"
+ORPHAN_END_CHECK_WAITS = [3, 10, 20, 30]
+ORPHAN_VERIFY_WAITS = [5, 15]
+
+
+def _orphan_log(msg: str) -> None:
+    line = f"{datetime.now():%Y-%m-%d %H:%M:%S} {msg}"
+    print(line, flush=True)
+    try:
+        ORPHAN_RECOVERY_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(ORPHAN_RECOVERY_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except OSError as e:
+        print(f"[ORPHAN_RECOVERY] ログファイルに書けません: {e}", flush=True)
+
+
+def _notify_orphan_recovery_failed(account_name: str, sku: str, orphan_id: str, detail: str) -> None:
+    send_mail(
+        f"【要確認】UNPUBLISHED出品の自動復旧に失敗 {account_name} {sku}",
+        "publishOffer がエラーを返したが出品されていた（offer は UNPUBLISHED のまま）ため、\n"
+        "「終了 → 終了確認 → offer再公開」で作り直そうとしましたが、途中で止めました（再試行はしません）。\n\n"
+        f"account: {account_name}\nsku: {sku}\n元の出品番号: {orphan_id}\n状況: {detail}\n\n"
+        f"詳細は {ORPHAN_RECOVERY_LOG_PATH} を確認してください。\n",
+    )
+
+
+def _recover_orphan_listing(account_name: str, token: str, sku: str, offer_id: str, orphan_id: str) -> str:
+    """
+    offer と結び付いていない出品 orphan_id を終了し、同じ offer を再公開する。戻り値は DB に登録する出品番号。
+      - offer が既に PUBLISHED（eBay側で結び付いた）: その出品番号を返す（何もしない）
+      - 終了を確認できない: orphan_id を返す（出品中のため従来どおり登録して管理対象にする）。通知する
+      - 終了後の再公開に失敗: 出品が無い／不明のため ListingStateUnknownError（呼び出し元で出品不可にして通知）
+    終了を確認する前には再公開しない（二重出品防止）。publishOffer は1回だけ送る。
+    """
+    tag = f"account={account_name} sku={sku} offer_id={offer_id} orphan_id={orphan_id}"
+    _orphan_log(f"[ORPHAN_RECOVERY][START] {tag}")
+    try:
+        offer = _inventory_get_offer(token, offer_id)
+    except requests.exceptions.RequestException as e:
+        offer = None
+        _orphan_log(f"[ORPHAN_RECOVERY] offer取得失敗 {tag} err={e}")
+    listing_id = str(((offer or {}).get("listing") or {}).get("listingId") or "")
+    if (offer or {}).get("status") == "PUBLISHED" and listing_id:
+        _orphan_log(f"[ORPHAN_RECOVERY][LINKED] {tag} offer は PUBLISHED listing_id={listing_id} → そのまま登録")
+        return listing_id
+    if (offer or {}).get("status") != "UNPUBLISHED":
+        detail = f"offer の状態を確認できないため終了しない status={(offer or {}).get('status')}"
+        _orphan_log(f"[ORPHAN_RECOVERY][KEEP] {tag} {detail}")
+        _notify_orphan_recovery_failed(account_name, sku, orphan_id, detail)
+        return orphan_id
+
+    # 1. 出品番号を指定して終了し、GetItem で終了を確認する
+    end_res = delete_items_from_ebay_batch(account_name, [orphan_id])
+    _orphan_log(f"[ORPHAN_RECOVERY][END] {tag} result={end_res.get('results') or end_res}")
+    ended = None
+    for wait in ORPHAN_END_CHECK_WAITS:
+        time.sleep(wait)
+        status = get_listing_status(account_name, orphan_id)
+        _orphan_log(f"[ORPHAN_RECOVERY][END_CHECK] {tag} status={status}")
+        if status.get("ok") and status.get("ended"):
+            ended = status
+            break
+    if not ended:
+        detail = "出品の終了を確認できないため再公開しない（元の出品番号で登録）"
+        _orphan_log(f"[ORPHAN_RECOVERY][KEEP] {tag} {detail}")
+        _notify_orphan_recovery_failed(account_name, sku, orphan_id, detail)
+        return orphan_id
+    if ended.get("quantity_sold") not in ("", "0"):
+        detail = f"終了した出品に販売があったため再公開しない quantity_sold={ended.get('quantity_sold')}"
+        _orphan_log(f"[ORPHAN_RECOVERY][STOP] {tag} {detail}")
+        _notify_orphan_recovery_failed(account_name, sku, orphan_id, detail)
+        raise ListingStateUnknownError(-1, f"UNPUBLISHED復旧を中止: {detail}")
+
+    # 2. 再公開の直前に offer が UNPUBLISHED のままであることを確認する
+    try:
+        offer = _inventory_get_offer(token, offer_id)
+    except requests.exceptions.RequestException as e:
+        offer = None
+        _orphan_log(f"[ORPHAN_RECOVERY] offer取得失敗 {tag} err={e}")
+    if (offer or {}).get("status") != "UNPUBLISHED" or (offer or {}).get("listing"):
+        detail = (f"終了後の offer が UNPUBLISHED でないため再公開しない status={(offer or {}).get('status')} "
+                  f"listing={(offer or {}).get('listing')}")
+        _orphan_log(f"[ORPHAN_RECOVERY][STOP] {tag} {detail}")
+        _notify_orphan_recovery_failed(account_name, sku, orphan_id, detail)
+        raise ListingStateUnknownError(-1, f"UNPUBLISHED復旧を中止: {detail}")
+
+    # 3. 再公開（1回だけ。通信エラーでも送り直さない）
+    republished_after = datetime.utcnow()
+    try:
+        r = requests.post(f"https://api.ebay.com/sell/inventory/v1/offer/{offer_id}/publish/",
+                          headers=_ebay_json_headers(token), json={}, timeout=60)
+        body = _safe_json(r)
+        new_id = str(body.get("listingId") or "") if r.status_code == 200 else ""
+        _orphan_log(f"[ORPHAN_RECOVERY][PUBLISH] {tag} http={r.status_code} listing_id={new_id or None} "
+                    f"body={str(body)[:300]}")
+    except requests.exceptions.RequestException as e:
+        new_id = ""
+        _orphan_log(f"[ORPHAN_RECOVERY][PUBLISH] {tag} 通信エラー err={e}")
+    if not new_id:
+        # エラーでも出品されていることがあるため、1回だけ探す（見つかっても再度の作り直しはしない）
+        time.sleep(ORPHAN_VERIFY_WAITS[0])
+        ok, found_id = _find_listing_by_sku_started_since(token, sku, republished_after)
+        if found_id:
+            detail = f"再公開がエラーだったが出品を確認 listing_id={found_id}（offerとの結び付きは要確認）"
+            _orphan_log(f"[ORPHAN_RECOVERY][FOUND_AFTER_ERROR] {tag} {detail}")
+            _notify_orphan_recovery_failed(account_name, sku, orphan_id, detail)
+            return found_id
+        detail = f"再公開に失敗（元の出品は終了済み。出品確認={'出品なし' if ok else '確認不可'}）"
+        _orphan_log(f"[ORPHAN_RECOVERY][STOP] {tag} {detail}")
+        _notify_orphan_recovery_failed(account_name, sku, orphan_id, detail)
+        raise ListingStateUnknownError(-1, f"UNPUBLISHED復旧を中止: {detail}")
+
+    # 4. offer が新しい出品番号で PUBLISHED になったことを確認する
+    for wait in ORPHAN_VERIFY_WAITS:
+        time.sleep(wait)
+        try:
+            offer = _inventory_get_offer(token, offer_id)
+        except requests.exceptions.RequestException:
+            offer = None
+        linked = str(((offer or {}).get("listing") or {}).get("listingId") or "")
+        if (offer or {}).get("status") == "PUBLISHED" and linked == new_id:
+            _orphan_log(f"[ORPHAN_RECOVERY][DONE] {tag} new_listing_id={new_id}")
+            return new_id
+    detail = f"再公開した出品 {new_id} と offer の結び付きを確認できない status={(offer or {}).get('status')}"
+    _orphan_log(f"[ORPHAN_RECOVERY][VERIFY_NG] {tag} {detail}（新しい出品番号で登録する）")
+    _notify_orphan_recovery_failed(account_name, sku, orphan_id, detail)
+    return new_id
 
 # ====== Trading API（バイヤーへのメッセージ送信）======
 # send_buyer_thankyou_message() 用フォールバックlogger。
