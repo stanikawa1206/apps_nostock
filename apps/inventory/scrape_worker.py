@@ -132,6 +132,34 @@ EXIT_AFTER_DELETE = False
 CHECK_SWAP = (os.environ.get("CHECK_SWAP", "1") == "1")
 
 SOLD_MAX_PAGES = 2
+
+# =========================
+# メルカリ検索の取得方式（2026-11-04 VPS 210.131.209.232 で試験導入）
+# =========================
+# browser: 検索ページをブラウザで開き、ページが呼ぶ entities:search の応答を受け取る（従来）
+# api    : entities:search を直接呼ぶ（apps.adapters.mercari_search_api）。ブラウザは起動しない
+# ホストごとの .env の SEARCH_FETCH_MODE で切り替える（未設定は browser）。反映はワーカーの起動時。
+SEARCH_FETCH_MODE = os.environ.get("SEARCH_FETCH_MODE", "browser").strip().lower()
+# api 方式で 401・403・429 を受けたら置く。このファイルがある間、このホストのワーカーはジョブを取らない
+# （アクセス制限の可能性があるため、方式を問わずメルカリへのアクセスを止める）。人が確認して消すまで残る。
+SEARCH_API_BLOCKED_FILE = os.path.join(BASE_DIR, "search_api_blocked.txt")
+# api 方式の失敗（通信エラー・5xx・400・応答の形の違いなど）が1ワーカーで SEARCH_API_FALLBACK_AFTER 回
+# 続いたら置く。このファイルがある間、このホストのワーカーは従来のブラウザ方式で取得する。人が消すまで残る。
+SEARCH_API_FALLBACK_FILE = os.path.join(BASE_DIR, "search_api_fallback.txt")
+SEARCH_API_FALLBACK_AFTER = 5
+_search_api_fail_streak = 0
+
+
+def use_search_api() -> bool:
+    return SEARCH_FETCH_MODE == "api" and not os.path.exists(SEARCH_API_FALLBACK_FILE)
+
+
+def _write_flag_file(path, reason):
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} pid={WORKER_PID} {reason}\n")
+    except OSError as e:
+        print(f"[SEARCH_API][FLAG WRITE ERROR] {path}: {e}", flush=True)
 PAUSE = 0.6
 SIMULATE_DELETE = False
 
@@ -610,7 +638,43 @@ def fetch_page_json_new(page, url, conn, job_id):
 
     return json_data
 
+def fetch_page_json_api(url, job_id):
+    """
+    api 方式の1ページ取得。失敗はすべて RuntimeError("FETCH_TIMEOUT: ...") にして呼び出し元へ送出する。
+    これはブラウザ方式の取得失敗と同じ扱いで、ジョブは pending へ戻り（release_job）、
+    そのページの結果を「0件」「売り切れなし」として使うことはない。
+    """
+    global _search_api_fail_streak
+    from apps.adapters.mercari_search_api import fetch_search_json, SearchApiBlocked, SearchApiError
+
+    begin_browser_wait(job_id)  # 呼び出しが戻らない場合の watchdog の記録用（api 方式ではブラウザは無い）
+    try:
+        json_data = fetch_search_json(url)
+    except SearchApiBlocked as e:
+        _write_flag_file(SEARCH_API_BLOCKED_FILE, f"job={job_id} {e}")
+        print(f"[SEARCH_API][BLOCKED] {e} → {SEARCH_API_BLOCKED_FILE} を置き、このホストはジョブを取らない", flush=True)
+        raise RuntimeError(f"FETCH_TIMEOUT: SEARCH_API_BLOCKED {e}")
+    except SearchApiError as e:
+        _search_api_fail_streak += 1
+        print(f"[SEARCH_API][ERROR] streak={_search_api_fail_streak} {e}", flush=True)
+        if _search_api_fail_streak >= SEARCH_API_FALLBACK_AFTER:
+            _write_flag_file(SEARCH_API_FALLBACK_FILE, f"job={job_id} 連続{_search_api_fail_streak}回失敗 {e}")
+            print(f"[SEARCH_API][FALLBACK] {SEARCH_API_FALLBACK_FILE} を置き、ブラウザ方式に戻す", flush=True)
+        raise RuntimeError(f"FETCH_TIMEOUT: SEARCH_API_ERROR {e}")
+    finally:
+        end_browser_wait()
+
+    _search_api_fail_streak = 0
+    return json_data
+
+
 def fetch_page_json(page, url, conn, job_id):
+    if use_search_api():
+        return fetch_page_json_api(url, job_id)
+    if page is None:
+        # api 方式で動いていたワーカーが、途中でブラウザ方式に戻った（search_api_fallback.txt）。
+        # ブラウザを起動させるため BROWSER_BROKEN として扱う（ジョブは pending へ戻る）
+        raise RuntimeError("BROWSER_BROKEN: ブラウザ未起動（api 方式からブラウザ方式へ切り替え）")
 
     # 受信完了（成功・失敗とも）したリクエストを記録し、完了を確認してから resp.json() を呼ぶ
     finished_requests = set()
@@ -1194,6 +1258,14 @@ def launch_browser(p):
     return p.chromium.launch(headless=True, args=BROWSER_LAUNCH_ARGS)
 
 
+def open_browser_if_needed(p):
+    """ブラウザ方式ならブラウザと検索ページを開く。api 方式では起動しない（None, None）。"""
+    if use_search_api():
+        return None, None
+    browser = launch_browser(p)
+    return browser, open_search_page(browser)
+
+
 def open_search_page(browser):
     page = browser.new_page()
     page.set_default_timeout(10000)
@@ -1211,14 +1283,24 @@ def main():
     if CHECK_SWAP:
         warn_if_no_swap()
 
+    print(f"[SEARCH MODE] {SEARCH_FETCH_MODE} (api使用={use_search_api()})", flush=True)
+
     # Playwright は worker lifetime で1回だけ起動
     with sync_playwright() as p:
-        browser = launch_browser(p)
-        page = open_search_page(browser)
+        browser, page = open_browser_if_needed(p)
         browser_job_count = 0
         page_job_count = 0
+        last_blocked_log = 0.0
 
         while True:
+            # api 方式でアクセス制限の可能性（401・403・429）を受けた後は、人が確認するまでジョブを取らない
+            if os.path.exists(SEARCH_API_BLOCKED_FILE):
+                if time.time() - last_blocked_log >= 600:
+                    print(f"[SEARCH_API][BLOCKED] {SEARCH_API_BLOCKED_FILE} があるためジョブを取らずに待機", flush=True)
+                    last_blocked_log = time.time()
+                time.sleep(60)
+                continue
+
             conn = get_sql_server_connection()
             conn.autocommit = False
             cur = None
@@ -1288,8 +1370,7 @@ def main():
                         except Exception:
                             pass
 
-                        browser = launch_browser(p)
-                        page = open_search_page(browser)
+                        browser, page = open_browser_if_needed(p)
 
                         # statusファイルは release_job() 成功後に消す。先に消すと、release_job() が
                         # DB接続断(08S01)で失敗してワーカーが落ちた際、ジョブが running のまま
@@ -1335,7 +1416,7 @@ def main():
                     except Exception:
                         pass
 
-                    page = open_search_page(browser)
+                    page = open_search_page(browser) if browser is not None else None
 
                     page_job_count = 0
 
@@ -1353,8 +1434,7 @@ def main():
                     except Exception:
                         pass
 
-                    browser = launch_browser(p)
-                    page = open_search_page(browser)
+                    browser, page = open_browser_if_needed(p)
 
                     browser_job_count = 0
                     page_job_count = 0
