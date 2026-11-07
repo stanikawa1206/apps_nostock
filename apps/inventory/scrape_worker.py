@@ -766,6 +766,25 @@ def extract_items_from_json(json_data):
     return rows
 
 
+def search_has_next_page(json_data) -> bool:
+    """
+    entities:search の応答に次のページがあるか。
+    meta.nextPageToken が空文字のときだけ False（最後のページ）。
+    meta・キーが無い、または文字列でない値（None など）の応答は判断できないので True とし、
+    従来どおり次のページを取得して0件で終わる。
+    取得の失敗は呼び出し元で例外になるため、ここに来るのは正常な応答だけ。
+    """
+    meta = json_data.get("meta") if isinstance(json_data, dict) else None
+    if not isinstance(meta, dict) or "nextPageToken" not in meta:
+        print("[NEXT_PAGE] meta.nextPageToken が無い応答 → 次のページを取得して確認する", flush=True)
+        return True
+    token = meta["nextPageToken"]
+    if not isinstance(token, str):
+        print(f"[NEXT_PAGE] nextPageToken が文字列でない({token!r}) → 次のページを取得して確認する", flush=True)
+        return True
+    return token != ""
+
+
 def run_fetch_sold_ebay(page, start_page, payload: dict, job_id: int) -> Tuple[int, int]:
 
     preset_name = payload["preset"]
@@ -812,6 +831,7 @@ def run_fetch_sold_ebay(page, start_page, payload: dict, job_id: int) -> Tuple[i
             print(f"[PAGE {page_idx+1}] GET {target_url}", flush=True)
 
             # --- ここからページ単位の try ---
+            is_last_page = False
             try:
                 json_data = fetch_page_json(page, target_url, conn, job_id)
                 items = extract_items_from_json(json_data)
@@ -820,6 +840,9 @@ def run_fetch_sold_ebay(page, start_page, payload: dict, job_id: int) -> Tuple[i
 
                 if not items:
                     break
+
+                # 次のページが無い（nextPageToken が空）なら、このページの処理後に終了する
+                is_last_page = not search_has_next_page(json_data)
 
                 rows = []
 
@@ -856,6 +879,10 @@ def run_fetch_sold_ebay(page, start_page, payload: dict, job_id: int) -> Tuple[i
 
             page_idx += 1
             time.sleep(1)
+
+            if is_last_page:
+                print(f"[STOP] nextPageToken なし（最終ページ={page_idx}）", flush=True)
+                break
 
     finally:
         # ★ 4. 全ページ終わったら（またはエラー時に）ここで確実に閉じる
@@ -919,6 +946,9 @@ def run_fetch_active_ebay(page, start_page, payload: dict, job_id: int) -> Tuple
 
             if not items:
                 break
+
+            # 次のページが無い（nextPageToken が空）なら、このページの処理後に終了する
+            is_last_page = not search_has_next_page(json_data)
 
             total_items += len(items)
 
@@ -987,9 +1017,13 @@ def run_fetch_active_ebay(page, start_page, payload: dict, job_id: int) -> Tuple
             TARGET = 8.0
             if elapsed < TARGET:
                 time.sleep((TARGET - elapsed) + random.uniform(0.0, 5.0))
-            
+
             page_idx += 1
             time.sleep(1)
+
+            if is_last_page:
+                print(f"[STOP] nextPageToken なし（最終ページ={page_idx}）", flush=True)
+                break
 
     finally:
         if conn:
