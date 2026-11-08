@@ -757,6 +757,11 @@ def _recover_orphan_listing(account_name: str, token: str, sku: str, offer_id: s
         if status.get("ok") and status.get("ended"):
             ended = status
             break
+    if ended and ended.get("removed_by_ebay"):
+        detail = f"eBay がポリシー違反({ended.get('removed_by_ebay')})で削除した出品のため再公開しない（元の出品番号で登録）"
+        _orphan_log(f"[ORPHAN_RECOVERY][KEEP] {tag} {detail}")
+        _notify_orphan_recovery_failed(account_name, sku, orphan_id, detail)
+        return orphan_id
     if not ended:
         detail = "出品の終了を確認できないため再公開しない（元の出品番号で登録）"
         _orphan_log(f"[ORPHAN_RECOVERY][KEEP] {tag} {detail}")
@@ -884,6 +889,10 @@ def retry_orphan_republish(account_name: str, sku: str, offer_id: str, orphan_id
         return {"result": "retry", "error": f"元の出品の状態を取得できない: {st.get('error')}"}
     if not st.get("ended"):
         detail = f"元の出品が終了していない listing_status={st.get('listing_status')}"
+        _orphan_log(f"[ORPHAN_RECOVERY][STOP] {tag} {detail}")
+        return {"result": "stop", "error": detail}
+    if st.get("removed_by_ebay"):
+        detail = f"元の出品は eBay がポリシー違反({st.get('removed_by_ebay')})で削除した"
         _orphan_log(f"[ORPHAN_RECOVERY][STOP] {tag} {detail}")
         return {"result": "stop", "error": detail}
     if st.get("quantity_sold") not in ("", "0"):
@@ -1177,6 +1186,21 @@ _ENDED_LISTING_STATUSES = {"Completed", "Ended"}
 GETITEM_RATE_LIMIT_COOLDOWN_SEC = 1800
 _getitem_rate_limited_until = 0.0
 
+# eBay がポリシー違反で削除した出品は、GetItem が Failure 21920397 を返し ListingStatus が取れない
+# （2026-10-30〜11-05 の3件。本文 "This listing was removed for violating our Counterfeit items policy."）。
+# 終了を確認できないため DB が出品中のまま残り、価格更新が「出品終了未確認」で再試行され続けていた。
+# 21920397 の番号だけでは削除と断定せず、本文が「ポリシー違反で削除」と明示している時だけ eBay削除とする。
+GETITEM_REMOVED_ERROR_CODE = "21920397"
+_POLICY_REMOVED_RE = re.compile(r"listing was removed for violating our (.+?) polic(?:y|ies)", re.IGNORECASE)
+
+
+def _policy_removal(code: str, message: str) -> Optional[str]:
+    """GetItem のエラーが eBay のポリシー違反による削除なら、そのポリシー名（例: Counterfeit items）を返す。"""
+    if str(code or "").strip() != GETITEM_REMOVED_ERROR_CODE:
+        return None
+    m = _POLICY_REMOVED_RE.search(message or "")
+    return m.group(1).strip() if m else None
+
 
 def get_listing_status(account: str, item_id: str) -> Dict[str, Any]:
     """
@@ -1184,6 +1208,8 @@ def get_listing_status(account: str, item_id: str) -> Dict[str, Any]:
     ended は ListingStatus が Completed/Ended の時だけ True。
     取得に失敗した場合は ok=False / ended=False を返す（終了扱いにはしない）。
     518(利用上限)の場合は rate_limited=True を付ける。
+    eBay がポリシー違反で削除した出品（21920397 かつ本文が削除を明示）は ok=True / ended=True、
+    listing_status='RemovedByEbay'、removed_by_ebay=ポリシー名 を返す。販売数は取れないため quantity_sold は空。
     """
     global _getitem_rate_limited_until
     if time.time() < _getitem_rate_limited_until:
@@ -1229,6 +1255,19 @@ def get_listing_status(account: str, item_id: str) -> Dict[str, Any]:
             _getitem_rate_limited_until = time.time() + GETITEM_RATE_LIMIT_COOLDOWN_SEC
             print(f"[GETITEM_RATE_LIMITED] {GETITEM_RATE_LIMIT_COOLDOWN_SEC}秒間 GetItem を停止", flush=True)
             return {"ok": False, "ended": False, "rate_limited": True, "error": f"ack={ack} {code} {msg}".strip()}
+        policy = _policy_removal(code, msg)
+        if policy:
+            return {
+                "ok": True,
+                "ended": True,
+                "listing_status": "RemovedByEbay",
+                "removed_by_ebay": policy,
+                "error": f"ack={ack} {code} {msg}".strip(),
+                "end_time": "",
+                "ending_reason": "",
+                "quantity_sold": "",
+                "current_price": "",
+            }
         return {"ok": False, "ended": False, "error": f"ack={ack} {code} {msg}".strip()}
 
     listing_status = root.findtext(".//e:SellingStatus/e:ListingStatus", default="", namespaces=ns)
@@ -1275,9 +1314,30 @@ def mark_listing_deleted_if_ended(
     except ValueError:
         pass
 
+    # eBay がポリシー違反で削除した出品は、削除理由をポリシー名にし、同じ商品を再出品しないよう
+    # vendor_item を 出品不可flg=1・出品状況 NG(eBay削除) にする（同じ商品は出し直しても再び削除される）。
+    removed_policy = status.get("removed_by_ebay")
+    if removed_policy:
+        delete_reason = f"eBay削除({removed_policy})"[:100]
+        error_message = (status.get("error") or error_message or "")[:1000] or None
+
     conn = get_sql_server_connection()
     try:
         cursor = conn.cursor()
+        if removed_policy:
+            cursor.execute(
+                """
+                UPDATE v
+                   SET 出品不可flg = 1,
+                       [出品状況] = N'NG(eBay削除)',
+                       [出品状況詳細] = ?
+                  FROM trx.vendor_item v
+                  JOIN trx.listings l
+                    ON l.vendor_name = v.vendor_name AND l.vendor_item_id = v.vendor_item_id
+                 WHERE l.account = ? AND l.listing_id = ? AND l.is_deleted = 0
+                """,
+                f"listing_id={listing_id} {status.get('error')}"[:1000], account, listing_id,
+            )
         cursor.execute(
             """
             UPDATE trx.listings
@@ -1309,6 +1369,7 @@ def mark_listing_deleted_if_ended(
         f"[ENDED_CHECK_OK] account={account} listing_id={listing_id} sku={sku} "
         f"reason={delete_reason} listing_status={status.get('listing_status')} "
         f"end_time={status.get('end_time')} ending_reason={status.get('ending_reason')} "
+        f"removed_by_ebay={removed_policy or ''} "
         f"deleted_at={'EndTime' if end_time_utc else '検知時刻'} updated={len(updated)}",
         flush=True,
     )

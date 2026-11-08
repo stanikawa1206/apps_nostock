@@ -76,6 +76,7 @@ from apps.adapters.rakuma_item_status import parse_detail_rakuma, RakumaItemUnav
 from apps.publish.material_check import (
     adjust_title_materials, check_material_with_cache, description_material_note, ensure_title_labels, material_labels,
 )
+from apps.publish.counterfeit_check import counterfeit_reason, fix_faux_material_en
 from datetime import datetime
 
 # ========= 固定値／運用設定 =========
@@ -846,14 +847,16 @@ def sanitize_title_policy_words(title: str) -> str:
     s = re.sub(r"\s+", " ", s).strip()
     return re.sub(r" ([,.;:!?])", r"\1", s)
 
-def finalize_title_en(title_en: str) -> str:
+def finalize_title_en(title_en: str, title_jp: str = "") -> str:
     """
     出品に使う英語タイトルの最終整形。新しく翻訳したタイトルにも、DB に保存済みのタイトルにも適用する。
+      0) 素材を表す Fake を Faux / Simulated にする（Fake Pearl → Faux Pearl。2026-11-08 偽物ポリシー対策）
       1) eBay が拒否する表現・記号の除去（sanitize_title_policy_words。記号は空白に置き換えて単語がくっつかないようにする）
       2) mst.title_replace_rules（TITLE_RULES。main() の起動時に読み込む）
       3) 80文字に収める
     """
-    s = sanitize_title_policy_words(title_en or "")
+    s = fix_faux_material_en(title_en or "", title_jp)
+    s = sanitize_title_policy_words(s)
     s = apply_title_rules_literal_ci(s, TITLE_RULES)
     return smart_truncate80(s)
 
@@ -1823,7 +1826,7 @@ def heavy_check_detail(
     if existing_en:
         # 保存済みのタイトルにも置換ルールと禁止表現の除去を出品時に適用する（結果は upsert で DB にも残る）
         rec["title_en"] = clean_for_ebay(ensure_title_labels(
-            finalize_title_en(adjust_title_materials(existing_en, material_result)), material_label_keys))
+            finalize_title_en(adjust_title_materials(existing_en, material_result), jp_title), material_label_keys))
     else:
         expected_brand_en = default_brand_en
         title_en_raw = translate_to_english(
@@ -1841,8 +1844,26 @@ def heavy_check_detail(
             return None, debug_unavailable_dump, writes_since_commit, 0, 1
 
         title_en_post = postprocess_title(rec.get("title_jp") or "", rec.get("description") or "", title_en_raw)
-        title_en = finalize_title_en(adjust_title_materials(title_en_post, material_result))
+        title_en = finalize_title_en(adjust_title_materials(title_en_post, material_result), jp_title)
         rec["title_en"] = clean_for_ebay(ensure_title_labels(title_en, material_label_keys))
+
+    # === 6.1) 偽ブランド品の疑い（2026-11-08 apps/publish/counterfeit_check.py） ===
+    # 出品者が真贋を保証しない記載・FAKE/NOT・素材の言い換え後も英語タイトルに残る fake/replica 等。
+    # 語を消して出品はしない（規制の回避になるため）。出品不可flg=1 にして候補から外す。
+    cf_reason = counterfeit_reason(jp_title, desc_jp, rec.get("title_en") or "")
+    if cf_reason:
+        print(f"  └─ [NG] 偽物疑い: {cf_reason[:150]}", flush=True)
+        rec["listing_head"] = "NG(偽物疑い)"
+        rec["listing_detail"] = cf_reason
+        upsert_vendor_item(conn, rec)
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE trx.vendor_item SET 出品不可flg = 1 WHERE vendor_name = ? AND vendor_item_id = ?",
+                vendor_name, sku,
+            )
+        writes_since_commit += 1
+        writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
+        return None, debug_unavailable_dump, writes_since_commit, 1, 0
 
     # カメラモデル取得 (デジカメのみ)
     camera_models = None
@@ -1901,7 +1922,7 @@ def heavy_check_detail(
                 model_jp=_model_jp_desc,
                 model_us=_model_us_desc,
             )
-            desc_en = clean_for_ebay(desc_en_raw)
+            desc_en = fix_faux_material_en(clean_for_ebay(desc_en_raw))  # 説明文の Fake Pearl 等も Faux に
         except Exception as e:
             print(f"[WARN] description_gen_failed SKU={sku}: {e}")
 
