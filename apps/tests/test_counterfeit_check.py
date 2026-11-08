@@ -49,8 +49,18 @@ class CounterfeitReasonTest(unittest.TestCase):
         self.assertIsNone(cc.counterfeit_reason("和風 レトロ風 巾着", "", ""))  # 「〇〇風」一般は対象外
 
     def test_admission_in_description(self):
-        self.assertIsNotNone(cc.counterfeit_reason("miumiu カードケース", "店舗で購入しました。 ⚠️鑑定はしておりません", ""))
         self.assertIsNotNone(cc.counterfeit_reason("財布", "本物かどうかわかりません。", ""))
+        self.assertIsNotNone(cc.counterfeit_reason("財布", "鑑定はしておりません。真贋不明です。", ""))
+        self.assertIsNotNone(cc.counterfeit_reason("財布", "鑑定していないので本物か分かりません", ""))
+        self.assertIsNotNone(cc.counterfeit_reason("財布", "偽物の可能性もあります。", ""))
+        self.assertIsNotNone(cc.counterfeit_reason("財布", "正規品ではありません。", ""))
+
+    def test_not_appraised_alone_is_ok(self):
+        # 「鑑定はしておりません」だけでは NG にしない（2026-11-08 miumiu カードケース）
+        d = ("miumiuのカードケースです。 購入先は、プレミアムアウトレットのmiumiuの店舗です。 ⚠️鑑定はしておりません "
+             "※販売証明書なし、箱なし、簡易包装です。")
+        self.assertIsNone(cc.counterfeit_reason("miumiu カードケース", d, "miumiu card case"))
+        self.assertIsNone(cc.counterfeit_reason("財布", "鑑定は受けていません。", ""))
         self.assertIsNotNone(cc.counterfeit_reason("財布", "真贋は保証できません。", ""))
 
     def test_conditional_boilerplate_is_ok(self):
