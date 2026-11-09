@@ -869,12 +869,115 @@ def _republish_ended_orphan(account_name: str, token: str, sku: str, offer_id: s
     return {"result": "listed", "listing_id": new_id, "warn": warn}
 
 
+# 同じ offer の再公開が続けて失敗する場合（2026-11-06〜07 貴文 344645406011 は http500 25001 が4回）は、
+# offer を作り直して再公開する。作り直しには offer の内容（getOffer の結果から offerId・status・listing を除いたもの）
+# を使い、呼び出し元が削除の前に DB（trx.unpublished_recovery.offer_payload）へ保存しておく。
+ORPHAN_OFFER_COPY_EXCLUDE = ("offerId", "status", "listing")
+
+
+def get_orphan_offer_payload(account_name: str, offer_id: str) -> Optional[Dict[str, Any]]:
+    """作り直し用の offer の内容。offer が UNPUBLISHED・出品なしでなければ None（作り直さない）。"""
+    token = get_access_token_new(account_name)
+    if not token:
+        return None
+    try:
+        offer = _inventory_get_offer(token, offer_id)
+    except requests.exceptions.RequestException:
+        return None
+    if (offer or {}).get("status") != "UNPUBLISHED" or offer.get("listing") or offer.get("sku") is None:
+        return None
+    return {k: v for k, v in offer.items() if k not in ORPHAN_OFFER_COPY_EXCLUDE}
+
+
+def _inventory_list_offers_by_sku(token: str, sku: str) -> Optional[list]:
+    """SKU の offer 一覧。offer が無ければ []（404）、取得できなければ None。"""
+    r = requests.get("https://api.ebay.com/sell/inventory/v1/offer", headers=_ebay_json_headers(token),
+                     params={"sku": sku, "marketplaceId": "EBAY_US"}, timeout=45)
+    if r.status_code == 200:
+        return (_safe_json(r) or {}).get("offers") or []
+    if r.status_code == 404:
+        return []
+    return None
+
+
+def _recreate_offer_and_republish(account_name: str, token: str, sku: str, offer_id: str, orphan_id: str,
+                                  payload: Dict[str, Any], tag: str) -> Dict[str, Any]:
+    """
+    元の出品の終了・同じSKUの出品なしを確認済みの保留について、offer を作り直して1回だけ再公開する。
+      - SKU の offer が元の offer（UNPUBLISHED・出品なし）なら削除して payload で作り直す
+      - offer が無い（前回 削除後の作成に失敗）なら payload で作る
+      - 元と違う UNPUBLISHED の offer が1つだけある（前回 作成後に止まった）ならそれを再公開する
+      - それ以外（複数・PUBLISHED・出品あり）は作り直さない
+    戻り値は _republish_ended_orphan と同じで、使った offer の番号を offer_id に入れる。
+    """
+    try:
+        offers = _inventory_list_offers_by_sku(token, sku)
+    except requests.exceptions.RequestException:
+        offers = None
+    if offers is None:
+        _orphan_log(f"[ORPHAN_RECOVERY][RECREATE][RETRY] {tag} SKUのoffer一覧を取得できない")
+        return {"result": "retry", "error": "作り直し: SKUのoffer一覧を取得できない"}
+    if len(offers) > 1:
+        detail = f"作り直し: 同じSKUのofferが{len(offers)}件あるため作り直さない {[o.get('offerId') for o in offers]}"
+        _orphan_log(f"[ORPHAN_RECOVERY][RECREATE][STOP] {tag} {detail}")
+        return {"result": "stop", "error": detail}
+
+    new_offer_id = None
+    if offers:
+        cur = offers[0]
+        linked = str((cur.get("listing") or {}).get("listingId") or "")
+        if cur.get("status") == "PUBLISHED" and linked and linked != str(orphan_id):
+            _orphan_log(f"[ORPHAN_RECOVERY][RECREATE][LINKED] {tag} offer={cur.get('offerId')} は PUBLISHED "
+                        f"listing_id={linked} → そのまま登録")
+            return {"result": "listed", "listing_id": linked, "warn": None, "offer_id": cur.get("offerId")}
+        if cur.get("status") != "UNPUBLISHED" or cur.get("listing"):
+            detail = (f"作り直し: offer={cur.get('offerId')} が UNPUBLISHED でないため作り直さない "
+                      f"status={cur.get('status')} listing={cur.get('listing')}")
+            _orphan_log(f"[ORPHAN_RECOVERY][RECREATE][STOP] {tag} {detail}")
+            return {"result": "stop", "error": detail}
+        if str(cur.get("offerId")) == str(offer_id):
+            try:
+                r = requests.delete(f"https://api.ebay.com/sell/inventory/v1/offer/{offer_id}",
+                                    headers=_ebay_json_headers(token), timeout=45)
+            except requests.exceptions.RequestException as e:
+                _orphan_log(f"[ORPHAN_RECOVERY][RECREATE][DELETE] {tag} 通信エラー: {e}")
+                return {"result": "retry", "error": f"作り直し: 元のofferの削除で通信エラー {e}"}
+            _orphan_log(f"[ORPHAN_RECOVERY][RECREATE][DELETE] {tag} http={r.status_code} body={r.text[:300]}")
+            if r.status_code not in (200, 204):
+                return {"result": "retry", "error": f"作り直し: 元のofferを削除できない http={r.status_code} {r.text[:200]}"}
+        else:
+            new_offer_id = str(cur.get("offerId"))
+            _orphan_log(f"[ORPHAN_RECOVERY][RECREATE][REUSE] {tag} 作り直し済みのoffer={new_offer_id} を再公開する")
+
+    if new_offer_id is None:
+        try:
+            r = requests.post("https://api.ebay.com/sell/inventory/v1/offer", headers=_ebay_json_headers(token),
+                              json=payload, timeout=45)
+        except requests.exceptions.RequestException as e:
+            # 作成されたかは次回の offer 一覧で分かる（作成済みなら REUSE、無ければ作り直す）
+            _orphan_log(f"[ORPHAN_RECOVERY][RECREATE][CREATE] {tag} 通信エラー: {e}")
+            return {"result": "retry", "error": f"作り直し: offer作成で通信エラー {e}"}
+        body = _safe_json(r)
+        _orphan_log(f"[ORPHAN_RECOVERY][RECREATE][CREATE] {tag} http={r.status_code} body={str(body)[:300]}")
+        if r.status_code not in (200, 201) or not body.get("offerId"):
+            code, msg = _extract_error(body)
+            return {"result": "retry", "error": f"作り直し: offerを作成できない http={r.status_code} {code} {msg}"}
+        new_offer_id = str(body["offerId"])
+
+    res = _republish_ended_orphan(account_name, token, sku, new_offer_id, orphan_id,
+                                  f"{tag} new_offer_id={new_offer_id}")
+    res["offer_id"] = new_offer_id
+    return res
+
+
 def retry_orphan_republish(account_name: str, sku: str, offer_id: str, orphan_id: str,
-                           since_utc: datetime) -> Dict[str, Any]:
+                           since_utc: datetime, recreate_payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     保留（UNPUBLISHED再公開待ち）からの再処理。二重出品を防ぐため、再公開の前に次を確認する:
       - 元の出品が終了している（GetItem）。終了していない・販売があった場合は stop
       - 保留にした後に同じSKUの出品ができていない（GetSellerList）。できていればその出品番号で listed
+    recreate_payload を渡すと、同じ offer の再公開ではなく offer を作り直して再公開する
+    （_recreate_offer_and_republish。戻り値の offer_id が新しい offer）。
     戻り値は _republish_ended_orphan と同じ（listed / retry / stop）。
     """
     tag = f"account={account_name} sku={sku} offer_id={offer_id} orphan_id={orphan_id}"
@@ -907,12 +1010,15 @@ def retry_orphan_republish(account_name: str, sku: str, offer_id: str, orphan_id
         warn = f"保留中に同じSKUの出品ができていた listing_id={found_id}（offerとの結び付きは要確認）"
         _orphan_log(f"[ORPHAN_RECOVERY][FOUND_EXISTING] {tag} {warn}")
         res = {"result": "listed", "listing_id": found_id, "warn": warn}
+    elif recreate_payload is not None:
+        res = _recreate_offer_and_republish(account_name, token, sku, offer_id, orphan_id, recreate_payload, tag)
     else:
         res = _republish_ended_orphan(account_name, token, sku, offer_id, orphan_id, tag)
     if res["result"] == "listed":
         # trx.listings.start_price に入れる価格（offer の価格＝出品価格）。取れなければ NULL で登録する
         try:
-            price = ((_inventory_get_offer(token, offer_id) or {}).get("pricingSummary") or {}).get("price") or {}
+            price = ((_inventory_get_offer(token, res.get("offer_id") or offer_id) or {})
+                     .get("pricingSummary") or {}).get("price") or {}
             res["price"] = float(price["value"]) if price.get("value") else None
         except (requests.exceptions.RequestException, ValueError, TypeError):
             res["price"] = None

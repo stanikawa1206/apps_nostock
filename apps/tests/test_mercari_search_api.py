@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -141,18 +142,80 @@ class FetchTest(unittest.TestCase):
 
 class WorkerSwitchTest(unittest.TestCase):
     def setUp(self):
-        for f in (sw.SEARCH_API_BLOCKED_FILE, sw.SEARCH_API_FALLBACK_FILE):
-            if os.path.exists(f):
-                os.remove(f)
+        # 本番の状態ファイル（プロジェクト直下）に触れないよう、一時フォルダのファイルに差し替える
+        # （以前は本番のファイルを作成・削除しており、稼働中のワーカーの取得方式が変わる恐れがあった）
+        self.tmp = tempfile.TemporaryDirectory()
+        self.patches = [
+            mock.patch.object(sw, "SEARCH_FETCH_MODE", "api"),
+            mock.patch.object(sw, "SEARCH_API_BLOCKED_FILE", os.path.join(self.tmp.name, "search_api_blocked.txt")),
+            mock.patch.object(sw, "SEARCH_API_FALLBACK_FILE", os.path.join(self.tmp.name, "search_api_fallback.txt")),
+        ]
+        for p in self.patches:
+            p.start()
         sw._search_api_fail_streak = 0
-        self.p_mode = mock.patch.object(sw, "SEARCH_FETCH_MODE", "api")
-        self.p_mode.start()
 
     def tearDown(self):
-        self.p_mode.stop()
-        for f in (sw.SEARCH_API_BLOCKED_FILE, sw.SEARCH_API_FALLBACK_FILE):
-            if os.path.exists(f):
-                os.remove(f)
+        for p in self.patches:
+            p.stop()
+        self.tmp.cleanup()
+
+    def _make_old_fallback_file(self, age_sec):
+        with open(sw.SEARCH_API_FALLBACK_FILE, "w", encoding="utf-8") as f:
+            f.write("old\n")
+        t = time.time() - age_sec
+        os.utime(sw.SEARCH_API_FALLBACK_FILE, (t, t))
+
+    def test_fallback_returns_to_api_after_interval(self):
+        self._make_old_fallback_file(sw.SEARCH_API_PROBE_INTERVAL_SEC + 1)
+        page = mock.Mock()
+        with mock.patch("apps.adapters.mercari_search_api.fetch_search_json", return_value={"items": [1]}), \
+                contextlib.redirect_stdout(io.StringIO()):
+            data = sw.fetch_page_json(page, "https://jp.mercari.com/search?x", None, 1)
+        self.assertEqual(data, {"items": [1]})
+        self.assertFalse(os.path.exists(sw.SEARCH_API_FALLBACK_FILE))
+        self.assertTrue(sw.use_search_api())
+        page.goto.assert_not_called()  # ブラウザでは取得していない
+
+    def test_fallback_return_failure_keeps_browser_and_delays_next_probe(self):
+        self._make_old_fallback_file(sw.SEARCH_API_PROBE_INTERVAL_SEC + 1)
+        with mock.patch("apps.adapters.mercari_search_api.fetch_search_json",
+                        side_effect=api.SearchApiError("dns")), \
+                mock.patch.object(sw, "_fetch_page_json_attempts", return_value={"items": [2]}) as browser_fetch, \
+                contextlib.redirect_stdout(io.StringIO()):
+            data = sw.fetch_page_json(mock.Mock(), "https://jp.mercari.com/search?x", None, 1)
+        self.assertEqual(data, {"items": [2]})   # ブラウザ方式で取得した結果
+        browser_fetch.assert_called_once()
+        self.assertTrue(os.path.exists(sw.SEARCH_API_FALLBACK_FILE))
+        self.assertFalse(sw._search_api_probe_due())   # 更新時刻が進み、次の確認は間隔の後
+
+    def test_fallback_not_probed_before_interval(self):
+        self._make_old_fallback_file(60)
+        with mock.patch("apps.adapters.mercari_search_api.fetch_search_json") as api_fetch, \
+                mock.patch.object(sw, "_fetch_page_json_attempts", return_value={"items": []}), \
+                contextlib.redirect_stdout(io.StringIO()):
+            sw.fetch_page_json(mock.Mock(), "https://jp.mercari.com/search?x", None, 1)
+        api_fetch.assert_not_called()
+
+    def test_fallback_probe_blocked_stops_host(self):
+        self._make_old_fallback_file(sw.SEARCH_API_PROBE_INTERVAL_SEC + 1)
+        with mock.patch("apps.adapters.mercari_search_api.fetch_search_json",
+                        side_effect=api.SearchApiBlocked("status=403")), \
+                mock.patch.object(sw, "_fetch_page_json_attempts") as browser_fetch, \
+                contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(RuntimeError) as cm:
+                sw.fetch_page_json(mock.Mock(), "https://jp.mercari.com/search?x", None, 1)
+        self.assertIn("SEARCH_API_BLOCKED", str(cm.exception))
+        self.assertTrue(os.path.exists(sw.SEARCH_API_BLOCKED_FILE))
+        browser_fetch.assert_not_called()
+
+    def test_browser_mode_host_never_probes(self):
+        self._make_old_fallback_file(sw.SEARCH_API_PROBE_INTERVAL_SEC + 1)
+        with mock.patch.object(sw, "SEARCH_FETCH_MODE", "browser"), \
+                mock.patch("apps.adapters.mercari_search_api.fetch_search_json") as api_fetch, \
+                mock.patch.object(sw, "_fetch_page_json_attempts", return_value={"items": []}), \
+                contextlib.redirect_stdout(io.StringIO()):
+            sw.fetch_page_json(mock.Mock(), "https://jp.mercari.com/search?x", None, 1)
+        api_fetch.assert_not_called()
 
     def call(self, side_effect):
         with mock.patch("apps.adapters.mercari_search_api.fetch_search_json", side_effect=side_effect), \

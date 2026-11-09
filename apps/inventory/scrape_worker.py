@@ -144,10 +144,15 @@ SEARCH_FETCH_MODE = os.environ.get("SEARCH_FETCH_MODE", "browser").strip().lower
 # （アクセス制限の可能性があるため、方式を問わずメルカリへのアクセスを止める）。人が確認して消すまで残る。
 SEARCH_API_BLOCKED_FILE = os.path.join(BASE_DIR, "search_api_blocked.txt")
 # api 方式の失敗（通信エラー・5xx・400・応答の形の違いなど）が1ワーカーで SEARCH_API_FALLBACK_AFTER 回
-# 続いたら置く。このファイルがある間、このホストのワーカーは従来のブラウザ方式で取得する。人が消すまで残る。
+# 続いたら置く。このファイルがある間、このホストのワーカーは従来のブラウザ方式で取得する。
 SEARCH_API_FALLBACK_FILE = os.path.join(BASE_DIR, "search_api_fallback.txt")
 SEARCH_API_FALLBACK_AFTER = 5
 _search_api_fail_streak = 0
+# ブラウザ方式に戻っている間も、ファイルの更新時刻から SEARCH_API_PROBE_INTERVAL_SEC 経つごとに
+# 1ページだけ api 方式で取得を試し、成功したらファイルを消して api 方式に戻す
+# （2026-11-07 mouse は約8分の DNS 障害で戻り、人が消すまで2日間ブラウザ方式のままだった）。
+# 試す前にファイルへ1行追記して更新時刻を進めるので、同じホストの他のワーカーは次の間隔まで試さない。
+SEARCH_API_PROBE_INTERVAL_SEC = 1800
 
 
 def use_search_api() -> bool:
@@ -668,9 +673,48 @@ def fetch_page_json_api(url, job_id):
     return json_data
 
 
+def _search_api_probe_due() -> bool:
+    try:
+        return time.time() - os.path.getmtime(SEARCH_API_FALLBACK_FILE) >= SEARCH_API_PROBE_INTERVAL_SEC
+    except FileNotFoundError:
+        return False
+
+
+def try_return_to_search_api(url, job_id):
+    """
+    ブラウザ方式に戻っているホストで、api 方式の1ページ取得を試す。
+    成功したら search_api_fallback.txt を消して取得結果を返す（以後このホストは api 方式）。
+    失敗したら None を返し、呼び出し元はそのままブラウザ方式で取得する。
+    401・403・429 は fetch_page_json_api と同じく search_api_blocked.txt を置いて例外を送出する。
+    """
+    _write_flag_file(SEARCH_API_FALLBACK_FILE, f"job={job_id} api方式への復帰を確認")
+    try:
+        json_data = fetch_page_json_api(url, job_id)
+    except RuntimeError as e:
+        if "SEARCH_API_BLOCKED" in str(e):
+            raise
+        print(f"[SEARCH_API][RETURN_NG] api方式はまだ使えないためブラウザ方式を続ける: {e}", flush=True)
+        return None
+    try:
+        os.remove(SEARCH_API_FALLBACK_FILE)
+    except FileNotFoundError:
+        pass  # 同じ時刻に復帰を確認した他のワーカーが先に消した
+    except OSError as e:
+        # mouse では他プロセスが開いているファイルの削除が WinError 32 になる（worker_status で実績あり）。
+        # 取得結果は使い、ファイルは次の確認時刻に消し直す
+        print(f"[SEARCH_API][RETURN] {SEARCH_API_FALLBACK_FILE} を消せない（次回の確認で再試行）: {e}", flush=True)
+        return json_data
+    print(f"[SEARCH_API][RETURN] api方式で取得できたため {SEARCH_API_FALLBACK_FILE} を消し、api方式に戻す", flush=True)
+    return json_data
+
+
 def fetch_page_json(page, url, conn, job_id):
     if use_search_api():
         return fetch_page_json_api(url, job_id)
+    if SEARCH_FETCH_MODE == "api" and _search_api_probe_due():
+        json_data = try_return_to_search_api(url, job_id)
+        if json_data is not None:
+            return json_data
     if page is None:
         # api 方式で動いていたワーカーが、途中でブラウザ方式に戻った（search_api_fallback.txt）。
         # ブラウザを起動させるため BROWSER_BROKEN として扱う（ジョブは pending へ戻る）

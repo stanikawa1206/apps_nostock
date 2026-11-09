@@ -559,6 +559,11 @@ class InventoryMonitorTest(TempStatusMixin, unittest.TestCase):
         p = mock.patch.object(im, "MONITOR_STATE_PATH", Path(self._tmp.name) / "monitor.json")
         p.start()
         self.addCleanup(p.stop)
+        # UNPUBLISHED再公開待ちの確認（本番DB・通知記録ファイルを使う）はここでは動かさない
+        # （test_unpublished_recovery でテスト専用DBを使って確認する）
+        p = mock.patch.object(im, "check_unpublished_recovery")
+        p.start()
+        self.addCleanup(p.stop)
         for target in (im._logger, ):
             p = mock.patch.object(target, "info")
             p.start()

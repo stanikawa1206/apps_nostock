@@ -6,6 +6,7 @@ from __future__ import annotations
 # =========================
 # Standard library
 # =========================
+import json
 import random
 import re
 import sys
@@ -64,7 +65,7 @@ from apps.common.process_watchdog import (
 
 from apps.adapters.ebay_api import (
     AccountListingBlockedError, ApiHandledError, ListingLimitError, ListingStateUnknownError, post_one_item,
-    OrphanRepublishPendingError, retry_orphan_republish, _orphan_log,
+    OrphanRepublishPendingError, retry_orphan_republish, get_orphan_offer_payload, _orphan_log,
 )
 from apps.adapters.mercari_search import fetch_active_presets
 from apps.adapters.mercari_item_status import (
@@ -2212,13 +2213,18 @@ def mark_listing_state_unknown(conn, rec: dict, acct: str, sku: str, err: Except
 
 # ===== UNPUBLISHED出品の再公開待ち（保留）と再処理 =====
 # offer と結び付いていない出品を終了した後に再公開できなかった商品は、eBayに出品が無い状態。
-# trx.unpublished_recovery に保留として残し、一時的な失敗なら出品処理の中で後から再公開する。
+# trx.unpublished_recovery に保留として残し、一時的な失敗なら後から再公開する。
+# 再処理は出品処理の中（各アカウントのループ）と、出品時間外も含めて10分ごとに動く
+# inventory_monitor（mouse のタスク）の両方から行う（取り出しは UPDLOCK・READPAST で1か所だけ）。
 # 保留中は他の商品として候補に出ないよう 出品不可flg=1 にし、再公開できた時に 0 に戻す。
 #   status: pending（再処理待ち）/ running（処理中）/ done（出品済み）/
 #           gave_up（再試行の上限に達した）/ stopped（人の確認が必要）
 # gave_up / stopped は status='pending', attempts=0, next_at=SYSDATETIME() に戻せば再処理される。
-ORPHAN_RETRY_BACKOFF_MIN = [30, 120]          # 1回目・2回目の失敗後の待ち時間
-ORPHAN_RETRY_MAX_ATTEMPTS = len(ORPHAN_RETRY_BACKOFF_MIN) + 1
+# 一時的な失敗の個別メールは送らない。保留が多い・複数アカウント・長期未復旧の時だけ inventory_monitor がまとめて通知する。
+ORPHAN_RETRY_BACKOFF_MIN = [30, 120, 360]     # 1〜3回目の失敗後の待ち時間。以後は ORPHAN_RETRY_DAILY_MIN ごと
+ORPHAN_RETRY_DAILY_MIN = 1440
+ORPHAN_RETRY_MAX_DAYS = 14                    # 保留にしてからこの日数を過ぎても再公開できなければ gave_up
+ORPHAN_RECREATE_AFTER_DAYS = 2                # 同じ offer でこの日数 再公開できなければ offer を作り直す
 ORPHAN_RETRY_CHECK_INTERVAL_SEC = 300         # 出品処理の中で保留を確認する間隔
 ORPHAN_RETRY_STALE_MIN = 30                   # running のまま止まった行を回収するまでの時間
 ORPHAN_PENDING_HEAD = "UNPUBLISHED再公開待ち"
@@ -2278,7 +2284,8 @@ def _claim_orphan_retry(conn, acct: str) -> Optional[dict]:
             UPDATE TOP (1) trx.unpublished_recovery WITH (UPDLOCK, READPAST)
                SET status = 'running', updated_at = SYSDATETIME()
             OUTPUT inserted.account, inserted.vendor_item_id, inserted.vendor_name, inserted.offer_id,
-                   inserted.orphan_listing_id, inserted.since_utc, inserted.is_collectibles, inserted.attempts
+                   inserted.orphan_listing_id, inserted.since_utc, inserted.is_collectibles, inserted.attempts,
+                   inserted.offer_payload, inserted.offer_recreated_utc
              WHERE account = ?
                AND ((status = 'pending' AND next_at <= SYSDATETIME())
                     OR (status = 'running' AND updated_at < DATEADD(MINUTE, ?, SYSDATETIME())))
@@ -2289,17 +2296,50 @@ def _claim_orphan_retry(conn, acct: str) -> Optional[dict]:
     return dict(zip(cols, row)) if row else None
 
 
-def _finish_orphan_retry(conn, row: dict, status: str, *, error=None, new_listing_id=None, next_min=None) -> None:
+def _finish_orphan_retry(conn, row: dict, status: str, *, error=None, new_listing_id=None, next_min=None,
+                         new_offer_id=None) -> None:
+    """new_offer_id: offer を作り直した場合の新しい offer。offer_id を置き換え、作り直した時刻を記録する。"""
+    if new_offer_id is not None and str(new_offer_id) == str(row["offer_id"]):
+        new_offer_id = None
     with conn.cursor() as cur:
         cur.execute("""
             UPDATE trx.unpublished_recovery
                SET status = ?, attempts = attempts + 1, last_error = ?, new_listing_id = ?,
                    next_at = CASE WHEN ? IS NULL THEN next_at ELSE DATEADD(MINUTE, ?, SYSDATETIME()) END,
+                   offer_id = CASE WHEN ? IS NULL THEN offer_id ELSE ? END,
+                   offer_recreated_utc = CASE WHEN ? IS NULL THEN offer_recreated_utc ELSE SYSUTCDATETIME() END,
+                   offer_payload = CASE WHEN ? IS NULL THEN offer_payload ELSE NULL END,
                    updated_at = SYSDATETIME()
              WHERE account = ? AND vendor_item_id = ?
         """, (status, (error or "")[:1000] or None, new_listing_id, next_min, next_min,
+              new_offer_id, new_offer_id, new_offer_id, new_offer_id,
               row["account"], row["vendor_item_id"]))
     conn.commit()
+
+
+def _orphan_recreate_payload(conn, row: dict) -> Optional[dict]:
+    """
+    同じ offer で ORPHAN_RECREATE_AFTER_DAYS 日以上 再公開できていなければ、作り直しに使う offer の内容を返す。
+    初めて作り直す時は getOffer の内容を DB に保存してから返す（削除の後に作成が失敗しても次回に作り直せるように）。
+    作り直しの時期でない・offer の内容を取れない場合は None（従来どおり同じ offer を再公開する）。
+    """
+    since = row.get("offer_recreated_utc") or row["since_utc"]
+    if since is None or datetime.utcnow() - since < timedelta(days=ORPHAN_RECREATE_AFTER_DAYS):
+        return None
+    if row.get("offer_payload"):
+        return json.loads(row["offer_payload"])
+    payload = get_orphan_offer_payload(row["account"], row["offer_id"])
+    if payload is None:
+        _orphan_log(f"[ORPHAN_RECOVERY][RECREATE] account={row['account']} sku={row['vendor_item_id']} "
+                    f"offer_id={row['offer_id']} offer の内容を取得できないため、同じ offer で再公開する")
+        return None
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE trx.unpublished_recovery SET offer_payload = ?, updated_at = SYSDATETIME()
+             WHERE account = ? AND vendor_item_id = ?
+        """, (json.dumps(payload, ensure_ascii=False), row["account"], row["vendor_item_id"]))
+    conn.commit()
+    return payload
 
 
 def retry_pending_orphan_republishes(conn, acct: str) -> None:
@@ -2327,7 +2367,9 @@ def retry_pending_orphan_republishes(conn, acct: str) -> None:
 
 def _retry_one_orphan(conn, row: dict) -> None:
     acct, sku = row["account"], row["vendor_item_id"]
-    res = retry_orphan_republish(acct, sku, row["offer_id"], row["orphan_listing_id"], row["since_utc"])
+    res = retry_orphan_republish(acct, sku, row["offer_id"], row["orphan_listing_id"], row["since_utc"],
+                                 recreate_payload=_orphan_recreate_payload(conn, row))
+    new_offer_id = res.get("offer_id")
     attempts = row["attempts"] + 1
     if res["result"] == "listed":
         listing_id = res["listing_id"]
@@ -2338,22 +2380,27 @@ def _retry_one_orphan(conn, row: dict) -> None:
                  WHERE vendor_item_id = ? AND [出品状況] = ?
             """, (sku, ORPHAN_PENDING_HEAD))
         conn.commit()
-        _finish_orphan_retry(conn, row, "done", error=res.get("warn"), new_listing_id=listing_id)
-        _orphan_log(f"[ORPHAN_RECOVERY][RETRY_DONE] account={acct} sku={sku} listing_id={listing_id} attempts={attempts}")
+        _finish_orphan_retry(conn, row, "done", error=res.get("warn"), new_listing_id=listing_id,
+                             new_offer_id=new_offer_id)
+        _orphan_log(f"[ORPHAN_RECOVERY][RETRY_DONE] account={acct} sku={sku} listing_id={listing_id} "
+                    f"attempts={attempts} offer_id={new_offer_id or row['offer_id']}")
         if res.get("warn"):
             _notify_orphan_pending("UNPUBLISHED出品の再公開（要確認）", dict(row, attempts=attempts), res["warn"])
         return
-    if res["result"] == "retry" and attempts < ORPHAN_RETRY_MAX_ATTEMPTS:
-        wait = ORPHAN_RETRY_BACKOFF_MIN[attempts - 1]
-        _finish_orphan_retry(conn, row, "pending", error=res["error"], next_min=wait)
+    in_period = row["since_utc"] is None or datetime.utcnow() - row["since_utc"] < timedelta(days=ORPHAN_RETRY_MAX_DAYS)
+    if res["result"] == "retry" and in_period:
+        wait = (ORPHAN_RETRY_BACKOFF_MIN[attempts - 1] if attempts <= len(ORPHAN_RETRY_BACKOFF_MIN)
+                else ORPHAN_RETRY_DAILY_MIN)
+        _finish_orphan_retry(conn, row, "pending", error=res["error"], next_min=wait, new_offer_id=new_offer_id)
         _orphan_log(f"[ORPHAN_RECOVERY][RETRY_LATER] account={acct} sku={sku} attempts={attempts} "
-                    f"next={wait}分後 error={res['error']}")
+                    f"next={wait}分後 offer_id={new_offer_id or row['offer_id']} error={res['error']}")
         return
     status = "gave_up" if res["result"] == "retry" else "stopped"
-    _finish_orphan_retry(conn, row, status, error=res["error"])
+    _finish_orphan_retry(conn, row, status, error=res["error"], new_offer_id=new_offer_id)
     _orphan_log(f"[ORPHAN_RECOVERY][{status.upper()}] account={acct} sku={sku} attempts={attempts} error={res['error']}")
-    _notify_orphan_pending("UNPUBLISHED出品の再公開に失敗" if status == "gave_up" else "UNPUBLISHED出品の再公開を中止",
-                           dict(row, attempts=attempts), res["error"])
+    # gave_up（一時的な失敗が続いた）は個別に通知せず、inventory_monitor の集約通知に出す
+    if status == "stopped":
+        _notify_orphan_pending("UNPUBLISHED出品の再公開を中止", dict(row, attempts=attempts), res["error"])
 
 
 def post_to_ebay(

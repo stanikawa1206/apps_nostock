@@ -845,6 +845,24 @@ def handle_listing_price_update(
         old_usd = _get_listing_start_price(conn, account, listing_id)
     is_up = old_usd is None or Decimal(str(usd)) > old_usd
 
+    # 値上げが販売上限(25002)で失敗した場合は、まず LIMIT 対応と同じ基準で古い出品を1件ずつ終了して
+    # 値上げを再試行する（make_listing_space.free_listing_space_for_price_up）。通らなければ下の終了処理へ進む。
+    space = None
+    if is_up and resp.get("selling_limit"):
+        from apps.publish.make_listing_space import free_listing_space_for_price_up
+        space = free_listing_space_for_price_up(
+            account, listing_id, vendor_item_id,
+            lambda: update_ebay_price_rest(account, vendor_item_id, usd, debug=True, expected_listing_id=listing_id),
+        )
+        if space["resp"] and space["resp"].get("success"):
+            print(f"[PRICE_UP_SPACE][OK] account={account} sku={vendor_item_id} listing_id={listing_id} "
+                  f"終了した古い出品={space['ended']} 再試行={space['attempts']}回", flush=True)
+            _clear_price_update_pending(conn, account, listing_id)
+            return
+        if space["resp"]:
+            resp = space["resp"]
+            error = resp.get("error") or "exception"
+
     # 値上げが販売上限(25002)で失敗した場合は、既存の安全な終了処理で終了する（値下げなら出品維持）。
     # 重複出品(25002のうち eBay が本文で重複と明示したもの)は再試行しても通らず、価格が古いまま残るため、
     # 値上げ・値下げに関係なく終了する（2026-10-26 谷川② 227581813798 は値上げが反映されないまま再試行を繰り返していた）。
@@ -861,6 +879,12 @@ def handle_listing_price_update(
         f"新価格(USD): {usd}（{'値上げ' if is_up else '値下げ'}）\n"
         f"error: {error}\n"
     )
+    if space is not None:
+        mail_info += (
+            f"販売上限対応: 古い出品(watchers=0)を{len(space['ended'])}件終了 {space['ended']} / "
+            f"値上げ再試行{space['attempts']}回 / 待ち{space['waited_sec']}秒"
+            f"{' / ' + space['note'] if space['note'] else ''}\n"
+        )
 
     if resp.get("db_deleted"):
         # 終了済みofferのため価格更新(再出品)を行わず、GetItem で終了を確認してDBも削除済みにした。
