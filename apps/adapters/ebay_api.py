@@ -141,12 +141,15 @@ class OrphanRepublishPendingError(ListingStateUnknownError):
     retryable=True は一時的な失敗で後で自動再処理する、False は人の確認が必要。
     ListingStateUnknownError を継承しているので、捕まえ損ねても従来どおり出品不可になる（二重出品はしない）。
     """
-    def __init__(self, message: str, *, offer_id: str, orphan_id: str, since_utc: datetime, retryable: bool):
+    def __init__(self, message: str, *, offer_id: str, orphan_id: str, since_utc: datetime, retryable: bool,
+                 publish_code: Optional[int] = None):
         super().__init__(-1, f"UNPUBLISHED再公開待ち: {message}")
         self.offer_id = offer_id
         self.orphan_id = orphan_id
         self.since_utc = since_utc
         self.retryable = retryable
+        # 再公開(publishOffer)が返した errorId（送れなかった・送る前に止めた場合は None）
+        self.publish_code = publish_code
 
 class AccountListingBlockedError(ApiHandledError):
     """
@@ -786,7 +789,8 @@ def _orphan_result_or_raise(res: Dict[str, Any], account_name: str, sku: str, of
             _notify_orphan_recovery_failed(account_name, sku, orphan_id, res["warn"])
         return res["listing_id"]
     raise OrphanRepublishPendingError(res["error"], offer_id=offer_id, orphan_id=orphan_id,
-                                      since_utc=since_utc, retryable=res["result"] == "retry")
+                                      since_utc=since_utc, retryable=res["result"] == "retry",
+                                      publish_code=res.get("code"))
 
 
 def _is_transient_republish_error(http_status: Optional[int], code: int, message: str) -> bool:
@@ -851,7 +855,9 @@ def _republish_ended_orphan(account_name: str, token: str, sku: str, offer_id: s
                   f"（元の出品は終了済み。出品確認={'出品なし' if ok else '確認不可'}）")
         retry = ok is None or not ok or _is_transient_republish_error(http_status, code, msg)
         _orphan_log(f"[ORPHAN_RECOVERY][{'RETRY' if retry else 'STOP'}] {tag} {detail}")
-        return {"result": "retry" if retry else "stop", "error": detail}
+        # code: eBay が返した errorId（通信エラーは None）。同じ offer で 25001 が続いた回数の判定に使う
+        return {"result": "retry" if retry else "stop", "error": detail,
+                "code": code if http_status is not None else None}
 
     # 3. offer が新しい出品番号で PUBLISHED になったことを確認する
     for wait in ORPHAN_VERIFY_WAITS:
@@ -869,8 +875,8 @@ def _republish_ended_orphan(account_name: str, token: str, sku: str, offer_id: s
     return {"result": "listed", "listing_id": new_id, "warn": warn}
 
 
-# 同じ offer の再公開が続けて失敗する場合（2026-11-06〜07 貴文 344645406011 は http500 25001 が4回）は、
-# offer を作り直して再公開する。作り直しには offer の内容（getOffer の結果から offerId・status・listing を除いたもの）
+# 同じ offer の再公開が続けて失敗する場合（2026-11-06〜07 貴文 344645406011 は http500 25001 が4回。
+# 11/09 に作り直した offer は1回で公開できた）は、offer を作り直して再公開する（いつ作り直すかは publish_ebay が決める）。作り直しには offer の内容（getOffer の結果から offerId・status・listing を除いたもの）
 # を使い、呼び出し元が削除の前に DB（trx.unpublished_recovery.offer_payload）へ保存しておく。
 ORPHAN_OFFER_COPY_EXCLUDE = ("offerId", "status", "listing")
 
@@ -1011,7 +1017,13 @@ def retry_orphan_republish(account_name: str, sku: str, offer_id: str, orphan_id
         _orphan_log(f"[ORPHAN_RECOVERY][FOUND_EXISTING] {tag} {warn}")
         res = {"result": "listed", "listing_id": found_id, "warn": warn}
     elif recreate_payload is not None:
+        _orphan_log(f"[ORPHAN_RECOVERY][RECREATE][PRECHECK] {tag} 元の出品={orphan_id} {st.get('listing_status')} "
+                    f"販売={st.get('quantity_sold')} / 同じSKUの出品なし（GetSellerList）→ offer を作り直す")
         res = _recreate_offer_and_republish(account_name, token, sku, offer_id, orphan_id, recreate_payload, tag)
+        if res["result"] == "listed":
+            post = get_listing_status(account_name, res["listing_id"])
+            _orphan_log(f"[ORPHAN_RECOVERY][RECREATE][POSTCHECK] {tag} new_offer_id={res.get('offer_id')} "
+                        f"listing_id={res['listing_id']} status={post.get('listing_status') or post.get('error')}")
     else:
         res = _republish_ended_orphan(account_name, token, sku, offer_id, orphan_id, tag)
     if res["result"] == "listed":

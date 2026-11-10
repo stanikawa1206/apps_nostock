@@ -61,7 +61,12 @@ class RecoverOrphanListingTest(unittest.TestCase):
     def _run(self, offers, statuses, publish_resp=None, found=(True, None)):
         get_offer = mock.Mock(side_effect=offers)
         status = mock.Mock(side_effect=statuses)
-        post = mock.Mock(side_effect=lambda *a, **k: self.calls.append("publish") or publish_resp)
+        def _post(*a, **k):
+            self.calls.append("publish")
+            if isinstance(publish_resp, Exception):
+                raise publish_resp
+            return publish_resp
+        post = mock.Mock(side_effect=_post)
         with mock.patch.object(ebay_api, "_inventory_get_offer", get_offer), \
                 mock.patch.object(ebay_api, "get_listing_status", status), \
                 mock.patch.object(ebay_api.requests, "post", post), \
@@ -113,7 +118,15 @@ class RecoverOrphanListingTest(unittest.TestCase):
                       found=(True, None))
         self.assertTrue(cm.exception.retryable)
         self.assertEqual((cm.exception.offer_id, cm.exception.orphan_id), ("O1", "OLD1"))
+        self.assertEqual(cm.exception.publish_code, 25001)   # 25001 の連続回数の数え始め
         self.assertEqual(self.calls, ["end", "publish"])
+
+    def test_republish_connection_error_has_no_code(self):
+        with self.assertRaises(OrphanRepublishPendingError) as cm:
+            self._run([UNPUB, UNPUB], [ENDED], publish_resp=ebay_api.requests.exceptions.ConnectionError("x"),
+                      found=(True, None))
+        self.assertTrue(cm.exception.retryable)
+        self.assertIsNone(cm.exception.publish_code)
 
     def test_definite_republish_error_is_not_retryable(self):
         body = {"errors": [{"errorId": 25007, "message": "Invalid fulfillment policy"}]}
@@ -199,6 +212,11 @@ class RetryOrphanRepublishTest(unittest.TestCase):
         self.assertTrue(res["warn"])
         self.post.assert_not_called()
 
+    def test_republish_25001_returns_code(self):
+        self.post.return_value = _resp(500, {"errors": [{"errorId": 25001, "message": "A system error has occurred."}]})
+        res = self._run(ENDED, offers=[UNPUB])
+        self.assertEqual((res["result"], res["code"]), ("retry", 25001))
+
 
 class RecreateOfferTest(unittest.TestCase):
     """retry_orphan_republish(recreate_payload=...): offer を作り直して再公開する（eBay はモック）"""
@@ -270,6 +288,27 @@ class RecreateOfferTest(unittest.TestCase):
         self.assertEqual(res["result"], "stop")
         self.assertEqual([c[0] for c in self.calls], ["list"])
 
+    def test_existing_active_listing_is_not_deleted_or_recreated(self):
+        """作り直しの時期でも、同じSKUの出品が Active なら offer の削除・作成・終了をしない"""
+        with mock.patch.object(ebay_api, "_find_listing_by_sku_started_since", return_value=(True, "LIVE9")), \
+                mock.patch.object(ebay_api, "delete_items_from_ebay_batch") as end:
+            res = self._run([dict(UNPUB, offerId="O1")], offers_after=[UNPUB])
+        self.assertEqual((res["result"], res["listing_id"]), ("listed", "LIVE9"))
+        self.assertEqual(self.calls, [])     # offer 一覧の取得もしない
+        end.assert_not_called()
+
+    def test_original_listing_still_active_is_stopped_without_recreate(self):
+        with mock.patch.object(ebay_api, "get_listing_status", return_value=ACTIVE):
+            res = self._run([dict(UNPUB, offerId="O1")])
+        self.assertEqual(res["result"], "stop")
+        self.assertEqual(self.calls, [])
+
+    def test_recreated_offer_25001_returns_new_offer_and_code(self):
+        res = self._run([dict(UNPUB, offerId="O1")],
+                        publish=(500, {"errors": [{"errorId": 25001, "message": "A system error has occurred."}]}),
+                        offers_after=[dict(UNPUB, offerId="O2"), dict(UNPUB, offerId="O2")])
+        self.assertEqual((res["result"], res["offer_id"], res["code"]), ("retry", "O2", 25001))
+
     def test_published_offer_with_listing_is_registered(self):
         res = self._run([dict(_published("LIVE1"), offerId="O1")])
         self.assertEqual((res["result"], res["listing_id"]), ("listed", "LIVE1"))
@@ -306,6 +345,7 @@ class RecreateOfferTest(unittest.TestCase):
 TEST_DB = "nostock_test_unpub"
 SQL_FILE = Path(__file__).resolve().parents[1] / "publish" / "sql" / "unpublished_recovery_20261104.sql"
 SQL_FILE_RECREATE = SQL_FILE.with_name("unpublished_recovery_20261109_offer_recreate.sql")
+SQL_FILE_STREAK = SQL_FILE.with_name("unpublished_recovery_20261109_offer_fail_streak.sql")
 
 
 def _master_conn():
@@ -332,6 +372,7 @@ class OrphanPendingDbTest(unittest.TestCase):
                         "[出品状況詳細] NVARCHAR(1000), 出品不可flg BIT)")
             cur.execute(SQL_FILE.read_text(encoding="utf-8"))
             cur.execute(SQL_FILE_RECREATE.read_text(encoding="utf-8"))
+            cur.execute(SQL_FILE_STREAK.read_text(encoding="utf-8"))
 
     @classmethod
     def tearDownClass(cls):
@@ -370,9 +411,10 @@ class OrphanPendingDbTest(unittest.TestCase):
         conn.cursor().execute("UPDATE trx.vendor_item SET [出品状況] = ?, [出品状況詳細] = ? WHERE vendor_item_id = ?",
                               rec["listing_head"], rec["listing_detail"], rec["vendor_item_id"])
 
-    def _pending(self, retryable=True):
+    def _pending(self, retryable=True, publish_code=None):
         err = OrphanRepublishPendingError("再公開に失敗", offer_id="O1", orphan_id="OLD1",
-                                          since_utc=datetime.utcnow(), retryable=retryable)
+                                          since_utc=datetime.utcnow(), retryable=retryable,
+                                          publish_code=publish_code)
         rec = {"vendor_item_id": "SKU1", "vendor_name": "メルカリ"}
         pe.mark_listing_state_unknown(self.conn, rec, "BUZZ②", "SKU1", err, True)
 
@@ -503,6 +545,89 @@ class OrphanPendingDbTest(unittest.TestCase):
         self._due()
         r = self._retry({"result": "retry", "error": "x"})
         self.assertIsNotNone(r.call_args.kwargs["recreate_payload"])
+
+    # ----- 同じ offer で 25001 が続いた時の作り直し -----
+    E25001 = {"result": "retry", "error": "再公開に失敗 http=500 25001", "code": 25001}
+
+    def _streak(self):
+        cur = self.conn.cursor()
+        cur.execute("SELECT offer_fail_streak, offer_id, DATEDIFF(MINUTE, SYSDATETIME(), next_at) "
+                    "FROM trx.unpublished_recovery")
+        r = cur.fetchone()
+        self.conn.commit()
+        return tuple(r)
+
+    def test_three_25001_recreates_offer_without_waiting_days(self):
+        self._pending(publish_code=25001)                       # 1回目（初回の再公開）
+        self.assertEqual(self._streak()[0], 1)
+        self._due()
+        r = self._retry(self.E25001)                            # 2回目
+        self.assertIsNone(r.call_args.kwargs["recreate_payload"])
+        self.assertEqual(self._streak()[0], 2)
+        self._due()
+        r = self._retry(self.E25001)                            # 3回目
+        self.assertIsNone(r.call_args.kwargs["recreate_payload"])
+        streak, _, wait = self._streak()
+        self.assertEqual(streak, 3)
+        self.assertLessEqual(wait, pe.ORPHAN_RETRY_BACKOFF_MIN[0])   # 作り直しは長く待たない（通常は6時間）
+        self.payload.assert_not_called()
+        self._due()
+        r = self._retry(dict(self.E25001, offer_id="O2"))       # 作り直した offer でも 25001
+        self.assertEqual(r.call_args.kwargs["recreate_payload"], {"sku": "SKU1", "categoryId": "1"})
+        self.payload.assert_called_once_with("BUZZ②", "O1")
+        self.assertEqual(self._streak()[:2], (1, "O2"))         # 新しい offer で数え直す
+        self._due()
+        r = self._retry(self.E25001)
+        self.assertIsNone(r.call_args.kwargs["recreate_payload"])   # すぐには再度作り直さない
+        self.mail.assert_not_called()
+
+    def test_other_error_resets_25001_streak(self):
+        self._pending(publish_code=25001)
+        self._due()
+        self._retry(self.E25001)
+        self._due()
+        self._retry({"result": "retry", "error": "再公開に失敗 http=500 25002 System error", "code": 25002})
+        self.assertEqual(self._streak()[0], 0)
+        self._due()
+        r = self._retry(self.E25001)
+        self.assertIsNone(r.call_args.kwargs["recreate_payload"])
+        self.assertEqual(self._streak()[0], 1)
+
+    def test_no_code_keeps_25001_streak(self):
+        """通信エラー・再公開の前の確認で止まった時（code なし）は、連続を途切れさせず増やしもしない"""
+        self._pending(publish_code=25001)
+        self._due()
+        self._retry(self.E25001)
+        self._due()
+        self._retry({"result": "retry", "error": "同じSKUの出品の有無を確認できない（GetSellerList）"})
+        self.assertEqual(self._streak()[0], 2)
+        self._due()
+        self._retry(self.E25001)
+        self._due()
+        r = self._retry(self.E25001)
+        self.assertIsNotNone(r.call_args.kwargs["recreate_payload"])
+
+    def test_non_25001_pending_does_not_start_streak(self):
+        self._pending(publish_code=25002)
+        self.assertEqual(self._streak()[0], 0)
+
+    def test_recreate_failure_after_streak_continues_recreate(self):
+        """削除の後に作成が失敗しても、保存した内容で次回も作り直しを続ける"""
+        self._pending(publish_code=25001)
+        for _ in range(2):
+            self._due()
+            self._retry(self.E25001)
+        self._due()
+        self._retry({"result": "retry", "error": "作り直し: offerを作成できない http=500 25001 x"})
+        streak, offer_id, _ = self._streak()
+        self.assertEqual((streak, offer_id), (3, "O1"))
+        self._due()
+        r = self._retry({"result": "listed", "listing_id": "NEW3", "warn": None, "price": 1.0, "offer_id": "O3"})
+        self.assertEqual(r.call_args.kwargs["recreate_payload"], {"sku": "SKU1", "categoryId": "1"})
+        self.assertEqual(self.payload.call_count, 1)
+        (status, _, new_id, _), (head, flg) = self._row()
+        self.assertEqual((status, new_id, head, flg), ("done", "NEW3", "出品", False))
+        self.assertEqual(self._streak()[:2], (0, "O3"))
 
     def test_payload_unavailable_falls_back_to_same_offer(self):
         self._pending()

@@ -2224,7 +2224,10 @@ def mark_listing_state_unknown(conn, rec: dict, acct: str, sku: str, err: Except
 ORPHAN_RETRY_BACKOFF_MIN = [30, 120, 360]     # 1〜3回目の失敗後の待ち時間。以後は ORPHAN_RETRY_DAILY_MIN ごと
 ORPHAN_RETRY_DAILY_MIN = 1440
 ORPHAN_RETRY_MAX_DAYS = 14                    # 保留にしてからこの日数を過ぎても再公開できなければ gave_up
-ORPHAN_RECREATE_AFTER_DAYS = 2                # 同じ offer でこの日数 再公開できなければ offer を作り直す
+ORPHAN_RECREATE_AFTER_DAYS = 2                # 同じ offer でこの日数 再公開できなければ offer を作り直す（25001以外の失敗）
+# 同じ offer の再公開が 25001(http500) でこの回数続いたら、日数を待たずに offer を作り直す（次の再処理は最短の間隔）。
+# 11/06〜09 貴文: 同じ offer は 25001 が5回続き、作り直した offer は1回で公開できた。
+ORPHAN_RECREATE_AFTER_25001 = 3
 ORPHAN_RETRY_CHECK_INTERVAL_SEC = 300         # 出品処理の中で保留を確認する間隔
 ORPHAN_RETRY_STALE_MIN = 30                   # running のまま止まった行を回収するまでの時間
 ORPHAN_PENDING_HEAD = "UNPUBLISHED再公開待ち"
@@ -2245,6 +2248,7 @@ def _notify_orphan_pending(subject: str, row: dict, detail: str) -> None:
 
 def mark_orphan_republish_pending(conn, rec: dict, acct: str, sku: str, err, is_collectibles=None) -> None:
     status = "pending" if err.retryable else "stopped"
+    streak = 1 if getattr(err, "publish_code", None) == 25001 else 0
     print(f"⏸ UNPUBLISHED再公開待ち: acct={acct} SKU={sku} status={status} reason={err}")
     rec["listing_head"] = ORPHAN_PENDING_HEAD
     rec["listing_detail"] = str(err)
@@ -2260,18 +2264,19 @@ def mark_orphan_republish_pending(conn, rec: dict, acct: str, sku: str, err, is_
             WHEN MATCHED THEN UPDATE SET
                 vendor_name = ?, offer_id = ?, orphan_listing_id = ?, since_utc = ?, is_collectibles = ?,
                 status = ?, attempts = 0, next_at = DATEADD(MINUTE, ?, SYSDATETIME()), last_error = ?,
-                new_listing_id = NULL, updated_at = SYSDATETIME()
+                new_listing_id = NULL, offer_payload = NULL, offer_recreated_utc = NULL, offer_fail_streak = ?,
+                updated_at = SYSDATETIME()
             WHEN NOT MATCHED THEN INSERT
                 (account, vendor_item_id, vendor_name, offer_id, orphan_listing_id, since_utc, is_collectibles,
-                 status, attempts, next_at, last_error)
-                VALUES (S.account, S.vendor_item_id, ?, ?, ?, ?, ?, ?, 0, DATEADD(MINUTE, ?, SYSDATETIME()), ?);
+                 status, attempts, next_at, last_error, offer_fail_streak)
+                VALUES (S.account, S.vendor_item_id, ?, ?, ?, ?, ?, ?, 0, DATEADD(MINUTE, ?, SYSDATETIME()), ?, ?);
         """, (acct, sku,
               rec.get("vendor_name"), err.offer_id, err.orphan_id, err.since_utc, is_collectibles,
-              status, ORPHAN_RETRY_BACKOFF_MIN[0], str(err)[:1000],
+              status, ORPHAN_RETRY_BACKOFF_MIN[0], str(err)[:1000], streak,
               rec.get("vendor_name"), err.offer_id, err.orphan_id, err.since_utc, is_collectibles,
-              status, ORPHAN_RETRY_BACKOFF_MIN[0], str(err)[:1000]))
+              status, ORPHAN_RETRY_BACKOFF_MIN[0], str(err)[:1000], streak))
     conn.commit()
-    _orphan_log(f"[ORPHAN_RECOVERY][PENDING] account={acct} sku={sku} status={status} reason={err}")
+    _orphan_log(f"[ORPHAN_RECOVERY][PENDING] account={acct} sku={sku} status={status} 25001連続={streak} reason={err}")
     if status == "stopped":
         _notify_orphan_pending("UNPUBLISHED出品の再公開を中止",
                                {"account": acct, "vendor_item_id": sku, "offer_id": err.offer_id,
@@ -2285,7 +2290,7 @@ def _claim_orphan_retry(conn, acct: str) -> Optional[dict]:
                SET status = 'running', updated_at = SYSDATETIME()
             OUTPUT inserted.account, inserted.vendor_item_id, inserted.vendor_name, inserted.offer_id,
                    inserted.orphan_listing_id, inserted.since_utc, inserted.is_collectibles, inserted.attempts,
-                   inserted.offer_payload, inserted.offer_recreated_utc
+                   inserted.offer_payload, inserted.offer_recreated_utc, inserted.offer_fail_streak
              WHERE account = ?
                AND ((status = 'pending' AND next_at <= SYSDATETIME())
                     OR (status = 'running' AND updated_at < DATEADD(MINUTE, ?, SYSDATETIME())))
@@ -2297,8 +2302,11 @@ def _claim_orphan_retry(conn, acct: str) -> Optional[dict]:
 
 
 def _finish_orphan_retry(conn, row: dict, status: str, *, error=None, new_listing_id=None, next_min=None,
-                         new_offer_id=None) -> None:
-    """new_offer_id: offer を作り直した場合の新しい offer。offer_id を置き換え、作り直した時刻を記録する。"""
+                         new_offer_id=None, fail_streak=0) -> None:
+    """
+    new_offer_id: offer を作り直した場合の新しい offer。offer_id を置き換え、作り直した時刻を記録する。
+    fail_streak: 今の offer で再公開が 25001 で続けて失敗した回数。
+    """
     if new_offer_id is not None and str(new_offer_id) == str(row["offer_id"]):
         new_offer_id = None
     with conn.cursor() as cur:
@@ -2309,25 +2317,45 @@ def _finish_orphan_retry(conn, row: dict, status: str, *, error=None, new_listin
                    offer_id = CASE WHEN ? IS NULL THEN offer_id ELSE ? END,
                    offer_recreated_utc = CASE WHEN ? IS NULL THEN offer_recreated_utc ELSE SYSUTCDATETIME() END,
                    offer_payload = CASE WHEN ? IS NULL THEN offer_payload ELSE NULL END,
+                   offer_fail_streak = ?,
                    updated_at = SYSDATETIME()
              WHERE account = ? AND vendor_item_id = ?
         """, (status, (error or "")[:1000] or None, new_listing_id, next_min, next_min,
-              new_offer_id, new_offer_id, new_offer_id, new_offer_id,
+              new_offer_id, new_offer_id, new_offer_id, new_offer_id, fail_streak,
               row["account"], row["vendor_item_id"]))
     conn.commit()
 
 
+def _next_fail_streak(row: dict, res: dict) -> int:
+    """今回の結果を反映した、今の offer での 25001 連続失敗の回数（offer を作り直したら新しい offer で数え直す）。"""
+    offer_changed = res.get("offer_id") is not None and str(res["offer_id"]) != str(row["offer_id"])
+    base = 0 if offer_changed else (row.get("offer_fail_streak") or 0)
+    code = res.get("code")
+    if code == 25001:
+        return base + 1
+    if code is None:      # 再公開まで進まなかった・通信エラー（25001 の連続は途切れない）
+        return base
+    return 0
+
+
 def _orphan_recreate_payload(conn, row: dict) -> Optional[dict]:
     """
-    同じ offer で ORPHAN_RECREATE_AFTER_DAYS 日以上 再公開できていなければ、作り直しに使う offer の内容を返す。
+    同じ offer で 25001 が ORPHAN_RECREATE_AFTER_25001 回続いた、または ORPHAN_RECREATE_AFTER_DAYS 日以上
+    再公開できていなければ、作り直しに使う offer の内容を返す。
     初めて作り直す時は getOffer の内容を DB に保存してから返す（削除の後に作成が失敗しても次回に作り直せるように）。
+    保存済みの内容がある（作り直しの途中で止まった）時は、条件に関係なく作り直しを続ける（元の offer は削除済みの場合がある）。
     作り直しの時期でない・offer の内容を取れない場合は None（従来どおり同じ offer を再公開する）。
     """
-    since = row.get("offer_recreated_utc") or row["since_utc"]
-    if since is None or datetime.utcnow() - since < timedelta(days=ORPHAN_RECREATE_AFTER_DAYS):
-        return None
     if row.get("offer_payload"):
         return json.loads(row["offer_payload"])
+    since = row.get("offer_recreated_utc") or row["since_utc"]
+    by_days = since is not None and datetime.utcnow() - since >= timedelta(days=ORPHAN_RECREATE_AFTER_DAYS)
+    by_25001 = (row.get("offer_fail_streak") or 0) >= ORPHAN_RECREATE_AFTER_25001
+    if not (by_days or by_25001):
+        return None
+    _orphan_log(f"[ORPHAN_RECOVERY][RECREATE_DUE] account={row['account']} sku={row['vendor_item_id']} "
+                f"offer_id={row['offer_id']} 25001連続={row.get('offer_fail_streak') or 0} "
+                f"理由={'25001が続いた' if by_25001 else f'{ORPHAN_RECREATE_AFTER_DAYS}日以上 再公開できない'}")
     payload = get_orphan_offer_payload(row["account"], row["offer_id"])
     if payload is None:
         _orphan_log(f"[ORPHAN_RECOVERY][RECREATE] account={row['account']} sku={row['vendor_item_id']} "
@@ -2371,6 +2399,7 @@ def _retry_one_orphan(conn, row: dict) -> None:
                                  recreate_payload=_orphan_recreate_payload(conn, row))
     new_offer_id = res.get("offer_id")
     attempts = row["attempts"] + 1
+    streak = _next_fail_streak(row, res)
     if res["result"] == "listed":
         listing_id = res["listing_id"]
         record_ebay_listing(listing_id, acct, sku, row["vendor_name"], res.get("price"), row["is_collectibles"])
@@ -2391,12 +2420,16 @@ def _retry_one_orphan(conn, row: dict) -> None:
     if res["result"] == "retry" and in_period:
         wait = (ORPHAN_RETRY_BACKOFF_MIN[attempts - 1] if attempts <= len(ORPHAN_RETRY_BACKOFF_MIN)
                 else ORPHAN_RETRY_DAILY_MIN)
-        _finish_orphan_retry(conn, row, "pending", error=res["error"], next_min=wait, new_offer_id=new_offer_id)
+        if streak >= ORPHAN_RECREATE_AFTER_25001:
+            wait = ORPHAN_RETRY_BACKOFF_MIN[0]   # 次回は offer を作り直すので、長く待たない
+        _finish_orphan_retry(conn, row, "pending", error=res["error"], next_min=wait, new_offer_id=new_offer_id,
+                             fail_streak=streak)
         _orphan_log(f"[ORPHAN_RECOVERY][RETRY_LATER] account={acct} sku={sku} attempts={attempts} "
-                    f"next={wait}分後 offer_id={new_offer_id or row['offer_id']} error={res['error']}")
+                    f"next={wait}分後 offer_id={new_offer_id or row['offer_id']} 25001連続={streak}"
+                    f"{' → 次回 offer を作り直す' if streak >= ORPHAN_RECREATE_AFTER_25001 else ''} error={res['error']}")
         return
     status = "gave_up" if res["result"] == "retry" else "stopped"
-    _finish_orphan_retry(conn, row, status, error=res["error"], new_offer_id=new_offer_id)
+    _finish_orphan_retry(conn, row, status, error=res["error"], new_offer_id=new_offer_id, fail_streak=streak)
     _orphan_log(f"[ORPHAN_RECOVERY][{status.upper()}] account={acct} sku={sku} attempts={attempts} error={res['error']}")
     # gave_up（一時的な失敗が続いた）は個別に通知せず、inventory_monitor の集約通知に出す
     if status == "stopped":

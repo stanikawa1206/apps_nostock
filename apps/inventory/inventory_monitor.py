@@ -199,7 +199,7 @@ def notify_orphan_alert(conn, today: str) -> None:
     body = (
         "publishOffer のエラーで作り直した出品のうち、再公開できていないもの（eBayに出品なし）があります。\n"
         f"通知の理由: {' / '.join(reasons)}\n\n" + "\n".join(lines) + "\n\n"
-        "再試行は 30分・2時間・6時間後、以後1日ごとに自動で続けます（同じ offer で2日失敗したら offer を作り直す。"
+        "再試行は 30分・2時間・6時間後、以後1日ごとに自動で続けます（同じ offer で 25001 が3回続くか、2日失敗したら offer を作り直す。"
         "14日で gave_up）。この通知は条件に当たる間、1日1回送ります。\n"
         "gave_up を再処理するには status='pending', next_at=SYSDATETIME() に戻してください。ログ: logs/unpublished_recovery.log\n"
     )
