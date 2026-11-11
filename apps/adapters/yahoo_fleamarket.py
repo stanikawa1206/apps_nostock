@@ -380,9 +380,12 @@ def resolve_item_preset(item_brand_id: Optional[int], title: Optional[str], cate
 # =========================
 # 商品詳細・在庫確認
 # =========================
-# 削除済み（存在しない）商品の 404 応答の error.codeV2（2026-11-10 削除済み商品・2026-11-11 存在しないIDで確認）。
+# 購入できない商品の 404 応答の error.codeV2（name はどちらも NotFoundError）。
+#   0212-03-1000 「商品情報の取得に失敗しました」: 削除済みの商品・存在しないID（2026-11-10・11-11 確認）
+#   0212-01-0119 「商品が存在していません」: ヤフオク由来の商品の掲載期間終了（2026-11-11 終了時刻の前後を観測。
+#                 4件とも終了時刻に OPEN からこの 404 になり、15分後も同じ。ヤフオク側も「このオークションは終了しています」）
 # URL違い等の 404 は {"statusCode":404,"error":"Not Found",...} で形が違う。これは削除と判定しない（eBay出品を誤って終了しない）。
-ITEM_NOT_FOUND_CODE = "0212-03-1000"
+ITEM_NOT_FOUND_CODES = {"0212-03-1000", "0212-01-0119"}
 
 
 def fetch_item_json(item_id: str) -> dict:
@@ -397,8 +400,8 @@ def fetch_item_json(item_id: str) -> dict:
             err = (resp.json() or {}).get("error")
         except ValueError:
             err = None
-        if isinstance(err, dict) and err.get("name") == "NotFoundError" and err.get("codeV2") == ITEM_NOT_FOUND_CODE:
-            raise YahooItemUnavailableError(f"item not found (404 {ITEM_NOT_FOUND_CODE}): {item_id}", state="削除")
+        if isinstance(err, dict) and err.get("name") == "NotFoundError" and err.get("codeV2") in ITEM_NOT_FOUND_CODES:
+            raise YahooItemUnavailableError(f"item not found (404 {err.get('codeV2')}): {item_id}", state="削除")
     if resp.status_code >= 400:
         raise YahooHttpError(url, resp.status_code, " ".join(resp.text[:300].split()))
     return resp.json()

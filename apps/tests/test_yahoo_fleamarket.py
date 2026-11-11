@@ -343,6 +343,13 @@ class FetchItemJsonTest(unittest.TestCase):
             self.get(FakeHttp(404, body))
         self.assertEqual(cm.exception.state, "削除")
 
+    def test_auction_ended(self):
+        body = {"error": {"code": "spbfi-0212-01-0119", "codeV2": "0212-01-0119", "name": "NotFoundError",
+                          "statusCode": 404, "message": "商品が存在していません"}}
+        with self.assertRaises(yf.YahooItemUnavailableError) as cm:
+            self.get(FakeHttp(404, body))
+        self.assertEqual(cm.exception.state, "削除")
+
     def test_other_404_is_error_not_deleted(self):
         for body in ({"statusCode": 404, "message": "指定されたリソースは見つかりませんでした", "error": "Not Found"},
                      {"error": {"codeV2": "0212-04-2001", "name": "NotFoundError"}},
