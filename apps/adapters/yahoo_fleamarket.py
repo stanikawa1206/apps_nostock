@@ -157,17 +157,47 @@ def fetch_search_page(params: dict) -> Tuple[List[Dict[str, Any]], int]:
 # =========================
 # ブランドの階層と preset の決定
 # =========================
+# {ブランドID: 親から自分までのブランドID}。プロセス内で保持する。
 _brand_path_cache: Dict[int, List[int]] = {}
+# 子孫をたどり終えたブランドID（検索に使ったブランド）
+_crawled_roots: set = set()
 
 
-def get_brand_path(brand_id: int) -> List[int]:
-    """ブランドの階層（親から自分まで）。プロセス内でキャッシュする。"""
-    brand_id = int(brand_id)
-    if brand_id not in _brand_path_cache:
-        js = _get_json(BRAND_CHILDREN_API.format(brand_id=brand_id))
-        path = [int(b["id"]) for b in (js or {}).get("brandList") or []]
-        _brand_path_cache[brand_id] = path if path else [brand_id]
-    return _brand_path_cache[brand_id]
+def _crawl_brand_tree(root_id: int) -> None:
+    """
+    root_id の子孫すべての階層を _brand_path_cache に入れる。
+    子ブランドの一覧API は子のあるブランドにしか使えない（子の無いブランドは 404）ため、
+    子のブランドの階層は親の階層に自分を足して作る。
+    """
+    js = _get_json(BRAND_CHILDREN_API.format(brand_id=root_id))
+    if js is None:  # 子が無い
+        _brand_path_cache.setdefault(root_id, [root_id])
+        return
+    root_path = [int(b["id"]) for b in js.get("brandList") or []] or [root_id]
+    _brand_path_cache[root_id] = root_path
+    queue = [(root_path, js)]
+    while queue:
+        parent_path, parent_js = queue.pop()
+        for child in parent_js.get("brands") or []:
+            child_path = parent_path + [int(child["id"])]
+            _brand_path_cache[int(child["id"])] = child_path
+            if child.get("hasChildren"):
+                child_js = _get_json(BRAND_CHILDREN_API.format(brand_id=int(child["id"])))
+                if child_js is not None:
+                    queue.append((child_path, child_js))
+
+
+def get_brand_path(brand_id: int, search_brand_id: int) -> List[int]:
+    """
+    商品のブランドの階層（親から自分まで）。search_brand_id は検索に使ったブランド
+    （検索結果の商品のブランドはこのブランドかその子孫）。初めてのブランドなら子孫をたどってから引く。
+    たどっても見つからないブランド（検索後に追加されたブランド等）は [brand_id] を返す。
+    """
+    brand_id, search_brand_id = int(brand_id), int(search_brand_id)
+    if brand_id not in _brand_path_cache and search_brand_id not in _crawled_roots:
+        _crawl_brand_tree(search_brand_id)
+        _crawled_roots.add(search_brand_id)
+    return _brand_path_cache.get(brand_id, [brand_id])
 
 
 def _normalize_title(title: Optional[str]) -> str:
@@ -175,15 +205,17 @@ def _normalize_title(title: Optional[str]) -> str:
 
 
 def resolve_item_preset(item_brand_id: Optional[int], title: Optional[str], category_id: int,
-                        preset_by_brand: Dict[Tuple[int, int], str]) -> Tuple[Optional[str], str]:
+                        preset_by_brand: Dict[Tuple[int, int], str],
+                        search_brand_id: int) -> Tuple[Optional[str], str]:
     """
     商品のブランドから preset を決める。戻り値は (preset, 説明)。出品しない商品は preset=None。
     preset_by_brand: {(Yahoo!フリマのブランドID, カテゴリーID): preset}（mst.presets_lookup の ＰａｙＰａｙフリマ 分）
+    search_brand_id: 検索に使ったブランドID
     """
     if item_brand_id is None:
         return None, "ブランドなし"
 
-    path = get_brand_path(int(item_brand_id))
+    path = get_brand_path(int(item_brand_id), search_brand_id)
     for bid in path:
         if bid in NG_BRAND_IDS:
             return None, f"NGブランド {NG_BRAND_IDS[bid]}({bid})"

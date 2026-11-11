@@ -47,12 +47,12 @@ PRESETS = {
 
 class ResolvePresetTest(unittest.TestCase):
     def setUp(self):
-        p = mock.patch.object(yf, "get_brand_path", side_effect=lambda b: PATHS[b])
+        p = mock.patch.object(yf, "get_brand_path", side_effect=lambda b, root: PATHS[b])
         p.start()
         self.addCleanup(p.stop)
 
     def resolve(self, brand, title="", cat=MEN):
-        return yf.resolve_item_preset(brand, title, cat, PRESETS)[0]
+        return yf.resolve_item_preset(brand, title, cat, PRESETS, SEIKO)[0]
 
     def test_same_brand(self):
         self.assertEqual(self.resolve(SEIKO, "SEIKO 5 自動巻き"), "SEIKOメンズ腕時計menY")
@@ -93,7 +93,7 @@ class ResolvePresetTest(unittest.TestCase):
         self.assertEqual(self.resolve(ALBA_SEIKO, "クレドール 風"), "アルバメンズ腕時計menY")
 
     def test_ng_brand_under_furla(self):
-        preset, reason = yf.resolve_item_preset(ALBA_UNDER_FURLA, "ALBA 腕時計", MEN, PRESETS)
+        preset, reason = yf.resolve_item_preset(ALBA_UNDER_FURLA, "ALBA 腕時計", MEN, PRESETS, FURLA)
         self.assertIsNone(preset)
         self.assertIn("124244", reason)
 
@@ -102,6 +102,44 @@ class ResolvePresetTest(unittest.TestCase):
 
     def test_no_brand(self):
         self.assertIsNone(self.resolve(None))
+
+
+class BrandTreeTest(unittest.TestCase):
+    """子ブランドの一覧API は子の無いブランドで 404 になる。子の階層は親の階層から作る。"""
+
+    API = {
+        SEIKO: {"brandList": [{"id": SEIKO}], "brands": [
+            {"id": GS, "hasChildren": True}, {"id": PROSPEX, "hasChildren": False}]},
+        GS: {"brandList": [{"id": SEIKO}, {"id": GS}], "brands": [{"id": GS_44, "hasChildren": False}]},
+    }
+
+    def setUp(self):
+        yf._brand_path_cache.clear()
+        yf._crawled_roots.clear()
+        self.calls = []
+
+        def fake_get_json(url, params=None):
+            bid = int(url.rstrip("/").split("/")[-2])
+            self.calls.append(bid)
+            return self.API.get(bid)  # 子の無いブランドは None（404）
+
+        p = mock.patch.object(yf, "_get_json", side_effect=fake_get_json)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_paths_from_root(self):
+        self.assertEqual(yf.get_brand_path(GS_44, SEIKO), [SEIKO, GS, GS_44])
+        self.assertEqual(yf.get_brand_path(PROSPEX, SEIKO), [SEIKO, PROSPEX])
+        self.assertEqual(yf.get_brand_path(SEIKO, SEIKO), [SEIKO])
+        self.assertEqual(self.calls, [SEIKO, GS])  # 子のあるブランドだけ・1回ずつ
+
+    def test_unknown_brand_after_crawl(self):
+        self.assertEqual(yf.get_brand_path(888888, SEIKO), [888888])
+        self.assertEqual(yf.get_brand_path(777777, SEIKO), [777777])
+        self.assertEqual(self.calls, [SEIKO, GS])  # 同じ検索ブランドは2回たどらない
+
+    def test_leaf_root(self):
+        self.assertEqual(yf.get_brand_path(PROSPEX, PROSPEX), [PROSPEX])
 
 
 def _fixture(name):

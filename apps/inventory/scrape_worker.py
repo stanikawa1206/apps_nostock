@@ -1343,13 +1343,15 @@ def load_yahoo_preset_map(conn) -> Dict[Tuple[int, int], str]:
         return {(int(b), int(c)): p for b, c, p in cur.fetchall()}
 
 
-def _yahoo_resolve_page(items, category_id: int, preset_map, job_preset: str):
+def _yahoo_resolve_page(items, category_id: int, preset_map, job_preset: str, search_brand_id: int):
     """商品ごとに preset を決める。(保存する商品と preset の組の一覧, 付け替え件数, 保存しない件数)"""
     kept = []
     moved = 0
     skipped = 0
     for it in items:
-        preset, reason = yahoo.resolve_item_preset(it["brand_id"], it["title_jp"], category_id, preset_map)
+        preset, reason = yahoo.resolve_item_preset(
+            it["brand_id"], it["title_jp"], category_id, preset_map, search_brand_id
+        )
         if preset is None:
             skipped += 1
             print(f"[YAHOO SKIP] {it['vendor_item_id']} {reason} brand={it['brand_name']} title={(it['title_jp'] or '')[:40]}", flush=True)
@@ -1400,7 +1402,7 @@ def run_fetch_active_yahoo(payload: dict, job_id: int) -> Tuple[int, int]:
                 break
 
             total_items += len(items)
-            kept, moved, skipped = _yahoo_resolve_page(items, category_id, preset_map, preset)
+            kept, moved, skipped = _yahoo_resolve_page(items, category_id, preset_map, preset, int(payload["brand_id"]))
 
             item_ids = [it["vendor_item_id"] for it, _ in kept]
             existing_dates = get_vendor_item_dates_batch(conn, vendor_name, item_ids)
@@ -1501,7 +1503,7 @@ def run_fetch_sold_yahoo(payload: dict, job_id: int) -> Tuple[int, int]:
             if not items:
                 break
 
-            kept, _, _ = _yahoo_resolve_page(items, category_id, preset_map, preset_name)
+            kept, _, _ = _yahoo_resolve_page(items, category_id, preset_map, preset_name, int(payload["brand_id"]))
             fetched_items += len(kept)
 
             existing_dates = get_vendor_item_dates_batch(conn, vendor_name, [it["vendor_item_id"] for it, _ in kept])
