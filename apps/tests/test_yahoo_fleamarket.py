@@ -358,8 +358,79 @@ class FetchItemJsonTest(unittest.TestCase):
                 self.get(FakeHttp(404, body))
 
     def test_5xx_is_error(self):
-        with self.assertRaises(yf.YahooHttpError):
+        with mock.patch.object(yf.time, "sleep"), self.assertRaises(yf.YahooHttpError):
             self.get(FakeHttp(503, "Service Unavailable"))
+
+
+class RetryTest(unittest.TestCase):
+    """一時的な失敗の再試行（最大3回要求、待ち 5秒→20秒）。"""
+
+    DELETED = {"error": {"codeV2": "0212-03-1000", "name": "NotFoundError", "statusCode": 404}}
+
+    def run_get(self, responses, fn=lambda: yf.fetch_item_json("z1")):
+        seq = iter(responses)
+
+        def fake_get(*a, **kw):
+            r = next(seq)
+            if isinstance(r, Exception):
+                raise r
+            return r
+
+        with mock.patch.object(yf._session, "get", side_effect=fake_get) as g, \
+                mock.patch.object(yf.time, "sleep") as sl:
+            try:
+                return fn(), g.call_count, [c.args[0] for c in sl.call_args_list]
+            except Exception as e:
+                return e, g.call_count, [c.args[0] for c in sl.call_args_list]
+
+    def test_disconnect_then_ok(self):
+        disc = requests.ConnectionError("Remote end closed connection without response")
+        res, n, waits = self.run_get([disc, FakeHttp(200, {"status": "OPEN"})])
+        self.assertEqual(res["status"], "OPEN")
+        self.assertEqual((n, waits), (2, [5]))
+
+    def test_timeout_and_5xx_then_ok(self):
+        res, n, waits = self.run_get([requests.Timeout("read timeout"), FakeHttp(502, "Bad Gateway"),
+                                      FakeHttp(200, {"status": "SOLD"})])
+        self.assertEqual(res["status"], "SOLD")
+        self.assertEqual((n, waits), (3, [5, 20]))
+
+    def test_gives_up_after_3_tries(self):
+        res, n, waits = self.run_get([FakeHttp(503, "x")] * 3)
+        self.assertIsInstance(res, yf.YahooHttpError)
+        self.assertEqual((n, waits), (3, [5, 20]))
+        res, n, _ = self.run_get([requests.ConnectionError("x")] * 3)
+        self.assertIsInstance(res, requests.ConnectionError)
+        self.assertEqual(n, 3)
+
+    def test_404_not_retried(self):
+        res, n, waits = self.run_get([FakeHttp(404, self.DELETED)])
+        self.assertIsInstance(res, yf.YahooItemUnavailableError)
+        self.assertEqual((n, waits), (1, []))
+        res, n, waits = self.run_get([FakeHttp(404, {"statusCode": 404, "error": "Not Found"})])
+        self.assertIsInstance(res, yf.YahooHttpError)
+        self.assertEqual((n, waits), (1, []))
+
+    def test_other_4xx_not_retried(self):
+        res, n, _ = self.run_get([FakeHttp(400, "Bad Request")])
+        self.assertIsInstance(res, yf.YahooHttpError)
+        self.assertEqual(n, 1)
+
+    def test_search_retried(self):
+        ok = FakeHttp(200, {"items": [], "totalResultsAvailable": 0})
+        ok.url = yf.SEARCH_API
+        res, n, waits = self.run_get([requests.ConnectionError("x"), ok],
+                                     fn=lambda: yf.fetch_search_page({"offset": 0}))
+        self.assertEqual(res[0], [])
+        self.assertEqual((n, waits), (2, [5]))
+
+    def test_check_remaining_gives_up_to_undetermined(self):
+        """再試行しても取れなければ check_remaining は判定不可（出品維持）。"""
+        def call():
+            return cr.get_status(None, None, "https://paypayfleamarket.yahoo.co.jp/item/z1")
+        res, n, _ = self.run_get([requests.ConnectionError("x")] * 3, fn=call)
+        self.assertEqual(res, ("判定不可", None))
+        self.assertEqual(n, 3)
 
 
 # check_remaining_ebay は import 時に stdout をログへ差し替えるので、元に戻す

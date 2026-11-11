@@ -21,6 +21,7 @@ Playwright/Selenium は使わず、サイト自身が使う JSON API を HTTP GE
 from __future__ import annotations
 
 import re
+import time
 import unicodedata
 from datetime import datetime
 from io import BytesIO
@@ -229,10 +230,36 @@ class YahooItemUnavailableError(Exception):
 _session = requests.Session()
 _session.headers.update({"User-Agent": USER_AGENT, "Accept": "application/json"})
 
+# 一時的な失敗（通信切断・タイムアウト・下記のステータス）は、同じ要求をその場で少し待ってやり直す。
+# ステータスはラクマ（rakuma_search.TRANSIENT_HTTP_STATUSES）と同じ。404 は商品の削除・ページ範囲外などの
+# 意味がある応答なので再試行しない。やり直しても失敗したら従来どおり例外を送出する
+# （fetch_active / fetch_sold はジョブの error、check_remaining は判定不可＝出品維持）。
+# 2026-11-12 04:37 の fetch_active で検索APIの接続が1回切断され（RemoteDisconnected）、そのジョブが error になった。
+TRANSIENT_HTTP_STATUSES = {429, 500, 502, 503, 504}
+RETRY_WAITS_SEC = (5, 20)   # 1回目の失敗後に5秒、2回目の失敗後に20秒待つ（最大3回要求）
+
+
+def _get(url: str, params: Optional[dict] = None) -> requests.Response:
+    """_session.get に一時的な失敗の再試行を付けたもの。最後の試行の応答（または例外）をそのまま返す。"""
+    for attempt, wait in enumerate(RETRY_WAITS_SEC + (None,), start=1):
+        try:
+            resp = _session.get(url, params=params, timeout=FETCH_TIMEOUT_SEC)
+        except (requests.ConnectionError, requests.Timeout) as e:
+            if wait is None:
+                raise
+            reason = f"{type(e).__name__}: {e}"
+        else:
+            if resp.status_code not in TRANSIENT_HTTP_STATUSES or wait is None:
+                return resp
+            reason = f"status={resp.status_code}"
+        print(f"[YAHOO RETRY {attempt}/{len(RETRY_WAITS_SEC)}] {wait}秒後に再試行 url={url} {reason}"[:500], flush=True)
+        time.sleep(wait)
+    raise AssertionError("unreachable")
+
 
 def _get_json(url: str, params: Optional[dict] = None) -> Optional[dict]:
     """GET して JSON を返す。404 は None。それ以外の失敗は YahooHttpError（通信エラーは requests の例外のまま）。"""
-    resp = _session.get(url, params=params, timeout=FETCH_TIMEOUT_SEC)
+    resp = _get(url, params=params)
     if resp.status_code == 404:
         return None
     if resp.status_code >= 400:
@@ -394,7 +421,7 @@ def fetch_item_json(item_id: str) -> dict:
     それ以外の失敗（商品の404以外の404・5xx・通信エラー）は YahooHttpError / requests の例外（呼び出し側で削除扱いにしない）。
     """
     url = ITEM_API.format(item_id=item_id)
-    resp = _session.get(url, timeout=FETCH_TIMEOUT_SEC)
+    resp = _get(url)
     if resp.status_code == 404:
         try:
             err = (resp.json() or {}).get("error")
