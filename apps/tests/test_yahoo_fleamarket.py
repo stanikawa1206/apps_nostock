@@ -8,10 +8,12 @@ Yahoo!フリマ（apps/adapters/yahoo_fleamarket.py）のテスト（モック�
 """
 import json
 import os
+import sys
 import unittest
 from io import BytesIO
 from unittest import mock
 
+import requests
 from PIL import Image
 
 from apps.adapters import yahoo_fleamarket as yf
@@ -164,7 +166,7 @@ class FakeResp:
 class DetailTest(unittest.TestCase):
     def test_parse_auction_origin(self):
         js = _fixture("yahoo_item_auction.json")
-        with mock.patch.object(yf, "_get_json", return_value=js):
+        with mock.patch.object(yf, "fetch_item_json", return_value=js):
             rec = yf.parse_detail_yahoo("h1245036394", "SEIKOメンズ腕時計menY", yf.VENDOR_NAME)
         self.assertEqual(rec["price"], 15700)
         self.assertEqual(rec["seller_id"], "p5073780")
@@ -179,7 +181,7 @@ class DetailTest(unittest.TestCase):
     def test_parse_sparkle_checks_unknown_image_size(self):
         js = _fixture("yahoo_item_z_sparkle.json")             # width/height = -1
         sizes = iter([(600, 600), (400, 400)] + [(800, 800)] * 30)
-        with mock.patch.object(yf, "_get_json", return_value=js), \
+        with mock.patch.object(yf, "fetch_item_json", return_value=js), \
                 mock.patch.object(yf._session, "get", side_effect=lambda url, timeout: FakeResp(_jpeg(*next(sizes)))):
             rec = yf.parse_detail_yahoo("z717343356", "p", yf.VENDOR_NAME)
         self.assertEqual(len(rec["images"]), len(js["images"]) - 1)  # 400px の1枚を除く
@@ -187,25 +189,25 @@ class DetailTest(unittest.TestCase):
 
     def test_sold_and_other_status(self):
         js = dict(_fixture("yahoo_item_auction.json"), status="SOLD")
-        with mock.patch.object(yf, "_get_json", return_value=js):
+        with mock.patch.object(yf, "fetch_item_json", return_value=js):
             with self.assertRaises(yf.YahooItemUnavailableError) as cm:
                 yf.parse_detail_yahoo("x", "p", yf.VENDOR_NAME)
         self.assertEqual(cm.exception.state, "売り切れ")
         js = dict(js, status="HOLD")
-        with mock.patch.object(yf, "_get_json", return_value=js):
+        with mock.patch.object(yf, "fetch_item_json", return_value=js):
             with self.assertRaises(yf.YahooItemUnavailableError) as cm:
                 yf.parse_detail_yahoo("x", "p", yf.VENDOR_NAME)
         self.assertEqual(cm.exception.state, "判定不可")
 
     def test_check_status(self):
         base = _fixture("yahoo_item_auction.json")
-        with mock.patch.object(yf, "_get_json", return_value=dict(base, status="OPEN", price=12000)):
+        with mock.patch.object(yf, "fetch_item_json", return_value=dict(base, status="OPEN", price=12000)):
             self.assertEqual(yf.check_yahoo_item_status("x"), ("販売中", 12000))
-        with mock.patch.object(yf, "_get_json", return_value=dict(base, status="SOLD")):
+        with mock.patch.object(yf, "fetch_item_json", return_value=dict(base, status="SOLD")):
             self.assertEqual(yf.check_yahoo_item_status("x"), ("売り切れ", None))
-        with mock.patch.object(yf, "_get_json", return_value=dict(base, status="CLOSE")):
+        with mock.patch.object(yf, "fetch_item_json", return_value=dict(base, status="CLOSE")):
             self.assertEqual(yf.check_yahoo_item_status("x"), ("判定不可", None))
-        with mock.patch.object(yf, "_get_json", return_value=None):
+        with mock.patch.object(yf, "fetch_item_json", side_effect=yf.YahooItemUnavailableError("x", state="削除")):
             with self.assertRaises(yf.YahooItemUnavailableError) as cm:
                 yf.check_yahoo_item_status("x")
         self.assertEqual(cm.exception.state, "削除")
@@ -230,6 +232,8 @@ class NonWatchTest(unittest.TestCase):
         "◆オメガ◆シーマスター◆コマ◆約２０ｍｍ幅◆1503/825◆300シリーズ◆F-S",
         "送料無料　美品　正規品　シャネル CHANEL J12 38mm メンズ腕時計　ベルト　パーツ　 黒ラバー　 コマ 駒　17mm",
         "◆オメガ◆約１６ｍｍ幅◆尾錠◆純正◆金色◆O-N",
+        "◆オメガ◆ギャランティー◆カード◆2512.30◆シーマスター◆アクアテラ◆2512.30◆M-S",
+        "TAGHeuer タグホイヤー ギャランティカードINTERNATIONAL GUARANTEE CARD",
         "CHANEL ギャラ J12 H0683 シャネル 時計 国際 保証書 ギャランティ カード 017 送料込み",
         "IWC 純正 アイダブリュシー 正規 ポートフィノ オートマチック 37 取扱説明書 冊子 Ref.3565 / 4581 PORTOFINO",
         "PANERAI 純正 オフィチーネ パネライ 正規 44mm 時計 保護 ケース カバー ベゼル ガード シリコン ルミノール マリーナ",
@@ -248,6 +252,7 @@ class NonWatchTest(unittest.TestCase):
         "【中古】Wicca ソーラーテック腕時計（箱・説明書・保証書・予備コマ付き）",
         "FOSSIL BIGTIC [JR-8122] 人気希少モデル アンティーク ウォッチ 箱無し",
         "RICOH COMMANDER リコー コマンダー ムーンフェイズ メンズ腕時計",
+        "SEIKO セイコー スポーチュラ キネティック GMT　5M85-0AE0",
         "新品 タグ付 GA-2100HC-2AJF パープル 腕時計 ジーショック カーボンコアガード構造 G-SHOCK Gショック",
         "新品　J.HARRISON ジョンハリソン 腕時計 セラミック 4石 天然サファイア 18K金張りリューズ 紳士用 時計",
         "Invicta インビクタ 47967　47mm プロダイバー バスティオン オート スライドバックル式ゴールドメッシュ",
@@ -307,6 +312,100 @@ class DepartmentTest(unittest.TestCase):
         self.assertEqual(d("メンズ レディース 腕時計 2本セット", "Women"), "Women")        # 両方
         self.assertEqual(d("WOMEN'S watch", "Men"), "Women")                             # women's を men's と数えない
         self.assertEqual(d("レディース 腕時計", "Unisex Adults"), "Unisex Adults")       # ペア・スマートウォッチは補正しない
+
+
+class FakeHttp:
+    def __init__(self, status_code, body):
+        self.status_code = status_code
+        self._body = body
+        self.text = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False)
+
+    def json(self):
+        if isinstance(self._body, str):
+            raise ValueError("not json")
+        return self._body
+
+
+class FetchItemJsonTest(unittest.TestCase):
+    """削除と取得エラーの区別。応答は 2026-11-11 に実際に返った形。"""
+
+    def get(self, resp):
+        with mock.patch.object(yf._session, "get", return_value=resp):
+            return yf.fetch_item_json("z1")
+
+    def test_ok(self):
+        self.assertEqual(self.get(FakeHttp(200, {"status": "OPEN"}))["status"], "OPEN")
+
+    def test_deleted(self):
+        body = {"error": {"code": "spbfi-0212-03-1000", "codeV2": "0212-03-1000", "name": "NotFoundError",
+                          "statusCode": 404, "message": "商品情報の取得に失敗しました"}}
+        with self.assertRaises(yf.YahooItemUnavailableError) as cm:
+            self.get(FakeHttp(404, body))
+        self.assertEqual(cm.exception.state, "削除")
+
+    def test_other_404_is_error_not_deleted(self):
+        for body in ({"statusCode": 404, "message": "指定されたリソースは見つかりませんでした", "error": "Not Found"},
+                     {"error": {"codeV2": "0212-04-2001", "name": "NotFoundError"}},
+                     "<html>Not Found</html>"):
+            with self.assertRaises(yf.YahooHttpError):
+                self.get(FakeHttp(404, body))
+
+    def test_5xx_is_error(self):
+        with self.assertRaises(yf.YahooHttpError):
+            self.get(FakeHttp(503, "Service Unavailable"))
+
+
+# check_remaining_ebay は import 時に stdout をログへ差し替えるので、元に戻す
+_o, _e = sys.stdout, sys.stderr
+from apps.inventory import check_remaining_ebay as cr  # noqa: E402
+sys.stdout, sys.stderr = _o, _e
+
+
+class CheckRemainingYahooTest(unittest.TestCase):
+    URL = "https://paypayfleamarket.yahoo.co.jp/item/z123"
+
+    def status(self, **kw):
+        with mock.patch.object(yf, "check_yahoo_item_status", **kw):
+            return cr.get_status(None, None, self.URL)
+
+    def test_get_status(self):
+        self.assertEqual(self.status(return_value=("販売中", 9000)), ("販売中", 9000))
+        self.assertEqual(self.status(return_value=("売り切れ", None)), ("売り切れ", None))
+        self.assertEqual(self.status(side_effect=yf.YahooItemUnavailableError("x", state="削除")), ("削除", None))
+        self.assertEqual(self.status(side_effect=yf.YahooHttpError(self.URL, 503, "")), ("判定不可", None))
+        self.assertEqual(self.status(side_effect=requests.ConnectionError("down")), ("判定不可", None))
+
+    def run_sync(self, status, price, old_price=9000):
+        row = {"vendor_name": yf.VENDOR_NAME, "vendor_item_id": "z123", "account": "谷川④", "listing_id": "1",
+               "preset": "SEIKOメンズ腕時計menY", "mode": "DDP", "low_usd_target": 100.0, "high_usd_target": 300.0,
+               "has_preset": True}
+        conn = mock.MagicMock()
+        page = mock.MagicMock()
+        with mock.patch.object(cr, "get_status", return_value=(status, price)),                 mock.patch.object(cr, "get_vendor_item_price", return_value=old_price),                 mock.patch.object(cr, "update_vendor_item_price_and_status") as upd,                 mock.patch.object(cr, "handle_listing_delete") as dele,                 mock.patch.object(cr, "handle_listing_price_update") as price_up:
+            cr.process_status_and_sync(conn, page, None, row, "test")
+        return dele, price_up, upd
+
+    def test_sold_and_deleted_end_listing(self):
+        for st in ("売り切れ", "削除"):
+            dele, _, _ = self.run_sync(st, None)
+            dele.assert_called_once()
+            self.assertEqual(dele.call_args.args[3], st)
+
+    def test_undetermined_keeps_listing(self):
+        dele, price_up, upd = self.run_sync("判定不可", None)
+        dele.assert_not_called()
+        price_up.assert_not_called()
+        self.assertEqual(upd.call_args.args[4], "判定不可")
+
+    def test_on_sale_same_price_keeps_listing(self):
+        dele, price_up, _ = self.run_sync("販売中", 9000)
+        dele.assert_not_called()
+        price_up.assert_not_called()
+
+    def test_on_sale_price_change_updates_ebay(self):
+        dele, price_up, _ = self.run_sync("販売中", 12000)
+        dele.assert_not_called()
+        price_up.assert_called_once()
 
 
 if __name__ == "__main__":

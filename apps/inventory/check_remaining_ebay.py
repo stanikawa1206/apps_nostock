@@ -59,6 +59,8 @@ import socket
 import sys
 import time
 from datetime import datetime
+
+import requests
 from pathlib import Path
 from typing import Optional
 
@@ -191,11 +193,16 @@ def get_status(page, driver: Optional[webdriver.Chrome], url: str) -> tuple[Stat
             return "削除", None
 
     # --- 0'. Yahoo!フリマの場合：商品詳細APIをHTTP GETのみ ---
+    #     削除済み（商品の404）だけを「削除」にする。取得エラー（5xx・商品以外の404・通信エラー）は
+    #     出品を終了せず「判定不可」（出品維持・次回の在庫確認で再確認・判定不可メールに載る）。
     if host_path.startswith("paypayfleamarket.yahoo.co.jp/item/"):
         try:
             return yahoo.check_yahoo_item_status(host_path.rsplit("/", 1)[-1])
         except yahoo.YahooItemUnavailableError:
             return "削除", None
+        except (yahoo.YahooHttpError, requests.RequestException, ValueError) as e:
+            print(f"[YAHOO FETCH ERROR] {url} {type(e).__name__}: {str(e)[:200]} → 判定不可（出品維持）", flush=True)
+            return "判定不可", None
 
     # --- 1. メルカリ（通常）の場合：Playwrightのpageを使って高速APIキャプチャ ---
     if "mercari.com" in host_path and "/shops/product/" not in host_path:

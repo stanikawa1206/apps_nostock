@@ -91,7 +91,7 @@ _ACCESSORY_PHRASE = re.compile(r"(時計|ウォッチ)\s*保護|保護\s*(ケー
 _PART_WORDS = [
     "部品", "パーツ", "コマ", "駒", "尾錠", "バックル", "中留", "クラスプ", "エンドピース", "弓カン", "弓菅", "バネ棒", "風防",
     "巻き芯", "巻芯", "パッキン", "交換用", "替えベルト", "替えバンド", "時計ベルト", "時計バンド", "腕時計ベルト",
-    "ギャランティ", "保証書", "冊子", "プライスタグ", "工具", "ツール", "ドライバー", "巾着", "ポーチ", "保存袋",
+    "ギャランティ", "ギャランティー", "ギャランティカード", "ギャランティーカード", "保証書", "冊子", "プライスタグ", "工具", "ツール", "ドライバー", "巾着", "ポーチ", "保存袋",
     "ウォッチスタンド", "時計スタンド", "ディスプレイスタンド", "ワインディング", "巻き上げ機", "図鑑", "ムック",
     "ウォレット", "財布", "時計用", "ウォッチ用", "watch用",
 ]
@@ -108,7 +108,9 @@ def _word_re(words):
 _PART_RE = _word_re(_PART_WORDS)
 _AMBIGUOUS_RE = _word_re(_AMBIGUOUS_WORDS)
 _FOLLOWED_BY_EXTRA = re.compile(r"^[^。、]{0,10}?(付き|付属|付|つき|あり|有り|有|無し|なし|欠品|交換済|セット|式|タイプ)")
-_KOMA_IN_WORD = re.compile(r"コマ(?=[ァ-ヶー])")  # コマンダー 等
+# カタカナの語のすぐ後ろにカタカナが続く場合は別の語の一部（コマンダー・スポーチュラ 等）
+_KATAKANA_WORD = re.compile(r"^[ァ-ヶー]+$")
+_KATAKANA_NEXT = re.compile(r"[ァ-ヶー]")
 _LIVE_BODY = re.compile(r"本体|稼働|稼動|動作")
 _STRONG_BODY = re.compile(
     r"本体|bt\d+%|バッテリー|稼働|稼動|動作|電池|クォーツ|クオーツ|quartz|自動巻|オートマチック|オート(?!バイ)|automatic"
@@ -135,7 +137,7 @@ _DESC_ONLY = re.compile(
 def _part_hits(regex, t: str) -> List[str]:
     out = []
     for m in regex.finditer(t):
-        if m.group(0) == "コマ" and _KOMA_IN_WORD.match(t, m.start()):
+        if _KATAKANA_WORD.match(m.group(0)) and _KATAKANA_NEXT.match(t, m.end()):
             continue
         if _FOLLOWED_BY_EXTRA.match(t[m.end():m.end() + 14]):
             continue
@@ -378,11 +380,28 @@ def resolve_item_preset(item_brand_id: Optional[int], title: Optional[str], cate
 # =========================
 # 商品詳細・在庫確認
 # =========================
+# 削除済み（存在しない）商品の 404 応答の error.codeV2（2026-11-10 削除済み商品・2026-11-11 存在しないIDで確認）。
+# URL違い等の 404 は {"statusCode":404,"error":"Not Found",...} で形が違う。これは削除と判定しない（eBay出品を誤って終了しない）。
+ITEM_NOT_FOUND_CODE = "0212-03-1000"
+
+
 def fetch_item_json(item_id: str) -> dict:
-    js = _get_json(ITEM_API.format(item_id=item_id))
-    if js is None:
-        raise YahooItemUnavailableError(f"item not found (404): {item_id}", state="削除")
-    return js
+    """
+    商品詳細。削除済みの商品は YahooItemUnavailableError(state='削除')。
+    それ以外の失敗（商品の404以外の404・5xx・通信エラー）は YahooHttpError / requests の例外（呼び出し側で削除扱いにしない）。
+    """
+    url = ITEM_API.format(item_id=item_id)
+    resp = _session.get(url, timeout=FETCH_TIMEOUT_SEC)
+    if resp.status_code == 404:
+        try:
+            err = (resp.json() or {}).get("error")
+        except ValueError:
+            err = None
+        if isinstance(err, dict) and err.get("name") == "NotFoundError" and err.get("codeV2") == ITEM_NOT_FOUND_CODE:
+            raise YahooItemUnavailableError(f"item not found (404 {ITEM_NOT_FOUND_CODE}): {item_id}", state="削除")
+    if resp.status_code >= 400:
+        raise YahooHttpError(url, resp.status_code, " ".join(resp.text[:300].split()))
+    return resp.json()
 
 
 def check_yahoo_item_status(item_id: str) -> Tuple[str, Optional[int]]:
