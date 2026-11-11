@@ -83,6 +83,7 @@ from apps.adapters.mercari_scraper import build_driver
 from apps.common.utils import get_sql_server_connection, compute_start_price_usd
 from apps.common.process_watchdog import playwright_driver_monitor, start_watchdog
 from apps.adapters.rakuma_item_status import check_rakuma_item_status, RakumaItemUnavailableError
+from apps.adapters import yahoo_fleamarket as yahoo
 
 # 1回の繰り返し（10件ごとのブラウザ再起動・対象取得・1商品の処理）の上限秒数。これを超えたら
 # 子孫を kill して exit 2 で自己終了し、check_remaining_ebay.sh がこの実行だけを片付けて再起動する。
@@ -189,6 +190,13 @@ def get_status(page, driver: Optional[webdriver.Chrome], url: str) -> tuple[Stat
         except RakumaItemUnavailableError:
             return "削除", None
 
+    # --- 0'. Yahoo!フリマの場合：商品詳細APIをHTTP GETのみ ---
+    if host_path.startswith("paypayfleamarket.yahoo.co.jp/item/"):
+        try:
+            return yahoo.check_yahoo_item_status(host_path.rsplit("/", 1)[-1])
+        except yahoo.YahooItemUnavailableError:
+            return "削除", None
+
     # --- 1. メルカリ（通常）の場合：Playwrightのpageを使って高速APIキャプチャ ---
     if "mercari.com" in host_path and "/shops/product/" not in host_path:
         # 修正：pageオブジェクトを渡す
@@ -238,6 +246,8 @@ def build_mercari_url(vendor_name: str, sku: str) -> str:
         return f"https://jp.mercari.com/shops/product/{sku}"
     if vendor_name == "ラクマ":
         return f"https://item.fril.jp/{sku}"
+    if vendor_name == yahoo.VENDOR_NAME:
+        return yahoo.item_url(sku)
     return f"https://jp.mercari.com/item/{sku}"
 
 def count_total_remaining(conn):
@@ -254,7 +264,7 @@ def count_total_remaining(conn):
                 ON v.vendor_name = l.vendor_name
                AND v.vendor_item_id = l.vendor_item_id
             WHERE l.is_deleted = 0
-              AND v.vendor_name IN (N'メルカリ', N'メルカリshops', N'ラクマ')
+              AND v.vendor_name IN (N'メルカリ', N'メルカリshops', N'ラクマ', N'ＰａｙＰａｙフリマ')
               AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')
               AND v.remaining_check_at IS NULL
         """)
@@ -286,7 +296,7 @@ def pull_remaining_targets(conn, worker_name: str, batch_size: int = 5):
                 ON p.preset = v.preset
             WHERE
                 l.is_deleted = 0
-                AND v.vendor_name IN (N'メルカリ', N'メルカリshops', N'ラクマ')
+                AND v.vendor_name IN (N'メルカリ', N'メルカリshops', N'ラクマ', N'ＰａｙＰａｙフリマ')
                 AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')
                 AND v.remaining_check_at IS NULL
                 AND (

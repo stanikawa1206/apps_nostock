@@ -771,6 +771,7 @@ def notify_undetermined_remaining(conn, rem_start):
             v.vendor_item_id,
             CASE v.vendor_name
                 WHEN N'ラクマ'        THEN N'https://item.fril.jp/' + v.vendor_item_id
+                WHEN N'ＰａｙＰａｙフリマ' THEN N'https://paypayfleamarket.yahoo.co.jp/item/' + v.vendor_item_id
                 WHEN N'メルカリshops' THEN N'https://jp.mercari.com/shops/product/' + v.vendor_item_id
                 ELSE N'https://jp.mercari.com/item/' + v.vendor_item_id
             END AS vendor_url,

@@ -14,7 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from apps.common.utils import get_sql_server_connection
-from apps.adapters.mercari_search import fetch_active_presets
+from apps.adapters.mercari_search import fetch_scrape_presets
 
 
 JOB_KIND = "fetch_sold_ebay"
@@ -38,7 +38,7 @@ def insert_job(conn, job_kind: str, payload: dict):
 def main():
     conn = get_sql_server_connection()
 
-    presets = fetch_active_presets(conn)
+    presets = fetch_scrape_presets(conn)
     print(f"[PRODUCER] presets={len(presets)}")
 
     count = 0

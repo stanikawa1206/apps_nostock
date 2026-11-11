@@ -862,6 +862,8 @@ def _build_vendor_url(vendor_name, vendor_item_id, shops_url_base: str):
         return f"{shops_url_base}{vendor_item_id}"
     if vendor_name == "ラクマ":
         return f"https://item.fril.jp/{vendor_item_id}"
+    if vendor_name == "ＰａｙＰａｙフリマ":
+        return f"https://paypayfleamarket.yahoo.co.jp/item/{vendor_item_id}"
     if vendor_name == "メルカリ":
         return f"https://jp.mercari.com/item/{vendor_item_id}"
     return None
@@ -1078,7 +1080,7 @@ def send_line_new_order(
             vendor_name, vendor_item_id, "https://jp.mercari.com/shops/product/"
         )
         if vendor_url:
-            vendor_label = "ラクマ" if vendor_name == "ラクマ" else "メルカリ"
+            vendor_label = {"ラクマ": "ラクマ", "ＰａｙＰａｙフリマ": "Yahoo!フリマ"}.get(vendor_name, "メルカリ")
             vendor_url_text = f"{vendor_url}?openExternalBrowser=1"
         elif vendor_item_id:
             vendor_label = "仕入元"

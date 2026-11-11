@@ -1256,6 +1256,8 @@ def build_vendor_url(vendor_name, vendor_item_id):
         return 'https://mercari-shops.com/products/' + vendor_item_id
     if vendor_name == 'ラクマ':
         return 'https://item.fril.jp/' + vendor_item_id
+    if vendor_name == 'ＰａｙＰａｙフリマ':
+        return 'https://paypayfleamarket.yahoo.co.jp/item/' + vendor_item_id
     return 'https://jp.mercari.com/item/' + vendor_item_id
 
 

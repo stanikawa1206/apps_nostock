@@ -26,6 +26,8 @@ from apps.common.utils import (
     compute_start_price_usd,
 )
 from apps.adapters.mercari_search import make_search_url
+from apps.common.utils import compute_cost_range_jpy_from_usd_range
+from apps.adapters import yahoo_fleamarket as yahoo
 from apps.adapters.rakuma_search import (
     rakuma_page_url,
     fetch_rakuma_search_html,
@@ -1321,6 +1323,225 @@ def run_fetch_sold_rakuma(payload: dict, job_id: int) -> Tuple[int, int]:
     return fetched_pages, fetched_items
 
 
+# ============================================================
+# Yahoo!フリマ（vendor_name='ＰａｙＰａｙフリマ'）1 preset 分
+# Playwright/Selenium不使用: 検索APIをHTTP GETするのみ（apps/adapters/yahoo_fleamarket.py）。
+# 検索の brandIds は子ブランドも返すため、保存する preset は商品のブランドから決める
+# （resolve_item_preset。親ブランドの検索で見つかった Grand Seiko は グランドセイコーの preset で保存する）。
+# preset の決まらない商品（FURLA配下のALBA など）は保存しない。
+# ============================================================
+YAHOO_PAGE_TARGET_SEC = 8.0
+
+
+def load_yahoo_preset_map(conn) -> Dict[Tuple[int, int], str]:
+    """{(Yahoo!フリマのブランドID, カテゴリーID): preset}。mst.presets_lookup の ＰａｙＰａｙフリマ 分。"""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT brand_id, category_id, preset FROM mst.presets_lookup WITH (NOLOCK) WHERE vendor_name = ?",
+            yahoo.VENDOR_NAME,
+        )
+        return {(int(b), int(c)): p for b, c, p in cur.fetchall()}
+
+
+def _yahoo_resolve_page(items, category_id: int, preset_map, job_preset: str):
+    """商品ごとに preset を決める。(保存する商品と preset の組の一覧, 付け替え件数, 保存しない件数)"""
+    kept = []
+    moved = 0
+    skipped = 0
+    for it in items:
+        preset, reason = yahoo.resolve_item_preset(it["brand_id"], it["title_jp"], category_id, preset_map)
+        if preset is None:
+            skipped += 1
+            print(f"[YAHOO SKIP] {it['vendor_item_id']} {reason} brand={it['brand_name']} title={(it['title_jp'] or '')[:40]}", flush=True)
+            continue
+        if preset != job_preset:
+            moved += 1
+            print(f"[YAHOO PRESET] {it['vendor_item_id']} {job_preset} → {preset} ({reason}) brand={it['brand_name']}", flush=True)
+        kept.append((it, preset))
+    return kept, moved, skipped
+
+
+def run_fetch_active_yahoo(payload: dict, job_id: int) -> Tuple[int, int]:
+    print(f"[ENV] host={socket.gethostname()} pid={os.getpid()} SIMULATE={SIMULATE}", flush=True)
+
+    preset = payload["preset"]
+    vendor_name = payload["vendor_name"]
+    mode = payload["mode"]
+    low_usd_target = float(payload["low_usd_target"])
+    high_usd_target = float(payload["high_usd_target"])
+    category_id = int(payload["category_id"])
+    min_cost, max_cost = compute_cost_range_jpy_from_usd_range(
+        mode=mode, low_usd_target=low_usd_target, high_usd_target=high_usd_target,
+    )
+
+    print(f"[SCRAPE START][YAHOO] preset={preset} vendor={vendor_name} mode={mode} price={min_cost}〜{max_cost}", flush=True)
+
+    total_items = 0
+    page_idx = 0
+    conn = get_sql_server_connection()
+
+    try:
+        preset_map = load_yahoo_preset_map(conn)
+        while True:
+            offset = page_idx * yahoo.SEARCH_PAGE_SIZE
+            if offset >= yahoo.SEARCH_OFFSET_LIMIT:
+                print(f"[STOP] offset上限 {yahoo.SEARCH_OFFSET_LIMIT}", flush=True)
+                break
+            write_status(job_id, page_idx + 1)
+            page_start = time.time()
+            params = yahoo.search_params(
+                brand_id=payload["brand_id"], category_id=category_id, status="open",
+                min_price=min_cost, max_price=max_cost, offset=offset,
+            )
+            items, total = yahoo.fetch_search_page(params)
+            print(f"[PAGE {page_idx+1}] offset={offset} items={len(items)} total={total}", flush=True)
+
+            if not items:
+                break
+
+            total_items += len(items)
+            kept, moved, skipped = _yahoo_resolve_page(items, category_id, preset_map, preset)
+
+            item_ids = [it["vendor_item_id"] for it, _ in kept]
+            existing_dates = get_vendor_item_dates_batch(conn, vendor_name, item_ids)
+
+            # 価格変化の検知（ラクマと同じく handle_price_change_side_effects を流用）
+            old_price_map = get_vendor_item_prices_batch(conn, vendor_name, item_ids)
+            cnt_changed = 0
+            price_retry = {}
+            for it, _ in kept:
+                iid = it["vendor_item_id"]
+                price = it["price"]
+                old_price = old_price_map.get(iid)
+                if price is not None and old_price is not None and old_price != price:
+                    cnt_changed += 1
+                    try:
+                        handle_price_change_side_effects(
+                            conn, iid, vendor_name, old_price, price,
+                            mode=mode, low_usd_target=low_usd_target, high_usd_target=high_usd_target,
+                        )
+                    except RuntimeError as e:
+                        print(f"[PRICE_RETRY_PENDING] sku={iid} {old_price} -> {price} JPY: {e}", flush=True)
+                        price_retry[iid] = old_price
+
+            rows = []
+            for it, item_preset in kept:
+                iid = it["vendor_item_id"]
+                existing_created, existing_updated = existing_dates.get(iid, (None, None))
+                rows.append({
+                    "vendor_name": vendor_name,
+                    "vendor_item_id": iid,
+                    "status": "販売中",
+                    "preset": item_preset,
+                    "title_jp": it["title_jp"],
+                    "vendor_page": page_idx + 1,
+                    "price": price_retry.get(iid, it["price"]),
+                    # 検索結果に更新日時は無い。既存行の値を保持し、新規行は出品時の詳細取得で埋める（ラクマと同じ）
+                    "vendor_created_at": existing_created,
+                    "vendor_updated_at": existing_updated,
+                    "item_condition_id": it["item_condition_id"],
+                })
+
+            now = now_jst()
+            upsert_vendor_items(conn, rows, now)
+            print(
+                f"[PAGE {page_idx+1} RESULT] upserted={len(rows)} preset付け替え={moved} 保存しない={skipped} "
+                f"price changed={cnt_changed}",
+                flush=True,
+            )
+
+            page_idx += 1
+            if len(items) < yahoo.SEARCH_PAGE_SIZE:
+                break
+
+            elapsed = time.time() - page_start
+            if elapsed < YAHOO_PAGE_TARGET_SEC:
+                time.sleep((YAHOO_PAGE_TARGET_SEC - elapsed) + random.uniform(0.0, 5.0))
+
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    print(f"[SCRAPE END][YAHOO] preset={preset}", flush=True)
+    return page_idx, total_items
+
+
+def run_fetch_sold_yahoo(payload: dict, job_id: int) -> Tuple[int, int]:
+    preset_name = payload["preset"]
+    vendor_name = payload["vendor_name"]
+    mode = payload.get("mode", "DDP")
+    category_id = int(payload["category_id"])
+    min_cost, max_cost = compute_cost_range_jpy_from_usd_range(
+        mode=mode,
+        low_usd_target=float(payload["low_usd_target"]),
+        high_usd_target=float(payload["high_usd_target"]),
+    )
+
+    print(f"[SCRAPE START][SOLD][YAHOO] preset='{preset_name}' vendor='{vendor_name}' mode='{mode}'", flush=True)
+
+    fetched_pages = 0
+    fetched_items = 0
+    conn = get_sql_server_connection()
+
+    try:
+        preset_map = load_yahoo_preset_map(conn)
+        for page_idx in range(SOLD_MAX_PAGES):
+            write_status(job_id, page_idx + 1)
+            params = yahoo.search_params(
+                brand_id=payload["brand_id"], category_id=category_id, status="sold",
+                min_price=min_cost, max_price=max_cost, offset=page_idx * yahoo.SEARCH_PAGE_SIZE,
+            )
+            # 取得の失敗はジョブの失敗としてそのまま送出する（error はサイクル終了時に通知される）
+            items, total = yahoo.fetch_search_page(params)
+            fetched_pages += 1
+            print(f"[PAGE {page_idx+1}] scraped={len(items)} total={total}", flush=True)
+            if not items:
+                break
+
+            kept, _, _ = _yahoo_resolve_page(items, category_id, preset_map, preset_name)
+            fetched_items += len(kept)
+
+            existing_dates = get_vendor_item_dates_batch(conn, vendor_name, [it["vendor_item_id"] for it, _ in kept])
+            rows = []
+            for it, item_preset in kept:
+                iid = it["vendor_item_id"]
+                existing_created, existing_updated = existing_dates.get(iid, (None, None))
+                rows.append({
+                    "vendor_name": vendor_name,
+                    "vendor_item_id": iid,
+                    "status": "売り切れ",
+                    "preset": item_preset,
+                    "title_jp": it["title_jp"],
+                    "price": None,
+                    "vendor_created_at": existing_created,
+                    "vendor_updated_at": existing_updated,
+                })
+                handle_listing_delete(conn, iid, vendor_name, "売り切れ")
+            if rows:
+                upsert_vendor_items(conn, rows, now_jst())
+
+            if len(items) < yahoo.SEARCH_PAGE_SIZE:
+                break
+            time.sleep(1)
+
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    print(f"[SCRAPE END][SOLD][YAHOO] preset='{preset_name}' pages={fetched_pages} items={fetched_items}", flush=True)
+    return fetched_pages, fetched_items
+
+
+# メルカリ処理（ブラウザ・メルカリ検索API）へ渡してよい仕入先。これ以外の未知の仕入先はジョブを error にする
+MERCARI_VENDOR_NAMES = ("メルカリ", "メルカリshops")
+
+
 # =========================
 # ブラウザ
 # =========================
@@ -1414,14 +1635,24 @@ def main():
                     payload = json.loads(job_payload)
                     start_page = current_page
 
+                    job_vendor = payload.get("vendor_name")
+                    if job_kind in ("fetch_active_ebay", "fetch_sold_ebay") and job_vendor not in (
+                        "ラクマ", yahoo.VENDOR_NAME, *MERCARI_VENDOR_NAMES
+                    ):
+                        raise ValueError(f"未対応の仕入先: {job_vendor!r}（メルカリ処理には流さない）")
+
                     if job_kind == "fetch_active_ebay":
-                        if payload.get("vendor_name") == "ラクマ":
+                        if job_vendor == "ラクマ":
                             fetched_pages, fetched_items = run_fetch_active_rakuma(payload, job_id)
+                        elif job_vendor == yahoo.VENDOR_NAME:
+                            fetched_pages, fetched_items = run_fetch_active_yahoo(payload, job_id)
                         else:
                             fetched_pages, fetched_items = run_fetch_active_ebay(page, start_page, payload, job_id)
                     elif job_kind == "fetch_sold_ebay":
-                        if payload.get("vendor_name") == "ラクマ":
+                        if job_vendor == "ラクマ":
                             fetched_pages, fetched_items = run_fetch_sold_rakuma(payload, job_id)
+                        elif job_vendor == yahoo.VENDOR_NAME:
+                            fetched_pages, fetched_items = run_fetch_sold_yahoo(payload, job_id)
                         else:
                             fetched_pages, fetched_items = run_fetch_sold_ebay(page, start_page, payload, job_id)
                     else:

@@ -217,6 +217,20 @@ def make_search_url(*,
 
     return f"{MERCARI_BASE_URL}{brand}{cat}{st}{item_types}{price_q}{extra}"
 
+def fetch_scrape_presets(conn) -> List[Dict]:
+    """
+    在庫取得（fetch_active / fetch_sold）のジョブを積む preset。
+    mst.vendors.is_scrape_stopped = 1 の仕入先は積まない（2026-11-11 Yahoo!フリマの段階導入のため。
+    出品中の商品の在庫確認は check_remaining が個別に行う）。
+    """
+    with conn.cursor() as cur:
+        cur.execute("SELECT vendor_name FROM mst.vendors WHERE is_scrape_stopped = 1")
+        stopped = {r[0] for r in cur.fetchall()}
+    if stopped:
+        print(f"[INFO] 在庫取得を停止中の仕入先（ジョブを積まない）: {sorted(stopped)}", flush=True)
+    return [p for p in fetch_active_presets(conn) if p["vendor_name"] not in stopped]
+
+
 def fetch_active_presets(conn) -> List[Dict]:
     """
     mst.presets_lookupから行を読み込む（共通）

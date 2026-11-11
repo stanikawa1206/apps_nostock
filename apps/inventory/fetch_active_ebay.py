@@ -10,7 +10,7 @@ import time
 from datetime import datetime
 import pyodbc
 from apps.common.utils import get_sql_server_connection
-from apps.adapters.mercari_search import fetch_active_presets
+from apps.adapters.mercari_search import fetch_scrape_presets
 
 # 直前の事前soldジョブ（VPSワーカーの MERGE trx.vendor_item）がまだ running のうちに
 # 下記の全件UPDATEが走ると、vendor_item のページロックでデッドロック(1205)の犠牲になり
@@ -65,7 +65,7 @@ def main():
         reset_vendor_item_status_for_active_skus(conn)
 
         # === 有効プリセット取得 ===
-        presets = fetch_active_presets(conn)
+        presets = fetch_scrape_presets(conn)
         if not presets:
             print("[INFO] 有効なプリセットなし", flush=True)
             return

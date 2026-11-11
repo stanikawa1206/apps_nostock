@@ -74,6 +74,7 @@ from apps.adapters.mercari_item_status import (
 )
 from apps.adapters.mercari_item_status import fetch_shops_api_data,fetch_mercari_api_data,_parse_status_from_res,detect_status_from_mercari_shops
 from apps.adapters.rakuma_item_status import parse_detail_rakuma, RakumaItemUnavailableError, is_rakuma_update_too_old
+from apps.adapters import yahoo_fleamarket as yahoo
 from apps.publish.material_check import (
     adjust_title_materials, check_material_with_cache, description_material_note, ensure_title_labels, material_labels,
 )
@@ -1407,18 +1408,31 @@ def heavy_check_detail(
         elif vendor_name == "ラクマ":
             # HTTP GETのみ（Playwright/Selenium不使用）
             rec = parse_detail_rakuma(item_url, preset, vendor_name)
-        else:
+        elif vendor_name == yahoo.VENDOR_NAME:
+            # Yahoo!フリマ: 商品詳細APIをHTTP GETのみ（Playwright/Selenium不使用）
+            rec = yahoo.parse_detail_yahoo(sku, preset, vendor_name)
+        elif vendor_name == "メルカリ":
             # 通常メルカリ
             rec = parse_detail_personal(page, item_url, preset, vendor_name)
+        else:
+            # 未知の仕入先をメルカリの解析に流さない
+            raise Exception(f"未対応の仕入先: {vendor_name}")
 
         if not isinstance(rec, dict):
             raise Exception(f"解析失敗（データが空です）: SKU={sku}")
         rec["vendor_item_id"] = sku
-        if vendor_name != "ラクマ":
+        if vendor_name not in ("ラクマ", yahoo.VENDOR_NAME):
             # メルカリ系は検索一覧由来のitem_condition_idで上書き（既存仕様）。
             # ラクマは検索一覧からitem_condition_idを取得できないため、
             # 商品詳細ページ解析側(parse_detail_rakuma)が設定した値をそのまま使う。
+            # Yahoo!フリマも商品詳細の値（検索時より新しい）を使う。
             rec["item_condition_id"] = item_condition_id
+
+    except yahoo.YahooItemUnavailableError as e:
+        mark_vendor_item_unavailable(conn, vendor_name, sku, e.state)
+        writes_since_commit += 1
+        writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
+        return None, debug_unavailable_dump, writes_since_commit, 1, 0
 
     except RakumaItemUnavailableError as e:
         status = e.state
@@ -3439,6 +3453,8 @@ def main():
                         if vendor_name == "メルカリshops"
                         else f"https://item.fril.jp/{sku}"
                         if vendor_name == "ラクマ"
+                        else yahoo.item_url(sku)
+                        if vendor_name == yahoo.VENDOR_NAME
                         else f"https://jp.mercari.com/item/{sku}"
                     )
 
