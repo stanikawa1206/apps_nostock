@@ -73,6 +73,136 @@ TITLE_BRAND_RULES = {
     ],
 }
 
+# =========================
+# 腕時計以外（部品・ベルト・空箱・冊子など）の判定
+# Yahoo!フリマの腕時計カテゴリーには本体以外の商品が多い（2026-11-11 実測: 販売中 7,354件中 約6%。
+# 高級ブランドのコマ・尾錠・箱・冊子・工具など）。タイトルで明確に分かるものだけを NG にする。
+#   1) 本体以外であることの明記（空箱・ベルトのみ・部品取り 等）
+#   2) 部品・付属品の語（コマ・尾錠・保証書・冊子・工具 等）があり、稼働・電池・クォーツ・本体などの記載が無い
+#   3) 箱・ベルト・ケース等の語があり、時計本体を表す語（腕時計・文字盤 等）が無い（スマートウォッチは対象外）
+# 「替えベルト付き」「箱あり」「コマ付属」のように後ろに 付き・あり 等が続く語は、本体に付いてくる物として数えない。
+# =========================
+_NON_WATCH_EXPLICIT = re.compile(
+    r"空箱|(箱|ボックス|box|ケース|冊子|説明書|取説|保証書|ギャランティ|タグ|ベルト|バンド|ブレス|ストラップ|コマ|駒|文字盤"
+    r"|ムーブメント|尾錠|バックル|ベゼル|ガラス|部品|パーツ)(だけ|のみ)|部品取り|純正部品|修理用|補修用|リペア用"
+    r"|(ジェネリック|互換|社外)パーツ"
+)
+_ACCESSORY_PHRASE = re.compile(r"(時計|ウォッチ)\s*保護|保護\s*(ケース|カバー)|(ベゼル|リューズ)\s*ガード")
+_PART_WORDS = [
+    "部品", "パーツ", "コマ", "駒", "尾錠", "バックル", "中留", "クラスプ", "エンドピース", "弓カン", "弓菅", "バネ棒", "風防",
+    "巻き芯", "巻芯", "パッキン", "交換用", "替えベルト", "替えバンド", "時計ベルト", "時計バンド", "腕時計ベルト",
+    "ギャランティ", "保証書", "冊子", "プライスタグ", "工具", "ツール", "ドライバー", "巾着", "ポーチ", "保存袋",
+    "ウォッチスタンド", "時計スタンド", "ディスプレイスタンド", "ワインディング", "巻き上げ機", "図鑑", "ムック",
+    "ウォレット", "財布", "時計用", "ウォッチ用", "watch用",
+]
+_AMBIGUOUS_WORDS = [
+    "ベルト", "バンド", "ブレスレット", "ブレス", "ストラップ", "箱", "ボックス", "box", "ケース", "収納", "スタンド",
+    "充電器", "ケーブル", "リューズ", "竜頭", "りゅうず", "ガード", "プロテクター", "説明書", "取説",
+]
+
+
+def _word_re(words):
+    return re.compile("(" + "|".join(sorted(map(re.escape, words), key=len, reverse=True)) + ")")
+
+
+_PART_RE = _word_re(_PART_WORDS)
+_AMBIGUOUS_RE = _word_re(_AMBIGUOUS_WORDS)
+_FOLLOWED_BY_EXTRA = re.compile(r"^[^。、]{0,10}?(付き|付属|付|つき|あり|有り|有|無し|なし|欠品|交換済|セット|式|タイプ)")
+_KOMA_IN_WORD = re.compile(r"コマ(?=[ァ-ヶー])")  # コマンダー 等
+_LIVE_BODY = re.compile(r"本体|稼働|稼動|動作")
+_STRONG_BODY = re.compile(
+    r"本体|bt\d+%|バッテリー|稼働|稼動|動作|電池|クォーツ|クオーツ|quartz|自動巻|オートマチック|オート(?!バイ)|automatic"
+    r"|手巻|ソーラー|solar|電波|メカニカル|スマートウォッチ|apple ?watch|series ?\d"
+)
+_WEAK_BODY = re.compile(
+    r"(腕?時計|ウォッチ|watch)(?!\s*(用|ベルト|バンド|ケース|ボックス|box|箱|スタンド|尾錠|付属品|工具|ツール|ギャランティ"
+    r"|保証書|冊子|ポーチ|巾着|バックル|コマ|駒|携帯))|文字盤|ダイヤル|アナログ|デジタル|クロノグラフ|chronograph"
+)
+SMARTWATCH_CATEGORY_ID = 40976
+
+# 説明文: 本体が無いことの明記・「〜のみの出品」
+_DESC_NO_BODY = re.compile(
+    r"(時計)?本体(は|が)?(付属|含まれ|ついて|付いて|入って|ござい)(い)?(ません|おりません|ない)|本体(なし|無し)"
+    r"|本体は(含み|付き|つき)ません|時計(本体)?ではありません"
+)
+_DESC_ONLY = re.compile(
+    r"(ベルト|バンド|ブレス|ブレスレット|ストラップ|革ヒモ|コマ|駒|部品|パーツ|箱|ケース|ボックス|box|保証書|ギャランティ|冊子"
+    r"|説明書|取扱説明書|尾錠|バックル|ベゼル|リューズ|竜頭|風防|文字盤|ムーブメント)(部分)?(のみ|だけ)(の)?"
+    r"(出品|販売|お取引|お取り引き|です|となります|になります)"
+)
+
+
+def _part_hits(regex, t: str) -> List[str]:
+    out = []
+    for m in regex.finditer(t):
+        if m.group(0) == "コマ" and _KOMA_IN_WORD.match(t, m.start()):
+            continue
+        if _FOLLOWED_BY_EXTRA.match(t[m.end():m.end() + 14]):
+            continue
+        out.append(m.group(0))
+    return out
+
+
+def non_watch_reason(title: Optional[str], category_id: Optional[int] = None) -> Optional[str]:
+    """タイトルから腕時計本体ではないと明確に分かる場合はその理由、それ以外は None。"""
+    t = _normalize_title(title)
+    m = _NON_WATCH_EXPLICIT.search(t)
+    if m:
+        return f"本体以外の明記「{m.group(0)}」"
+    m = _ACCESSORY_PHRASE.search(t)
+    if m and not _STRONG_BODY.search(t):
+        return f"付属品「{m.group(0)}」"
+    parts = _part_hits(_PART_RE, t)
+    if parts:
+        # 冊子だけの場合は、商品名の AUTOMATIC 等ではなく稼働・本体の記載だけを本体の印にする
+        body = _LIVE_BODY.search(t) if set(parts) == {"冊子"} else _STRONG_BODY.search(t)
+        if not body:
+            return f"部品・付属品「{parts[0]}」"
+    if category_id != SMARTWATCH_CATEGORY_ID:
+        amb = _part_hits(_AMBIGUOUS_RE, t)
+        if amb and not _STRONG_BODY.search(t) and not _WEAK_BODY.search(t):
+            return f"付属品のみ「{amb[0]}」"
+    return None
+
+
+def non_watch_reason_desc(description: Optional[str]) -> Optional[str]:
+    """説明文に本体が無いことが明記されていればその理由。「付属品は箱のみです」は本体の商品なので数えない。"""
+    t = _normalize_title(description)
+    m = _DESC_NO_BODY.search(t)
+    if m:
+        return f"説明文「{m.group(0)}」"
+    for m in _DESC_ONLY.finditer(t):
+        if "付属" in t[max(0, m.start() - 12):m.start()]:
+            continue
+        return f"説明文「{m.group(0)}」"
+    return None
+
+
+# =========================
+# Department（男女）の補正
+# メンズ・レディースのカテゴリーの商品で、タイトルに性別が明記されていればそちらを使う。
+# 兼用・ユニセックス・ペア・両方の記載がある場合は補正しない（カテゴリーの設定のまま）。
+# =========================
+_WOMEN = re.compile(r"レディース|レディス|ladies|lady's|ウィメンズ|women|婦人|女性用|女性向け")
+_MEN = re.compile(r"メンズ|(?<!wo)men'?s\b|紳士|男性用|男性向け")
+_UNISEX = re.compile(r"男女兼用|兼用|ユニセックス|unisex|ペア|ボーイズ")
+
+
+def department_from_title(title: Optional[str], department: Optional[str]) -> Optional[str]:
+    """department が Men / Women のときだけ、タイトルの性別で補正した値を返す（それ以外はそのまま）。"""
+    if department not in ("Men", "Women"):
+        return department
+    t = _normalize_title(title)
+    if _UNISEX.search(t):
+        return department
+    women, men = bool(_WOMEN.search(t)), bool(_MEN.search(t))
+    if women and not men:
+        return "Women"
+    if men and not women:
+        return "Men"
+    return department
+
+
 IMAGE_MIN_PX = 500
 IMAGE_LIMIT = 20
 
@@ -212,6 +342,10 @@ def resolve_item_preset(item_brand_id: Optional[int], title: Optional[str], cate
     preset_by_brand: {(Yahoo!フリマのブランドID, カテゴリーID): preset}（mst.presets_lookup の ＰａｙＰａｙフリマ 分）
     search_brand_id: 検索に使ったブランドID
     """
+    nw = non_watch_reason(title, category_id)
+    if nw:
+        return None, f"腕時計以外: {nw}"
+
     if item_brand_id is None:
         return None, "ブランドなし"
 
@@ -337,4 +471,11 @@ def parse_detail_yahoo(item_id: str, preset: str, vendor_name: str) -> Dict[str,
         "item_condition_id": ITEM_CONDITION_MAP.get(((js.get("condition") or {}).get("key") or "").lower()),
         "is_variant": False,
         "variants": [],
+        "yahoo_category_id": ((js.get("categoryList") or [{}])[-1] or {}).get("id"),
     }
+
+
+def non_watch_reason_rec(rec: Dict[str, Any]) -> Optional[str]:
+    """出品前の確認用: 商品詳細のタイトル・説明文から腕時計以外と分かればその理由。"""
+    return (non_watch_reason(rec.get("title_jp"), rec.get("yahoo_category_id"))
+            or non_watch_reason_desc(rec.get("description")))

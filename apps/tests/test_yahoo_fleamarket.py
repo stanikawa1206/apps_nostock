@@ -82,7 +82,7 @@ class ResolvePresetTest(unittest.TestCase):
         self.assertEqual(self.resolve(SEIKO, "セイコー クレドール レディース"), "クレドールメンズ腕時計menY")
 
     def test_title_both_first_wins(self):
-        self.assertEqual(self.resolve(SEIKO, "クレドール 箱 グランドセイコー"), "クレドールメンズ腕時計menY")
+        self.assertEqual(self.resolve(SEIKO, "クレドール 腕時計 グランドセイコー"), "クレドールメンズ腕時計menY")
 
     def test_title_rule_needs_child_preset_in_category(self):
         # レディースに CREDOR の preset が無い → SEIKO のまま
@@ -219,6 +219,94 @@ class SearchParamsTest(unittest.TestCase):
         self.assertEqual(p["itemConditions"], "NEW,USED10,USED20,USED40")
         self.assertEqual((p["minPrice"], p["maxPrice"], p["offset"]), (5690, 23670, 200))
         self.assertEqual((p["sort"], p["order"]), ("openTime", "DESC"))
+
+
+class NonWatchTest(unittest.TestCase):
+    """腕時計以外の判定。タイトルは 2026-11-11 の実商品（一部を縮めた）。"""
+
+    NG = [
+        "送料無料★56KS キングセイコー・GSグランドセイコー★金属製揺動レバー★カレンダー早送り修理用純正部品★parts number 981560",
+        "HERMES エルメス 箱 BOX ボックス 時計用　時計ケース ケース　空箱　 O-N",
+        "◆オメガ◆シーマスター◆コマ◆約２０ｍｍ幅◆1503/825◆300シリーズ◆F-S",
+        "送料無料　美品　正規品　シャネル CHANEL J12 38mm メンズ腕時計　ベルト　パーツ　 黒ラバー　 コマ 駒　17mm",
+        "◆オメガ◆約１６ｍｍ幅◆尾錠◆純正◆金色◆O-N",
+        "CHANEL ギャラ J12 H0683 シャネル 時計 国際 保証書 ギャランティ カード 017 送料込み",
+        "IWC 純正 アイダブリュシー 正規 ポートフィノ オートマチック 37 取扱説明書 冊子 Ref.3565 / 4581 PORTOFINO",
+        "PANERAI 純正 オフィチーネ パネライ 正規 44mm 時計 保護 ケース カバー ベゼル ガード シリコン ルミノール マリーナ",
+        "Cartier カルティエ ホワイトレザー製 ウォッチスタンド スタンダード",
+        "◆オメガ◆スピードマスター◆自動巻◆3510.50◆風防◆ジェネリックパーツ◆063PW5274◎２F-S",
+        "未使用　IWC　Pilot´s Watches インターナショナル パイロットウォッチ用　純正リューズ 7.1mm",
+        "【送料無料・ベルトコマのみ】★BREITLING/ブライトリング・純正プロフェッショナルブレス/ステンレスベルト",
+        "オメガ　ジュネーブダイナミック専用レザーベルト　メンズサイズ　ネイビー",
+        "ROLEX ロレックス 時計ケース 携帯用 ウォッチケース 箱付き",
+        "ブルガリ　Cal.712-MBBT クォーツムーブメント　回路稼動品　部品取り用",
+    ]
+    OK = [
+        "稼働品 SEIKO メンズ 腕時計 ソーラー式 V176-0AF0",
+        "DIESEL ディーゼル DZ-1730 自動巻き 替えベルト3本・工具付",
+        "agnes b. アニエスベー 腕時計 本体 替えベルト2本付き",
+        "【中古】Wicca ソーラーテック腕時計（箱・説明書・保証書・予備コマ付き）",
+        "FOSSIL BIGTIC [JR-8122] 人気希少モデル アンティーク ウォッチ 箱無し",
+        "RICOH COMMANDER リコー コマンダー ムーンフェイズ メンズ腕時計",
+        "新品 タグ付 GA-2100HC-2AJF パープル 腕時計 ジーショック カーボンコアガード構造 G-SHOCK Gショック",
+        "新品　J.HARRISON ジョンハリソン 腕時計 セラミック 4石 天然サファイア 18K金張りリューズ 紳士用 時計",
+        "Invicta インビクタ 47967　47mm プロダイバー バスティオン オート スライドバックル式ゴールドメッシュ",
+        "【極美品】CASIO G-SHOCK GM-S2110 メタルカバード パープルピンク×ホワイト",
+        "COACH コーチ メンズ腕時計 ネイビー文字盤 レザーベルト 替えベルト付き 箱付き",
+        "GUCCI グッチ 5500M メンズ　腕時計 ヴィンテージ 稼働　バックル/ベルト付属",
+        "Burberry レクタングル時計 シルバー　シェル　14000 G 純正ベルト",
+        "Paul Smith ポールスミス スクエア クロノグラフ メンズ腕時計 シルバー　取扱説明書",
+        "稼動品GUCCI メンズ腕時計 本体のみ クォーツ デイト 9000G ベルトなし",
+        "送料無料 特価 新品★SEIKO セイコー ALBA アルバ Riki リキ AKPK424 アラビア数字 レザ－バンド バックルタイプ メンズ腕時計",
+    ]
+    SMARTWATCH_OK = [
+        "GARMIN　vivosport + 充電器",
+        "HUAWEI Band ファーウェイバンド 11 Aluminum Edition バンド5本+フィルム・ケース 複数セット",
+        "【美品】BT94% SE2 保護カバー＋バンド＋充電器セット 2019",
+        "Apple Watch Nike Series 3 本体（充電器無し）",
+    ]
+
+    def test_ng(self):
+        for t in self.NG:
+            self.assertIsNotNone(yf.non_watch_reason(t, MEN), t)
+
+    def test_ok(self):
+        for t in self.OK:
+            self.assertIsNone(yf.non_watch_reason(t, MEN), t)
+
+    def test_smartwatch_ok(self):
+        for t in self.SMARTWATCH_OK:
+            self.assertIsNone(yf.non_watch_reason(t, yf.SMARTWATCH_CATEGORY_ID), t)
+
+    def test_description(self):
+        self.assertIsNotNone(yf.non_watch_reason_desc("こちらはスチック風防部分のみの出品になります。"))
+        self.assertIsNotNone(yf.non_watch_reason_desc("写真のコマのみです。時計本体は付属しません。"))
+        self.assertIsNotNone(yf.non_watch_reason_desc("腕時計型のディスプレイです。時計ではありません"))
+        self.assertIsNone(yf.non_watch_reason_desc("付属品は箱のみです。稼働確認済み。"))
+        self.assertIsNone(yf.non_watch_reason_desc("ベルトは社外品に交換済みです。"))
+
+    def test_resolve_skips_non_watch(self):
+        with mock.patch.object(yf, "get_brand_path", side_effect=lambda b, root: PATHS[b]):
+            preset, reason = yf.resolve_item_preset(SEIKO, "SEIKO 純正部品 時計ベルト 22mm", MEN, PRESETS, SEIKO)
+        self.assertIsNone(preset)
+        self.assertIn("腕時計以外", reason)
+
+
+class DepartmentTest(unittest.TestCase):
+    def test_correct(self):
+        d = yf.department_from_title
+        self.assertEqual(d("SEIKO SPIRIT ladies wristwatch gold 5E31", "Men"), "Women")
+        self.assertEqual(d("新品★SEIKO Riki AKQK463 レザーバンド レディース腕時計", "Men"), "Women")
+        self.assertEqual(d("【稼働品】Paul Smith ポールスミス 1005 メンズクォーツ腕時計", "Women"), "Men")
+        self.assertEqual(d("CASIO 腕時計 Men's ブラック", "Women"), "Men")
+
+    def test_keep(self):
+        d = yf.department_from_title
+        self.assertEqual(d("SEIKO 腕時計 クォーツ", "Men"), "Men")                       # 記載なし
+        self.assertEqual(d("アニエスベー 腕時計 メンズ レディース ユニセックス", "Men"), "Men")  # 兼用
+        self.assertEqual(d("メンズ レディース 腕時計 2本セット", "Women"), "Women")        # 両方
+        self.assertEqual(d("WOMEN'S watch", "Men"), "Women")                             # women's を men's と数えない
+        self.assertEqual(d("レディース 腕時計", "Unisex Adults"), "Unisex Adults")       # ペア・スマートウォッチは補正しない
 
 
 if __name__ == "__main__":

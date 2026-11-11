@@ -1499,6 +1499,31 @@ def heavy_check_detail(
         writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
         return None, debug_unavailable_dump, writes_since_commit, 1, 0
 
+    # === Yahoo!フリマ: 腕時計以外（部品・ベルト・空箱・冊子など）NG ===
+    # 検索時にタイトルで除外しているが、検索前から保存済みの商品と、説明文にだけ書かれている場合をここで止める。
+    # 偽物疑いと同じく 出品不可flg=1 にして候補から外す（毎回の再判定をしない）。
+    if vendor_name == yahoo.VENDOR_NAME:
+        nw_reason = yahoo.non_watch_reason_rec(rec)
+        if nw_reason:
+            print(f"  └─ [NG] 腕時計以外: {nw_reason}", flush=True)
+            rec["listing_head"] = "NG(腕時計以外)"
+            rec["listing_detail"] = nw_reason
+            upsert_vendor_item(conn, rec)
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE trx.vendor_item SET 出品不可flg = 1 WHERE vendor_name = ? AND vendor_item_id = ?",
+                    vendor_name, sku,
+                )
+            writes_since_commit += 1
+            writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
+            return None, debug_unavailable_dump, writes_since_commit, 1, 0
+
+        # Department: メンズ・レディースのカテゴリーでも、タイトルに性別が明記されていればそちらにする
+        corrected = yahoo.department_from_title(rec.get("title_jp"), department)
+        if corrected != department:
+            print(f"  └─ [DEPT] {department} → {corrected}（タイトル）", flush=True)
+            department = corrected
+
     # === ラクマ: 購入申請ありNG ===
     # class="item__icon request-required"（「すぐに購入可」。タグはspanのこともdivのこともある）
     # が存在しない場合、購入申請が必要な商品のためeBay出品処理へは進めない。
