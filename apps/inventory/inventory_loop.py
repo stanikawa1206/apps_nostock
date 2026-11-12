@@ -51,6 +51,7 @@ from apps.inventory.daily_check import (
     ReconnectingConnection,
     disable_console_quick_edit,
     format_child_error,
+    format_lookup_prune,
     launch_remaining_workers,
     notify_no_preset_listings,
     notify_undetermined_remaining,
@@ -319,12 +320,13 @@ def refresh_presets_lookup_in_transaction(conn):
     """
     conn.autocommit = False
     try:
-        refresh_presets_lookup(conn)
+        prune = refresh_presets_lookup(conn)
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.autocommit = True
+    log(format_lookup_prune(prune))
 
 
 def run_cycle(conn, cycle_no: int):

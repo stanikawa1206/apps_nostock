@@ -319,6 +319,7 @@ class InventoryMainTest(TempStatusMixin, unittest.TestCase):
             self.calls.append("presets")
             if self.presets_error:
                 raise self.presets_error
+            return []
         self.refresh_presets = refresh_presets
 
         patches = {

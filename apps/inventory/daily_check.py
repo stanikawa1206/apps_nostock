@@ -1114,12 +1114,135 @@ def refresh_presets_lookup(conn):
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, rows)
 
+    prune = prune_unlisted_lookups(cur)
+
     conn.commit()
     print(f"presets_lookup refresh done: {len(rows):,} rows")
+    print(format_lookup_prune(prune))
 
     cur.execute("SELECT COUNT(*) FROM mst.presets_lookup")
     count = cur.fetchone()[0]
     print(f"presets_lookup count: {count:,}")
+    return prune
+
+
+# 新規出品を止めた仕入先の lookup を、既存出品が無くなったものから消していく対象。
+# 谷川④の「腕時計」グループ（谷川④専用）の メルカリ・メルカリshops だけ。
+LOOKUP_PRUNE_ACCOUNT = "谷川④"
+LOOKUP_PRUNE_CATEGORY_GROUP = "腕時計"
+LOOKUP_PRUNE_VENDOR_CODES = ("M", "MS")
+
+_LOOKUP_PRUNE_SCOPE_SQL = """
+    SELECT
+        vd.vendor_code,
+        vd.vendor_name,
+        (SELECT COUNT(*) FROM mst.presets_lookup AS p
+          WHERE p.category_group = ? AND p.vendor_name = vd.vendor_name) AS lookup_cnt,
+        CASE WHEN EXISTS (
+            SELECT 1 FROM mst.ebay_account_excluded_vendors AS x
+            WHERE x.account = ? AND x.vendor_code = vd.vendor_code
+        ) THEN 1 ELSE 0 END AS is_excluded,
+        -- 未終了の出品で、商品データが無い・preset が NULL のもの（どの lookup の出品か分からない）
+        (SELECT COUNT(*) FROM trx.listings AS l
+           LEFT JOIN trx.vendor_item AS v
+             ON v.vendor_name = l.vendor_name AND v.vendor_item_id = l.vendor_item_id
+          WHERE l.is_deleted = 0 AND l.vendor_name = vd.vendor_name
+            AND (v.vendor_item_id IS NULL OR v.preset IS NULL)) AS unknown_listing_cnt
+    FROM mst.vendors AS vd
+    WHERE vd.vendor_code IN ({codes})
+"""
+
+# 対象の lookup のうち、未終了のeBay出品（全アカウント）の preset に一致するものが無い行を消す。
+_LOOKUP_PRUNE_DELETE_SQL = """
+    DELETE p
+    OUTPUT deleted.preset
+    FROM mst.presets_lookup AS p
+    WHERE p.category_group = ?
+      AND p.vendor_name = ?
+      AND NOT EXISTS (
+          SELECT 1
+          FROM trx.listings AS l
+          INNER JOIN trx.vendor_item AS v
+              ON v.vendor_name = l.vendor_name AND v.vendor_item_id = l.vendor_item_id
+          WHERE l.is_deleted = 0
+            AND v.preset = p.preset
+      )
+"""
+
+
+def prune_unlisted_lookups(cur):
+    """
+    再生成した presets_lookup から、新規出品を止めた仕入先の lookup のうち既存出品が0件のものを消す
+    （呼び出し側の commit で TRUNCATE・INSERT と一緒に確定する）。
+    対象は LOOKUP_PRUNE_ACCOUNT の LOOKUP_PRUNE_CATEGORY_GROUP、仕入先 LOOKUP_PRUNE_VENDOR_CODES だけ。
+
+    lookup ごとに、未終了のeBay出品（is_deleted=0、全アカウント）の vendor_item.preset と照合する。
+    出品中の商品の preset は検索で見つけた別の preset に書き換わることがあるが、毎サイクル再生成直後の
+    preset で数え直すので、出品がある lookup は必ず残る（書き換わり先の lookup も検索している＝残っている）。
+    消した lookup は検索されず候補にもならないので、その preset の出品が新しくできることはない。
+
+    次の場合はその仕入先の lookup を消さない（全件残す）:
+      - 対象アカウントでその仕入先が新規出品除外（mst.ebay_account_excluded_vendors）になっていない
+      - 対象グループを対象アカウント以外の preset_group も使っている（mst.presets_price_ranges）
+      - 未終了の出品に、商品データが無い・preset が NULL のものがある（どの lookup の出品か分からない）
+    戻り値: 仕入先ごとの結果の list（format_lookup_prune でログ用の文字列にする）
+    """
+    account, group = LOOKUP_PRUNE_ACCOUNT, LOOKUP_PRUNE_CATEGORY_GROUP
+
+    row = cur.execute(
+        "SELECT preset_group FROM mst.ebay_accounts WHERE account = ?", account
+    ).fetchone()
+    preset_group = row.preset_group if row else None
+    other_groups = []
+    if preset_group is not None:
+        other_groups = [r.preset_group for r in cur.execute("""
+            SELECT DISTINCT preset_group FROM mst.presets_price_ranges
+            WHERE category_group = ? AND preset_group <> ?
+        """, group, preset_group).fetchall()]
+
+    codes = ", ".join("?" for _ in LOOKUP_PRUNE_VENDOR_CODES)
+    scope = cur.execute(
+        _LOOKUP_PRUNE_SCOPE_SQL.format(codes=codes), group, account, *LOOKUP_PRUNE_VENDOR_CODES
+    ).fetchall()
+
+    results = []
+    for s in scope:
+        res = {
+            "vendor_code": s.vendor_code,
+            "vendor_name": s.vendor_name,
+            "lookup": s.lookup_cnt,
+            "deleted": 0,
+            "kept": s.lookup_cnt,
+            "skip": None,
+        }
+        if preset_group is None:
+            res["skip"] = f"アカウント {account} が mst.ebay_accounts に無い"
+        elif other_groups:
+            res["skip"] = f"{group} を他の preset_group も使用（{', '.join(other_groups)}）"
+        elif not s.is_excluded:
+            res["skip"] = f"{account} の新規出品除外に {s.vendor_code} が無い"
+        elif s.unknown_listing_cnt:
+            res["skip"] = f"preset が分からない未終了の出品 {s.unknown_listing_cnt} 件"
+        elif s.lookup_cnt:
+            deleted = cur.execute(_LOOKUP_PRUNE_DELETE_SQL, group, s.vendor_name).fetchall()
+            res["deleted"] = len(deleted)
+            res["kept"] = s.lookup_cnt - len(deleted)
+        results.append(res)
+    return results
+
+
+def format_lookup_prune(results) -> str:
+    """prune_unlisted_lookups の結果をログ1行にする。"""
+    parts = []
+    for r in results:
+        text = f"{r['vendor_code']} 削除 {r['deleted']:,} / 維持 {r['kept']:,}"
+        if r["skip"]:
+            text += f"（削除しない: {r['skip']}）"
+        parts.append(text)
+    return (
+        f"presets_lookup 漸減（{LOOKUP_PRUNE_ACCOUNT}・{LOOKUP_PRUNE_CATEGORY_GROUP}）: "
+        + ("、".join(parts) if parts else "対象の仕入先なし")
+    )
 
 
 # ======================
