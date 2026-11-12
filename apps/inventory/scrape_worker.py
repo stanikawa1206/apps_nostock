@@ -32,6 +32,7 @@ from apps.adapters.rakuma_search import (
     rakuma_page_url,
     fetch_rakuma_search_html,
     extract_items_from_rakuma_html,
+    RakumaHttpError,
 )
 from apps.adapters.rakuma_item_status import is_rakuma_update_too_old
 
@@ -167,6 +168,15 @@ def _write_flag_file(path, reason):
             f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} pid={WORKER_PID} {reason}\n")
     except OSError as e:
         print(f"[SEARCH_API][FLAG WRITE ERROR] {path}: {e}", flush=True)
+
+# ラクマ検索の一時的なHTTPエラー（503など）の再試行。
+# ジョブを status='retry_wait' にし、locked_at に「次に取り出してよい時刻」を入れて待たせる。
+# 2026-10-28 の fril.jp の503は約54分続いたため、10分間隔×6回（約1時間強）まで待つ。
+# 複数ワーカーが同じ時刻に再試行しないよう、待ち時間にランダムな幅を足す。
+RAKUMA_HTTP_RETRY_MAX = 6
+RAKUMA_HTTP_RETRY_INTERVAL_SEC = 600
+RAKUMA_HTTP_RETRY_JITTER_SEC = 120
+
 PAUSE = 0.6
 SIMULATE_DELETE = False
 
@@ -202,6 +212,7 @@ WHERE job_id = (
     SELECT TOP (1) job_id
     FROM trx.scrape_job WITH (UPDLOCK, READPAST, ROWLOCK)
     WHERE status IN ('pending','pending2')
+       OR (status = 'retry_wait' AND locked_at <= ?)
     ORDER BY created_at, job_id
 );
 """
@@ -224,6 +235,20 @@ SET
     finished_at = ?,
     error_message = ?
 WHERE job_id = ?;
+"""
+
+# 自分が実行中（running）のジョブだけを再試行待ちに戻す。
+# watchdog が先に pending へ戻していた場合などは0件更新となり、二重に投入されない。
+SQL_MARK_RETRY_WAIT = """
+UPDATE trx.scrape_job
+SET
+    status = 'retry_wait',
+    locked_at = ?,
+    job_payload = ?,
+    error_message = ?
+WHERE job_id = ?
+  AND status = 'running'
+  AND worker_name = ?;
 """
 
 # =========================
@@ -588,6 +613,51 @@ def release_job(conn, job_id):
             cur.close()
         except Exception:
             pass
+
+def handle_rakuma_http_error(conn, job_id, payload: dict, e: RakumaHttpError):
+    """
+    ラクマ検索のHTTPエラーで止まったジョブを片付ける。
+    一時的なエラー（503など）で再試行回数が残っていれば retry_wait にし、待ち時間の後に別ワーカーも含めて取り直す。
+    再試行を使い切った場合と再試行対象外のステータスは error にする（inventory_loop がサイクル終了時に通知する）。
+    再試行は1ページ目からやり直す（upsert・出品削除は同じ内容を再実行しても結果が変わらない）。
+    再試行回数は job_payload の http_retry_count に持つ。
+    """
+    retry_count = int(payload.get("http_retry_count", 0))
+    now = now_jst()
+    cur = conn.cursor()
+    try:
+        if e.transient and retry_count < RAKUMA_HTTP_RETRY_MAX:
+            payload["http_retry_count"] = retry_count + 1
+            retry_at = now + timedelta(
+                seconds=RAKUMA_HTTP_RETRY_INTERVAL_SEC + random.uniform(0.0, RAKUMA_HTTP_RETRY_JITTER_SEC)
+            )
+            msg = f"[RETRY_WAIT {retry_count + 1}/{RAKUMA_HTTP_RETRY_MAX}] {e}"
+            cur.execute(
+                SQL_MARK_RETRY_WAIT,
+                retry_at, json.dumps(payload, ensure_ascii=False), msg[:4000], job_id, WORKER_NAME,
+            )
+            updated = cur.rowcount
+            conn.commit()
+            print(
+                f"[JOB RETRY_WAIT] id={job_id} retry={retry_count + 1}/{RAKUMA_HTTP_RETRY_MAX} "
+                f"retry_at={retry_at:%Y-%m-%d %H:%M:%S} updated={updated}",
+                flush=True,
+            )
+        else:
+            reason = "再試行を使い切った" if e.transient else "再試行対象外"
+            msg = f"[{reason} retry={retry_count}/{RAKUMA_HTTP_RETRY_MAX}] {e}"
+            cur.execute(SQL_MARK_ERROR, now, msg[:4000], job_id)
+            conn.commit()
+            print(f"[JOB ERROR] id={job_id} {msg}", flush=True)
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+
+    # DB更新に失敗した場合は statusファイルを残し、watchdog の再投入に任せる（release_job と同じ考え方）
+    if os.path.exists(STATUS_FILE):
+        os.remove(STATUS_FILE)
 
 def fetch_page_json_bk(page, url, conn, job_id):
     print("************* evaluate版2 *************", flush=True)
@@ -1259,15 +1329,19 @@ def run_fetch_sold_rakuma(payload: dict, job_id: int) -> Tuple[int, int]:
             target_url = rakuma_page_url(base_url, page_idx)
             print(f"[PAGE {page_idx+1}] GET {target_url}", flush=True)
 
+            # 取得の失敗はジョブの失敗としてそのまま送出する（再試行・error はジョブ側で扱う）。
+            # 以前は下の try で握りつぶしてジョブを done にしており、取得できなかったページの
+            # 売り切れを検知できないまま「正常に0件」と区別がつかなかった。
+            # 404（ページ範囲外）は None が返り、正常な0件として終了する。
+            html = fetch_rakuma_search_html(target_url)
+            items = extract_items_from_rakuma_html(html) if html is not None else []
+            print(f"[PAGE {page_idx+1}] scraped={len(items)}", flush=True)
+            fetched_pages += 1
+
+            if not items:
+                break
+
             try:
-                html = fetch_rakuma_search_html(target_url)
-                items = extract_items_from_rakuma_html(html) if html is not None else []
-                print(f"[PAGE {page_idx+1}] scraped={len(items)}", flush=True)
-                fetched_pages += 1
-
-                if not items:
-                    break
-
                 new_ids = []
                 for it in items:
                     iid = (it["vendor_item_id"] or "").strip()
@@ -1608,7 +1682,7 @@ def main():
             try:
                 cur = conn.cursor()
                 now = now_jst()
-                cur.execute(SQL_PICK_JOBS, WORKER_NAME, now)
+                cur.execute(SQL_PICK_JOBS, WORKER_NAME, now, now)
                 jobs = cur.fetchall()
                 conn.commit()
                 print(f"[PICK] fetched jobs={len(jobs)} committed", flush=True)
@@ -1667,6 +1741,13 @@ def main():
                     if os.path.exists(STATUS_FILE):
                         os.remove(STATUS_FILE)
                     print(f"[JOB DONE] id={job_id}", flush=True)
+
+                except RakumaHttpError as e:
+                    try:
+                        handle_rakuma_http_error(conn, job_id, payload, e)
+                    except Exception:
+                        conn.rollback()
+                        traceback.print_exc()
 
                 except RuntimeError as e:
                     if "FETCH_TIMEOUT" in str(e) or "BROWSER_BROKEN" in str(e):

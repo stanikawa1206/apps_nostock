@@ -340,12 +340,16 @@ class InventoryMainTest(TempStatusMixin, unittest.TestCase):
             p = mock.patch.object(il, name, value)
             p.start()
             self.addCleanup(p.stop)
+        p = mock.patch.object(il.time, "sleep", side_effect=lambda sec: self.calls.append(f"sleep:{sec}"))
+        p.start()
+        self.addCleanup(p.stop)
 
     CYCLE = [
         "presets",
-        "run:fetch_sold_ebay.py", "wait:簡易 fetch_sold:count_outstanding_jobs",
-        "run:fetch_active_ebay.py", "wait:完全 fetch_active:count_outstanding_jobs",
-        "run:fetch_sold_ebay.py", "wait:完全 fetch_sold:count_outstanding_jobs",
+        "run:fetch_sold_ebay.py", "wait:簡易 fetch_sold:count_pending_jobs",
+        "run:fetch_active_ebay.py", "wait:完全 fetch_active:count_pending_jobs",
+        "run:fetch_sold_ebay.py", "wait:完全 fetch_sold:count_pending_jobs",
+        "sleep:3",
         "reset_flags", "launch_remaining", "wait:完全 check_remaining:count_remaining_targets",
         "notify_undetermined", "notify_no_preset",
         "notify_errors",
@@ -761,11 +765,11 @@ class ErrorJobNotifyTest(TempStatusMixin, unittest.TestCase):
         self.assertEqual(il.error_reason(RETRY_OUT_503), "[再試行を使い切った retry=6/6] HTTP 503")
         self.assertEqual(il.error_reason(None), "(エラー内容なし)")
 
-    def test_wait_includes_retry_wait_jobs(self):
-        # 再試行待ちのジョブが残っている間は次の工程へ進まない
-        self.assertIn("'retry_wait'", il.SQL_COUNT_OUTSTANDING_JOBS)
-        for st in ("'pending'", "'pending2'", "'running'"):
-            self.assertIn(st, il.SQL_COUNT_OUTSTANDING_JOBS)
+    def test_wait_counts_pending_but_not_running(self):
+        # 旧 daily_check と同じく未着手のジョブ（再試行待ちを含む）だけを待ち、running は待たない
+        for st in ("'pending'", "'pending2'", "'retry_wait'"):
+            self.assertIn(st, il.SQL_COUNT_PENDING_JOBS)
+        self.assertNotIn("running", il.SQL_COUNT_PENDING_JOBS)
 
 
 if __name__ == "__main__":

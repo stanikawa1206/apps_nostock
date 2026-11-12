@@ -7,9 +7,11 @@ inventory_loop.py
 1サイクル = 簡易: fetch_sold → 完全: fetch_active → fetch_sold → check_remaining
   - fetch_active は出品中SKUの vendor_item.status を NULL に戻してから検索するため、
     完全側の fetch_sold は必ず fetch_active の後に行う（旧 daily_check の在庫管理1回分と同じ順序）。
-  - 各工程は「ジョブ（または remaining 対象）が0件になる」まで待ってから次へ進む。固定時間で打ち切らない。
-    fetch_sold / fetch_active は pending だけでなく running と retry_wait（ラクマの503などで再試行待ち）の
-    ジョブも終わるまで待つ。再試行は scrape_worker 側で回数の上限があるため、無期限には待たない。
+  - fetch_sold / fetch_active は旧 daily_check（wait_until_no_pending）と同じく、未着手のジョブ
+    （pending / pending2 / retry_wait＝ラクマの503などで再試行待ち）が0件になったら次へ進む。running のジョブは待たない
+    （処理中のジョブはワーカーがそのまま続ける。固まった1件で全体を止めないため。取りこぼしは check_remaining で補う）。
+    固定時間で打ち切らない。check_remaining は remaining 対象が0件になるまで待つ。
+  - 完全 fetch_sold の後、check_remaining の前に WAIT_SECONDS 待つ（旧 daily_check と同じ）。
   - サイクル開始時に presets_lookup を作り直す（ブランド・カテゴリーの変更を反映）。
   - サイクル終了時だけ mst.control『日次処理停止』を確認し、1 なら NULL に戻して正常終了する。
     自動再開はしない（再開は手動起動）。
@@ -45,6 +47,7 @@ from apps.common.utils import send_mail
 from apps.inventory.daily_check import (
     FETCH_ACTIVE,
     FETCH_SOLD,
+    WAIT_SECONDS,
     ReconnectingConnection,
     disable_console_quick_edit,
     format_child_error,
@@ -70,10 +73,13 @@ LOG_PATH = PROJECT_ROOT / "logs" / "inventory_loop.log"
 # 同時に動いてはいけないスクリプト（旧方式の daily_check は在庫管理を含むため）
 INVENTORY_CONFLICT_SCRIPTS = ("inventory_loop.py", "daily_check.py")
 
-SQL_COUNT_OUTSTANDING_JOBS = """
+# 旧 daily_check の wait_until_no_pending は status = 'pending' だけを数えていた。
+# pending2・retry_wait もワーカーがまだ取り出していない（取り出す予定の）ジョブなので同じく数える。
+# running は数えない（固まった running が1件残るだけで次の工程へ進めなくなるため）。
+SQL_COUNT_PENDING_JOBS = """
 SELECT COUNT(*)
 FROM trx.scrape_job
-WHERE status IN ('pending', 'pending2', 'running', 'retry_wait')
+WHERE status IN ('pending', 'pending2', 'retry_wait')
 """
 
 SQL_SELECT_ERROR_JOBS = """
@@ -159,9 +165,9 @@ def read_status():
 # ======================
 # 完了待ち（進捗停止の検知つき）
 # ======================
-def count_outstanding_jobs(conn) -> int:
+def count_pending_jobs(conn) -> int:
     with conn.cursor() as cur:
-        cur.execute(SQL_COUNT_OUTSTANDING_JOBS)
+        cur.execute(SQL_COUNT_PENDING_JOBS)
         return cur.fetchone()[0]
 
 
@@ -229,7 +235,7 @@ def wait_until_zero(conn, phase: str, count_fn) -> int:
 # 工程
 # ======================
 def run_scrape_step(conn, script: Path, phase: str):
-    """ジョブを投入し、投入済みジョブ（pending / running）が無くなるまで待つ。"""
+    """ジョブを投入し、未着手のジョブ（pending 等。running は含めない）が無くなるまで待つ。"""
     started = _now()
     write_status(phase=phase, phase_started_at=started.isoformat(timespec="seconds"), outstanding=None)
     log(f"[{phase}] 開始: {script.name}")
@@ -241,7 +247,7 @@ def run_scrape_step(conn, script: Path, phase: str):
             + format_child_error(err)
         )
 
-    jobs = wait_until_zero(conn, phase, count_outstanding_jobs)
+    jobs = wait_until_zero(conn, phase, count_pending_jobs)
     log(f"[{phase}] 終了: ジョブ {jobs} 件 / 所要 {_now() - started}")
 
 
@@ -332,6 +338,7 @@ def run_cycle(conn, cycle_no: int):
     run_scrape_step(conn, FETCH_SOLD, "簡易 fetch_sold")
     run_scrape_step(conn, FETCH_ACTIVE, "完全 fetch_active")
     run_scrape_step(conn, FETCH_SOLD, "完全 fetch_sold")
+    time.sleep(WAIT_SECONDS)
     run_remaining_step(conn, "完全 check_remaining")
 
     conn.run(notify_error_jobs, cycle_no, started)
