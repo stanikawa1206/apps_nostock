@@ -35,6 +35,12 @@ def main():
     cur = conn.cursor()
     before = cur.execute("SELECT COUNT(*) FROM mst.presets_price_ranges").fetchone()[0]
     print(f"変更前 mst.presets_price_ranges: {before} 行")
+    # 変更前の候補（商品ごとの行数）。万年筆などは presets_categories が category_id に複数行あり、
+    # 変更前から同じ商品が複数行になる（谷川② ペン）。検査では「変更前より行数が増えた商品が無い」ことを見る。
+    cur.execute("CREATE TABLE #before (preset_group nvarchar(100), vendor_name nvarchar(100), vendor_item_id nvarchar(100), n int)")
+    for (pg,) in cur.execute("SELECT DISTINCT preset_group FROM mst.presets_price_ranges").fetchall():
+        cur.execute("""INSERT INTO #before SELECT ?, vendor_name, vendor_item_id, COUNT(*)
+                       FROM dbo.fn_take_one_candidates_base(?) GROUP BY vendor_name, vendor_item_id""", pg, pg)
     try:
         for b in batches(SQL_DIR / "presets_price_ranges_vendor_20261113.sql"):
             cur.execute(b)
@@ -89,12 +95,20 @@ def main():
         if keep_null:
             problems.append(f"keep_* が NULL の lookup: {keep_null}")
         for (pg,) in cur.execute("SELECT DISTINCT preset_group FROM mst.presets_price_ranges").fetchall():
-            n, d = cur.execute("""
-                SELECT COUNT(*), COUNT(DISTINCT CONCAT(vendor_name, '|', vendor_item_id))
-                FROM dbo.fn_take_one_candidates_base(?)""", pg).fetchone()
-            print(f"  候補 {pg}: {n:,} 行 / 商品 {d:,}")
-            if n != d:
-                problems.append(f"候補の重複 {pg}: {n} 行 / {d} 商品")
+            n, d, more, only_new_dup = cur.execute("""
+                WITH a AS (SELECT vendor_name, vendor_item_id, COUNT(*) AS n
+                           FROM dbo.fn_take_one_candidates_base(?) GROUP BY vendor_name, vendor_item_id)
+                SELECT SUM(a.n), COUNT(*),
+                       SUM(CASE WHEN b.n IS NOT NULL AND a.n > b.n THEN 1 ELSE 0 END),
+                       SUM(CASE WHEN b.n IS NULL AND a.n > 1 THEN 1 ELSE 0 END)
+                FROM a LEFT JOIN #before b
+                  ON b.preset_group = ? AND b.vendor_name = a.vendor_name AND b.vendor_item_id = a.vendor_item_id""",
+                pg, pg).fetchone()
+            print(f"  候補 {pg}: {n or 0:,} 行 / 商品 {d:,}（変更前より行数が増えた商品 {more or 0}）")
+            if more:
+                problems.append(f"候補の重複が増えた {pg}: {more} 商品")
+            if only_new_dup:
+                print(f"    （参考）変更前に無かった商品で複数行: {only_new_dup}")
 
         if problems:
             raise RuntimeError("検査に不合格: " + " / ".join(problems))
