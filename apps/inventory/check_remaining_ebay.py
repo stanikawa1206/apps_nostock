@@ -292,8 +292,10 @@ def pull_remaining_targets(conn, worker_name: str, batch_size: int = 5):
                 l.listing_id,
                 v.preset,
                 p.mode,
-                p.low_usd_target,
-                p.high_usd_target,
+                -- 既存出品の終了判定の範囲（収集範囲 low/high_usd_target ではない。
+                -- 収集範囲を狭めても、従来の範囲の中にある既存出品は終了させない）
+                p.keep_low_usd_target AS low_usd_target,
+                p.keep_high_usd_target AS high_usd_target,
                 p.preset AS lookup_preset
             FROM trx.vendor_item AS v WITH (UPDLOCK, ROWLOCK, READPAST)
             INNER JOIN trx.listings AS l

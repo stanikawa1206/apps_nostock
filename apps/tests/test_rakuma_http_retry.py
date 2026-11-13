@@ -206,7 +206,7 @@ class PickSqlTest(unittest.TestCase):
 class SoldRakumaTest(unittest.TestCase):
     PAYLOAD = {
         "preset": "P", "vendor_name": "ラクマ", "brand_id": 1, "category_id": 2,
-        "mode": "DDP", "low_usd_target": 50, "high_usd_target": 500,
+        "mode": "DDP", "low_usd_target": 50, "high_usd_target": 500, "search_low_usd_target": 50, "search_high_usd_target": 500,
     }
 
     def setUp(self):

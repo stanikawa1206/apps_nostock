@@ -20,7 +20,7 @@ sys.stdout, sys.stderr = _stdout, _stderr
 sw._log_file.close()
 
 PAYLOAD = {"preset": "P", "vendor_name": "メルカリ", "brand_id": 1, "category_id": 2, "mode": "DDP",
-           "low_usd_target": 100.0, "high_usd_target": 200.0}
+           "low_usd_target": 100.0, "high_usd_target": 200.0, "search_low_usd_target": 100.0, "search_high_usd_target": 200.0}
 
 
 def page(n_items, start=0, token="__omit__", meta=True):
@@ -169,6 +169,27 @@ class SoldTest(Base):
         calls, ids, ret = self.run_job(self.fn, [ValueError("x"), page(30, 120, "")])
         self.assertEqual(calls, [0, 1])
         self.assertEqual(len(ids), 30)
+
+
+class SearchRangeAndKeepRangeTest(unittest.TestCase):
+    """検索は search_*（収集範囲）、価格変化時の終了判定は low/high_usd_target（判定の範囲）を使う。"""
+
+    def test_active_uses_search_range_for_url_and_keep_range_for_price_change(self):
+        payload = dict(PAYLOAD, low_usd_target=50.0, high_usd_target=1500.0,
+                       search_low_usd_target=300.0, search_high_usd_target=700.0)
+        urls, side = [], []
+        with mock.patch.object(sw, "make_search_url", side_effect=lambda **k: urls.append(k) or "https://x/?a=1"),              mock.patch.object(sw, "fetch_page_json", return_value=page(1, token="")),              mock.patch.object(sw, "get_sql_server_connection", return_value=mock.MagicMock()),              mock.patch.object(sw, "upsert_vendor_items", lambda conn, rows, now: None),              mock.patch.object(sw, "get_vendor_item_prices_batch", return_value={"m0": 9000}),              mock.patch.object(sw, "handle_price_change_side_effects", side_effect=lambda *a, **k: side.append(k)),              mock.patch.object(sw, "write_status"),              mock.patch.object(sw.time, "sleep"),              mock.patch("builtins.print"):
+            sw.run_fetch_active_ebay(None, None, payload, 1)
+        self.assertEqual((urls[0]["low_usd_target"], urls[0]["high_usd_target"]), (300.0, 700.0))
+        self.assertEqual((side[0]["low_usd_target"], side[0]["high_usd_target"]), (50.0, 1500.0))
+
+    def test_sold_uses_search_range(self):
+        payload = dict(PAYLOAD, low_usd_target=50.0, high_usd_target=1500.0,
+                       search_low_usd_target=300.0, search_high_usd_target=700.0)
+        urls = []
+        with mock.patch.object(sw, "make_search_url", side_effect=lambda **k: urls.append(k) or "https://x/?a=1"),              mock.patch.object(sw, "fetch_page_json", return_value=page(0, token="")),              mock.patch.object(sw, "get_sql_server_connection", return_value=mock.MagicMock()),              mock.patch.object(sw, "write_status"),              mock.patch.object(sw.time, "sleep"),              mock.patch("builtins.print"):
+            sw.run_fetch_sold_ebay(None, None, payload, 1)
+        self.assertEqual((urls[0]["low_usd_target"], urls[0]["high_usd_target"]), (300.0, 700.0))
 
 
 if __name__ == "__main__":

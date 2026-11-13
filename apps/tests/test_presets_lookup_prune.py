@@ -1,139 +1,189 @@
 # -*- coding: utf-8 -*-
 """
-daily_check.prune_unlisted_lookups（新規出品を止めた仕入先の lookup の漸減）のテスト。
-モックのみ。DB には接続しない（SQL の条件そのものは本番DBの読み取りと一時テーブルで確認する）。
+daily_check の lookup 生成（mst.presets_price_ranges からの収集価格帯・delete_flag・lookup の漸減）のテスト。
+モックのみ。DB には接続しない（本番データでの新旧比較は移行時の検証スクリプトで行う）。
 
 実行: python -m unittest apps.tests.test_presets_lookup_prune -v
 """
 
 import unittest
+from decimal import Decimal as D
 from types import SimpleNamespace as NS
 from unittest import mock
 
 from apps.inventory import daily_check as dc
 
 
-class FakeCursor:
-    """SQL の中身で返す行を決める。DELETE の引数を記録する。"""
-
-    def __init__(self, preset_group="谷川④", other_groups=(), scope=(), deleted=None):
-        self.preset_group = preset_group
-        self.other_groups = list(other_groups)
-        self.scope = list(scope)
-        self.deleted = deleted or {}
-        self.deletes = []
-        self.executed = []
-        self._rows = []
-
-    def execute(self, sql, *params):
-        self.executed.append((sql, params))
-        if "FROM mst.ebay_accounts" in sql:
-            self._rows = [NS(preset_group=self.preset_group)] if self.preset_group else []
-        elif "FROM mst.presets_price_ranges" in sql:
-            self._rows = [NS(preset_group=g) for g in self.other_groups]
-        elif "FROM mst.vendors AS vd" in sql:
-            self._rows = self.scope
-        elif sql.lstrip().startswith("DELETE p"):
-            self.deletes.append(params)
-            self._rows = [NS(preset=x) for x in self.deleted.get(params[1], [])]
-        else:
-            raise AssertionError(f"想定外のSQL: {sql}")
-        return self
-
-    def fetchone(self):
-        return self._rows[0] if self._rows else None
-
-    def fetchall(self):
-        return list(self._rows)
+def pr(pg, cg, vc, low, high, delete_flag=0):
+    return NS(preset_group=pg, category_group=cg, vendor_code=vc,
+              low_usd_target=D(low), high_usd_target=D(high), delete_flag=delete_flag)
 
 
-def scope_row(code, name, lookup, excluded=1, unknown=0):
-    return NS(vendor_code=code, vendor_name=name, lookup_cnt=lookup,
-              is_excluded=excluded, unknown_listing_cnt=unknown)
+def ls(account, vc, preset, cnt=1):
+    return NS(account=account, vendor_code=vc, preset=preset, cnt=cnt)
 
 
-SCOPE = [scope_row("M", "メルカリ", 237), scope_row("MS", "メルカリshops", 237)]
+ACCOUNTS = [NS(account=a, preset_group=a) for a in ("BUZZ②", "貴文", "谷川③", "谷川④")]
+
+# 財布 M: 3アカウントが新規出品、腕時計 M: 谷川④だけ・新規出品停止
+RANGES = [
+    pr("BUZZ②", "財布", "M", 100, 200),
+    pr("谷川③", "財布", "M", 300, 600),
+    pr("貴文", "財布", "M", 600, 1000),
+    pr("BUZZ②", "財布", "R", 100, 200, delete_flag=1),
+    pr("谷川③", "財布", "R", 300, 600),
+    pr("貴文", "財布", "R", 600, 1000),
+    pr("谷川④", "腕時計", "M", 100, 300, delete_flag=1),
+    pr("谷川④", "腕時計", "R", 100, 300),
+]
+
+PAIRS = {
+    "グッチ財布M": ("財布", "M"), "グッチ財布R": ("財布", "R"),
+    "セイコー腕時計M": ("腕時計", "M"), "シチズン腕時計M": ("腕時計", "M"),
+    "セイコー腕時計R": ("腕時計", "R"),
+}
 
 
-class PruneTest(unittest.TestCase):
+class PlanCollectionRangesTest(unittest.TestCase):
 
-    def test_deletes_only_lookups_without_listings(self):
-        cur = FakeCursor(scope=SCOPE, deleted={
-            "メルカリ": [f"m{i}" for i in range(150)],
-            "メルカリshops": [f"s{i}" for i in range(174)],
-        })
-        res = dc.prune_unlisted_lookups(cur)
+    def plan(self, listings, ranges=RANGES):
+        return dc.plan_collection_ranges(ranges, ACCOUNTS, listings, PAIRS)
 
-        # 対象グループ・仕入先ごとに DELETE（出品の有無は DELETE 自身の NOT EXISTS で判定）
-        self.assertEqual(cur.deletes, [("腕時計", "メルカリ"), ("腕時計", "メルカリshops")])
-        self.assertEqual([(r["vendor_code"], r["deleted"], r["kept"], r["skip"]) for r in res],
-                         [("M", 150, 87, None), ("MS", 174, 63, None)])
+    def test_min_max_over_rows_even_with_gap(self):
+        ranges, _ = self.plan([])
+        # $200〜300 の空白があっても MIN〜MAX の1つの範囲
+        self.assertEqual(ranges[("財布", "M")], (D(100), D(1000)))
 
-    def test_scope_query_uses_account_group_and_vendor_codes(self):
-        cur = FakeCursor(scope=[])
-        dc.prune_unlisted_lookups(cur)
-        sql, params = [e for e in cur.executed if "FROM mst.vendors AS vd" in e[0]][0]
-        self.assertEqual(params, ("腕時計", "谷川④", "M", "MS"))
-        self.assertIn("vd.vendor_code IN (?, ?)", sql)
+    def test_delete_flag_row_counted_only_while_its_account_has_listings(self):
+        ranges, _ = self.plan([])
+        self.assertEqual(ranges[("財布", "R")], (D(300), D(1000)))
+        ranges, _ = self.plan([ls("BUZZ②", "R", "グッチ財布R")])
+        self.assertEqual(ranges[("財布", "R")], (D(100), D(1000)))
+        # 他アカウントの出品では BUZZ② の行は集約に入らない
+        ranges, _ = self.plan([ls("貴文", "R", "グッチ財布R")])
+        self.assertEqual(ranges[("財布", "R")], (D(300), D(1000)))
 
-    def test_delete_sql_checks_unended_listings_of_all_accounts(self):
-        sql = dc._LOOKUP_PRUNE_DELETE_SQL
-        self.assertIn("l.is_deleted = 0", sql)
-        self.assertIn("v.preset = p.preset", sql)
-        self.assertNotIn("l.account", sql)
-        self.assertIn("p.category_group = ?", sql)
-        self.assertIn("p.vendor_name = ?", sql)
+    def test_unknown_preset_listing_of_that_account_counts_the_row(self):
+        ranges, _ = self.plan([ls("BUZZ②", "R", None)])
+        self.assertEqual(ranges[("財布", "R")], (D(100), D(1000)))
 
-    def test_not_excluded_vendor_is_kept(self):
-        cur = FakeCursor(scope=[scope_row("M", "メルカリ", 237, excluded=0),
-                                scope_row("MS", "メルカリshops", 237)],
-                         deleted={"メルカリshops": ["s1"]})
-        res = dc.prune_unlisted_lookups(cur)
-        self.assertEqual(cur.deletes, [("腕時計", "メルカリshops")])
-        self.assertEqual((res[0]["deleted"], res[0]["kept"]), (0, 237))
-        self.assertIn("新規出品除外に M が無い", res[0]["skip"])
+    def test_pair_with_new_listing_rows_is_not_pruned(self):
+        _, prune = self.plan([])
+        self.assertNotIn(("財布", "R"), prune)  # BUZZ② は delete_flag=1 でも他アカウントが新規出品
+        self.assertNotIn(("財布", "M"), prune)
+        self.assertNotIn(("腕時計", "R"), prune)
 
-    def test_group_used_by_other_preset_group_keeps_all(self):
-        cur = FakeCursor(scope=SCOPE, other_groups=["BUZZ"])
-        res = dc.prune_unlisted_lookups(cur)
-        self.assertEqual(cur.deletes, [])
-        self.assertEqual([r["kept"] for r in res], [237, 237])
-        self.assertTrue(all("BUZZ" in r["skip"] for r in res))
+    def test_stopped_pair_keeps_only_listed_presets(self):
+        ranges, prune = self.plan([ls("谷川④", "M", "セイコー腕時計M", 3), ls("谷川④", "R", "セイコー腕時計R")])
+        self.assertEqual(ranges[("腕時計", "M")], (D(100), D(300)))
+        self.assertEqual(prune[("腕時計", "M")]["keep"], {"セイコー腕時計M"})
+        self.assertIsNone(prune[("腕時計", "M")]["skip"])
 
-    def test_unknown_listing_keeps_that_vendor(self):
-        cur = FakeCursor(scope=[scope_row("M", "メルカリ", 237, unknown=1),
-                                scope_row("MS", "メルカリshops", 237)])
-        res = dc.prune_unlisted_lookups(cur)
-        self.assertEqual(cur.deletes, [("腕時計", "メルカリshops")])
-        self.assertIn("preset が分からない未終了の出品 1 件", res[0]["skip"])
+    def test_stopped_pair_keeps_presets_listed_by_other_accounts(self):
+        # 谷川④ の出品が0件でも、別アカウントの出品がある preset は残す（行は集約に入らないが組は残す）
+        ranges, prune = self.plan([ls("貴文", "M", "シチズン腕時計M")])
+        self.assertEqual(ranges[("腕時計", "M")], (D(100), D(300)))
+        self.assertEqual(prune[("腕時計", "M")]["keep"], {"シチズン腕時計M"})
+        self.assertEqual(prune[("腕時計", "M")]["rows"], [("谷川④", 1, False)])
 
-    def test_missing_account_keeps_all(self):
-        cur = FakeCursor(preset_group=None, scope=SCOPE)
-        res = dc.prune_unlisted_lookups(cur)
-        self.assertEqual(cur.deletes, [])
-        self.assertTrue(all("mst.ebay_accounts に無い" in r["skip"] for r in res))
+    def test_stopped_pair_without_listings_has_no_lookup(self):
+        ranges, prune = self.plan([ls("谷川④", "R", "セイコー腕時計R")])
+        self.assertNotIn(("腕時計", "M"), ranges)
+        self.assertEqual(prune[("腕時計", "M")]["keep"], set())
 
-    def test_no_lookup_rows_skips_delete(self):
-        cur = FakeCursor(scope=[scope_row("M", "メルカリ", 0)])
-        res = dc.prune_unlisted_lookups(cur)
-        self.assertEqual(cur.deletes, [])
-        self.assertEqual((res[0]["deleted"], res[0]["kept"]), (0, 0))
+    def test_unknown_preset_of_vendor_keeps_all(self):
+        # どのアカウントの出品でも、preset の分からない M の出品があれば腕時計 M は全件残す
+        ranges, prune = self.plan([ls("貴文", "M", None, 2)])
+        self.assertIn(("腕時計", "M"), ranges)
+        self.assertIsNone(prune[("腕時計", "M")]["keep"])
+        self.assertIn("preset が分からない未終了の出品 2 件", prune[("腕時計", "M")]["skip"])
+        # preset が lookup の生成対象に無い（どの組か分からない）出品も同じ
+        _, prune = self.plan([ls("貴文", "M", "消えたpresetM")])
+        self.assertIsNone(prune[("腕時計", "M")]["keep"])
 
-    def test_format(self):
-        text = dc.format_lookup_prune([
-            {"vendor_code": "M", "deleted": 150, "kept": 87, "skip": None},
-            {"vendor_code": "MS", "deleted": 0, "kept": 237, "skip": "谷川④ の新規出品除外に MS が無い"},
-        ])
+
+def src_for(price_ranges, listings):
+    """generate_preset_rows が腕時計（ブランドに依存しないカテゴリー）の preset を作る最小のマスター。"""
+    vendors = [NS(vendor_code="M", vendor_name="メルカリ", vendor_group="メルカリ"),
+               NS(vendor_code="R", vendor_name="ラクマ", vendor_group="ラクマ")]
+    categories = [
+        NS(category_id=1, vendor_group="メルカリ", category_name_ja="腕時計", type_ebay="Watch",
+           category_id_ebay="31387", department=None, brand_id=10),
+        NS(category_id=2, vendor_group="メルカリ", category_name_ja="置時計", type_ebay="Clock",
+           category_id_ebay="1", department=None, brand_id=10),
+        NS(category_id=1, vendor_group="ラクマ", category_name_ja="腕時計", type_ebay="Watch",
+           category_id_ebay="31387", department=None, brand_id=10),
+    ]
+    return {
+        "vendors": vendors,
+        "brands": [],
+        "vbm_rows": [],
+        "categories": categories,
+        "category_groups": [NS(category_group="腕時計", mode="DDP", low_usd_target=D(100), high_usd_target=D(300))],
+        "cgc_rows": [NS(category_group="腕時計", category_id=1, is_brand_dependent=0, vendor_group="メルカリ"),
+                     NS(category_group="腕時計", category_id=2, is_brand_dependent=0, vendor_group="メルカリ"),
+                     NS(category_group="腕時計", category_id=1, is_brand_dependent=0, vendor_group="ラクマ")],
+        "bcg_rows": [],
+        "bcgv_rows": [],
+        "price_ranges": price_ranges,
+        "accounts": [NS(account="谷川④", preset_group="谷川④"), NS(account="貴文", preset_group="貴文")],
+        "listings": listings,
+    }
+
+
+class BuildPresetsLookupTest(unittest.TestCase):
+
+    RANGES = [pr("谷川④", "腕時計", "M", 100, 300, delete_flag=1),
+              pr("谷川④", "腕時計", "R", 150, 250)]
+
+    def build(self, listings, ranges=None):
+        rows, prune = dc.build_presets_lookup(src_for(ranges or self.RANGES, listings))
+        return {r[0]: dict(zip(dc.LOOKUP_INSERT_COLUMNS, r)) for r in rows}, prune
+
+    def test_ranges_jpy_and_keep_range(self):
+        lk, _ = self.build([ls("谷川④", "M", "腕時計M")])
+        r = lk["腕時計R"]
+        self.assertEqual((r["low_usd_target"], r["high_usd_target"]), (D(150), D(250)))
+        self.assertEqual((r["low_jpy_target"], r["high_jpy_target"]),
+                         dc.compute_cost_range_jpy_from_usd_range("DDP", 150.0, 250.0))
+        # 終了判定は 従来の範囲（category_groups 100〜300）∪ 収集範囲
+        self.assertEqual((r["keep_low_usd_target"], r["keep_high_usd_target"]), (D(100), D(300)))
+        self.assertEqual(r["mode"], "DDP")
+
+    def test_keep_range_widens_with_collection_range(self):
+        lk, _ = self.build([], ranges=[pr("谷川④", "腕時計", "R", 50, 400)])
+        r = lk["腕時計R"]
+        self.assertEqual((r["keep_low_usd_target"], r["keep_high_usd_target"]), (D(50), D(400)))
+
+    def test_prune_counts_and_kept_rows(self):
+        lk, prune = self.build([ls("谷川④", "M", "腕時計M", 2)])
+        self.assertIn("腕時計M", lk)
+        self.assertNotIn("置時計M", lk)
+        self.assertIn("腕時計R", lk)
         self.assertEqual(
-            text,
-            "presets_lookup 漸減（谷川④・腕時計）: M 削除 150 / 維持 87、"
-            "MS 削除 0 / 維持 237（削除しない: 谷川④ の新規出品除外に MS が無い）",
+            [(p["category_group"], p["vendor_code"], p["lookup"], p["deleted"], p["kept"], p["skip"]) for p in prune],
+            [("腕時計", "M", 2, 1, 1, None)],
         )
 
+    def test_no_price_range_row_no_lookup(self):
+        lk, prune = self.build([], ranges=[pr("谷川④", "腕時計", "R", 100, 300)])
+        self.assertEqual(sorted(lk), ["腕時計R"])
+        self.assertEqual(prune, [])
 
-class RefreshCallsPruneBeforeCommitTest(unittest.TestCase):
+    def test_format(self):
+        _, prune = self.build([ls("谷川④", "M", "腕時計M")])
+        self.assertEqual(dc.format_lookup_prune(prune), "presets_lookup 漸減: 腕時計 M 削除 1 / 維持 1［谷川④］")
+        _, prune = self.build([ls("貴文", "M", None, 3)])
+        self.assertEqual(
+            dc.format_lookup_prune(prune),
+            "presets_lookup 漸減: 腕時計 M 削除 0 / 維持 2（削除しない: preset が分からない未終了の出品 3 件）［谷川④(出品なし)］",
+        )
+        self.assertEqual(dc.format_lookup_prune([]), "presets_lookup 漸減: 対象なし")
 
-    def test_prune_runs_after_insert_and_before_commit(self):
+
+class RefreshOrderTest(unittest.TestCase):
+
+    def test_loads_then_truncate_insert_commit(self):
         order = []
 
         class Cur:
@@ -142,17 +192,13 @@ class RefreshCallsPruneBeforeCommitTest(unittest.TestCase):
             def execute(self, sql, *a):
                 if "TRUNCATE" in sql:
                     order.append("truncate")
-                self._count = "COUNT(*)" in sql
                 return self
-
-            def fetchall(self):
-                return []
 
             def fetchone(self):
                 return (0,)
 
             def executemany(self, sql, rows):
-                order.append("insert")
+                order.append(("insert", sql.count("?"), len(rows)))
 
         class Conn:
             def cursor(self):
@@ -161,11 +207,11 @@ class RefreshCallsPruneBeforeCommitTest(unittest.TestCase):
             def commit(self):
                 order.append("commit")
 
-        result = [{"vendor_code": "M", "deleted": 1, "kept": 2, "skip": None}]
-        with mock.patch.object(dc, "prune_unlisted_lookups",
-                               side_effect=lambda cur: order.append("prune") or result):
+        result = [{"category_group": "腕時計", "vendor_code": "M", "deleted": 1, "kept": 2, "skip": None, "rows": []}]
+        with mock.patch.object(dc, "load_lookup_sources", side_effect=lambda cur: order.append("load") or {}), \
+             mock.patch.object(dc, "build_presets_lookup", return_value=([("x",) * 17], result)):
             got = dc.refresh_presets_lookup(Conn())
-        self.assertEqual(order, ["truncate", "insert", "prune", "commit"])
+        self.assertEqual(order, ["load", "truncate", ("insert", 17, 1), "commit"])
         self.assertIs(got, result)
 
 

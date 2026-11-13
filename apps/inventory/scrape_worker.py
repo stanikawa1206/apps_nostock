@@ -908,8 +908,9 @@ def run_fetch_sold_ebay(page, start_page, payload: dict, job_id: int) -> Tuple[i
     brand_id = payload["brand_id"]
     category_id = payload["category_id"]
     mode = payload.get("mode", "DDP")
-    low_usd_target = payload["low_usd_target"]
-    high_usd_target = payload["high_usd_target"]
+    # 検索（収集）の範囲。low/high_usd_target は既存出品の終了判定の範囲（fetch_active_ebay.py 参照）
+    low_usd_target = payload["search_low_usd_target"]
+    high_usd_target = payload["search_high_usd_target"]
 
     print(
         f"[SCRAPE START][SOLD] preset='{preset_name}' "
@@ -1034,14 +1035,16 @@ def run_fetch_active_ebay(page, start_page, payload: dict, job_id: int) -> Tuple
 
     total_items = 0
 
+    # 検索は収集の範囲（search_*）。low/high_usd_target は既存出品を「価格範囲外」で終了する
+    # 判定だけに使う（収集範囲を狭めても既存出品を終了させないため。fetch_active_ebay.py 参照）
     base_url = make_search_url(
         vendor_name=vendor_name,
         brand_id=payload["brand_id"],
         category_id=payload["category_id"],
         status="on_sale",
         mode=mode,
-        low_usd_target=low_usd_target,
-        high_usd_target=high_usd_target,
+        low_usd_target=float(payload["search_low_usd_target"]),
+        high_usd_target=float(payload["search_high_usd_target"]),
     )
     print(f"[URL] {base_url}", flush=True)
 
@@ -1172,14 +1175,16 @@ def run_fetch_active_rakuma(payload: dict, job_id: int) -> Tuple[int, int]:
 
     total_items = 0
 
+    # 検索は収集の範囲（search_*）。low/high_usd_target は既存出品を「価格範囲外」で終了する
+    # 判定だけに使う（収集範囲を狭めても既存出品を終了させないため。fetch_active_ebay.py 参照）
     base_url = make_search_url(
         vendor_name=vendor_name,
         brand_id=payload["brand_id"],
         category_id=payload["category_id"],
         status="on_sale",
         mode=mode,
-        low_usd_target=low_usd_target,
-        high_usd_target=high_usd_target,
+        low_usd_target=float(payload["search_low_usd_target"]),
+        high_usd_target=float(payload["search_high_usd_target"]),
     )
     print(f"[URL] {base_url}", flush=True)
 
@@ -1292,8 +1297,9 @@ def run_fetch_sold_rakuma(payload: dict, job_id: int) -> Tuple[int, int]:
     brand_id = payload["brand_id"]
     category_id = payload["category_id"]
     mode = payload.get("mode", "DDP")
-    low_usd_target = payload["low_usd_target"]
-    high_usd_target = payload["high_usd_target"]
+    # 検索（収集）の範囲。low/high_usd_target は既存出品の終了判定の範囲（fetch_active_ebay.py 参照）
+    low_usd_target = payload["search_low_usd_target"]
+    high_usd_target = payload["search_high_usd_target"]
 
     print(
         f"[SCRAPE START][SOLD][RAKUMA] preset='{preset_name}' "
@@ -1446,8 +1452,11 @@ def run_fetch_active_yahoo(payload: dict, job_id: int) -> Tuple[int, int]:
     low_usd_target = float(payload["low_usd_target"])
     high_usd_target = float(payload["high_usd_target"])
     category_id = int(payload["category_id"])
+    # 検索は収集の範囲（search_*）。low/high_usd_target は価格変化時の終了判定だけに使う
     min_cost, max_cost = compute_cost_range_jpy_from_usd_range(
-        mode=mode, low_usd_target=low_usd_target, high_usd_target=high_usd_target,
+        mode=mode,
+        low_usd_target=float(payload["search_low_usd_target"]),
+        high_usd_target=float(payload["search_high_usd_target"]),
     )
 
     print(f"[SCRAPE START][YAHOO] preset={preset} vendor={vendor_name} mode={mode} price={min_cost}〜{max_cost}", flush=True)
@@ -1552,8 +1561,8 @@ def run_fetch_sold_yahoo(payload: dict, job_id: int) -> Tuple[int, int]:
     category_id = int(payload["category_id"])
     min_cost, max_cost = compute_cost_range_jpy_from_usd_range(
         mode=mode,
-        low_usd_target=float(payload["low_usd_target"]),
-        high_usd_target=float(payload["high_usd_target"]),
+        low_usd_target=float(payload["search_low_usd_target"]),
+        high_usd_target=float(payload["search_high_usd_target"]),
     )
 
     print(f"[SCRAPE START][SOLD][YAHOO] preset='{preset_name}' vendor='{vendor_name}' mode='{mode}'", flush=True)

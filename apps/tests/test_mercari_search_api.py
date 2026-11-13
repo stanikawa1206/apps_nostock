@@ -264,7 +264,7 @@ class WorkerSwitchTest(unittest.TestCase):
     def test_sold_page_error_is_not_swallowed(self):
         """売り切れ取得のページ単位の try で握りつぶされず、ジョブごと pending へ戻る（売り切れ漏れにしない）"""
         payload = {"preset": "p", "vendor_name": "メルカリ", "brand_id": 1, "category_id": 2, "mode": "DDP",
-                   "low_usd_target": 100, "high_usd_target": 200}
+                   "low_usd_target": 100, "high_usd_target": 200, "search_low_usd_target": 100, "search_high_usd_target": 200}
         with mock.patch.object(sw, "get_sql_server_connection"), mock.patch.object(sw, "write_status"), \
                 mock.patch.object(sw, "make_search_url", return_value="https://jp.mercari.com/search?x"), \
                 mock.patch("apps.adapters.mercari_search_api.fetch_search_json",
@@ -276,7 +276,7 @@ class WorkerSwitchTest(unittest.TestCase):
 
     def test_active_page_error_propagates(self):
         payload = {"preset": "p", "vendor_name": "メルカリ", "brand_id": 1, "category_id": 2, "mode": "DDP",
-                   "low_usd_target": 100, "high_usd_target": 200}
+                   "low_usd_target": 100, "high_usd_target": 200, "search_low_usd_target": 100, "search_high_usd_target": 200}
         with mock.patch.object(sw, "get_sql_server_connection"), mock.patch.object(sw, "write_status"), \
                 mock.patch.object(sw, "make_search_url", return_value="https://jp.mercari.com/search?x"), \
                 mock.patch("apps.adapters.mercari_search_api.fetch_search_json",

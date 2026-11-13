@@ -15,6 +15,10 @@
 --
 -- 追記 2026-11-04: 条件⑥に「保留(素材確認)」を追加（publish_ebay の素材判定で、
 -- 本物の規制素材か判断できない商品。手動で確認するまで候補にしない）。
+--
+-- 追記 2026-11-13: mst.presets_price_ranges を仕入先別（vendor_code・delete_flag 追加）にしたのに
+-- 合わせて、価格帯の結合に仕入先と delete_flag=0 を追加。変更前は (preset_group, category_group)
+-- だけで結合していた（変更前の定義: fn_take_one_candidates_base_backup_20261113_before_vendor_ranges.sql）。
 -- ============================================================================
 
 CREATE OR ALTER FUNCTION dbo.fn_take_one_candidates_base
@@ -56,13 +60,18 @@ RETURN
         FROM trx.vendor_item v
         INNER JOIN mst.presets_lookup pl
             ON pl.preset = v.preset
+        INNER JOIN mst.vendors vd
+            ON vd.vendor_name = pl.vendor_name
+        -- 2026-11-13 価格帯はアカウント×カテゴリーグループ×仕入先ごと（主キー）。仕入先まで
+        -- 一致させるので候補は増殖しない。delete_flag=1（新規出品停止・既存出品の在庫管理だけ続ける）
+        -- の行からは候補を作らない。
         INNER JOIN mst.presets_price_ranges r
             ON r.preset_group = @preset_group
             AND r.category_group = pl.category_group
+            AND r.vendor_code = vd.vendor_code
+            AND r.delete_flag = 0
         INNER JOIN mst.presets_categories pc
             ON pc.category_id = pl.category_id
-        INNER JOIN mst.vendors vd
-            ON vd.vendor_name = pl.vendor_name
         LEFT JOIN mst.seller s
             ON s.seller_id = v.seller_id
         LEFT JOIN mst.category_groups cg

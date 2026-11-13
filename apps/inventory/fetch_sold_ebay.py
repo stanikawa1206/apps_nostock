@@ -49,8 +49,11 @@ def main():
             "brand_id": p["brand_id"],
             "category_id": p["category_id"],
             "mode": p.get("mode", "DDP"),
-            "low_usd_target": p["low_usd_target"],
-            "high_usd_target": p["high_usd_target"],
+            # fetch_active_ebay.py と同じ（low/high は判定の範囲、search_* は検索の範囲）
+            "low_usd_target": p["keep_low_usd_target"],
+            "high_usd_target": p["keep_high_usd_target"],
+            "search_low_usd_target": p["low_usd_target"],
+            "search_high_usd_target": p["high_usd_target"],
             "status": "sold_out|trading",
         }
 

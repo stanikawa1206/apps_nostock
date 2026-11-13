@@ -72,7 +72,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]  # D:/apps_nostock
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from apps.common.utils import send_mail, get_sql_server_connection
+from apps.common.utils import send_mail, get_sql_server_connection, compute_cost_range_jpy_from_usd_range
 import pyodbc
 
 # ======================
@@ -858,64 +858,88 @@ def wait_until_remaining_exhausted(conn):
 
     # ★ 処理件数 = 初期件数
     return initial_cnt
-def refresh_presets_lookup(conn):
-    cur = conn.cursor()
-    print("presets_lookup refresh start")
+def load_lookup_sources(cur):
+    """refresh_presets_lookup が使うマスター・既存出品を読み込む（build_presets_lookup に渡す）。"""
+    def q(sql):
+        return cur.execute(sql).fetchall()
 
-    cur.execute("TRUNCATE TABLE mst.presets_lookup;")
+    return {
+        "vendors": q("""
+            SELECT vendor_code, vendor_name, vendor_group
+            FROM mst.vendors
+        """),
+        "brands": q("""
+            SELECT brand_id, brand_name_ja, default_brand_en, is_active
+            FROM mst.presets_brand
+            WHERE is_active = 1
+        """),
+        # 仕入先(vendor_group)ごとの検索用ブランドID。1ブランドに同じ仕入先のIDが複数ありうる（ラクマ1:N）。
+        # primary を先頭にして、primary以外は preset 名の末尾に「#仕入先ブランドID」を付ける。
+        "vbm_rows": q("""
+            SELECT brand_id, vendor_name, vendor_brand_id, is_primary
+            FROM mst.vendor_brand_map
+            WHERE is_active = 1
+            ORDER BY brand_id, vendor_name, is_primary DESC, vendor_brand_id
+        """),
+        "categories": q("""
+            SELECT category_id, vendor_group, category_name_ja, type_ebay, category_id_ebay, department, brand_id
+            FROM mst.presets_categories
+        """),
+        # mode（GA/DDP）と、既存出品の終了判定に使う従来の価格帯（keep_* の計算に使う）
+        "category_groups": q("""
+            SELECT category_group, mode, low_usd_target, high_usd_target
+            FROM mst.category_groups
+            WHERE is_scrape_stopped = 0
+        """),
+        "cgc_rows": q("""
+            SELECT category_group, category_id, is_brand_dependent, vendor_group
+            FROM mst.category_group_categories
+        """),
+        "bcg_rows": q("""
+            SELECT brand_id, category_group
+            FROM mst.brand_category_groups
+        """),
+        # グループ所属を一部の仕入先（vendor_group）だけで使う指定。行が無い所属は全仕入先共通。
+        "bcgv_rows": q("""
+            SELECT brand_id, category_group, vendor_name
+            FROM mst.brand_category_group_vendors
+        """),
+        # 収集価格帯の元。アカウント(preset_group)×カテゴリーグループ×仕入先。
+        "price_ranges": q("""
+            SELECT preset_group, category_group, vendor_code,
+                   low_usd_target, high_usd_target, delete_flag
+            FROM mst.presets_price_ranges
+        """),
+        "accounts": q("""
+            SELECT account, preset_group
+            FROM mst.ebay_accounts
+        """),
+        # 未終了のeBay出品（全アカウント）を アカウント×仕入先×preset で数える。
+        # preset が NULL（商品データが無い・preset未設定）の出品も1行に数える。
+        "listings": q("""
+            SELECT l.account, vd.vendor_code, v.preset, COUNT(*) AS cnt
+            FROM trx.listings AS l
+            INNER JOIN mst.vendors AS vd
+                ON vd.vendor_name = l.vendor_name
+            LEFT JOIN trx.vendor_item AS v
+                ON v.vendor_name = l.vendor_name AND v.vendor_item_id = l.vendor_item_id
+            WHERE l.is_deleted = 0
+            GROUP BY l.account, vd.vendor_code, v.preset
+        """),
+    }
 
-    vendors = cur.execute("""
-        SELECT vendor_code, vendor_name, vendor_group
-        FROM mst.vendors
-    """).fetchall()
 
-    brands = cur.execute("""
-        SELECT brand_id, brand_name_ja, default_brand_en, is_active
-        FROM mst.presets_brand
-        WHERE is_active = 1
-    """).fetchall()
-
-    # 仕入先(vendor_group)ごとの検索用ブランドID。1ブランドに同じ仕入先のIDが複数ありうる（ラクマ1:N）。
-    # primary を先頭にして、primary以外は preset 名の末尾に「#仕入先ブランドID」を付ける。
-    vbm_rows = cur.execute("""
-        SELECT brand_id, vendor_name, vendor_brand_id, is_primary
-        FROM mst.vendor_brand_map
-        WHERE is_active = 1
-        ORDER BY brand_id, vendor_name, is_primary DESC, vendor_brand_id
-    """).fetchall()
-
-    categories = cur.execute("""
-        SELECT category_id, vendor_group, category_name_ja, type_ebay, category_id_ebay, department, brand_id
-        FROM mst.presets_categories
-    """).fetchall()
-
-    category_groups = cur.execute("""
-        SELECT category_group, mode, low_usd_target, high_usd_target,
-               low_jpy_target, high_jpy_target
-        FROM mst.category_groups
-        WHERE is_scrape_stopped = 0
-    """).fetchall()
-
-    cgc_rows = cur.execute("""
-        SELECT category_group, category_id, is_brand_dependent, vendor_group
-        FROM mst.category_group_categories
-    """).fetchall()
-
-    bcg_rows = cur.execute("""
-        SELECT brand_id, category_group
-        FROM mst.brand_category_groups
-    """).fetchall()
-
-    # グループ所属を一部の仕入先（vendor_group）だけで使う指定。行が無い所属は全仕入先共通。
-    bcgv_rows = cur.execute("""
-        SELECT brand_id, category_group, vendor_name
-        FROM mst.brand_category_group_vendors
-    """).fetchall()
+def generate_preset_rows(src):
+    """
+    ブランド・カテゴリー・仕入先の組み合わせから preset を作る（価格帯はまだ入れない）。
+    戻り値: dict の list（preset, vendor_code, category_group と INSERT 用の各列）
+    """
+    vendors = src["vendors"]
 
     # 検索APIに渡すbrand_idは仕入先ごとに採番体系が違う（presets_brand.brand_idはメルカリの採番）。
     # mst.vendor_brand_map の vendor_name は vendor_group（採番体系）を表すので、vendor_groupで引く。
     vendor_brands = {}
-    for r in vbm_rows:
+    for r in src["vbm_rows"]:
         vendor_brands.setdefault((r.brand_id, r.vendor_name), []).append(r)
 
     def resolve_vendor_brands(brand, vendor_group):
@@ -925,30 +949,46 @@ def refresh_presets_lookup(conn):
             for r in vendor_brands.get((brand.brand_id, vendor_group), [])
         ]
 
-    brand_by_id = {r.brand_id: r for r in brands}
+    brand_by_id = {r.brand_id: r for r in src["brands"]}
     # category_id はvendor_group（仕入先）ごとに別々の採番体系・定義を持ちうるため、
     # (category_id, vendor_group) の組で引く
-    category_by_id = {(r.category_id, r.vendor_group): r for r in categories}
-    group_by_name = {r.category_group: r for r in category_groups}
+    category_by_id = {(r.category_id, r.vendor_group): r for r in src["categories"]}
+    group_by_name = {r.category_group: r for r in src["category_groups"]}
 
     cgc_by_group = {}
-    for r in cgc_rows:
+    for r in src["cgc_rows"]:
         cgc_by_group.setdefault(r.category_group, []).append(r)
 
     cgc_by_category_id = {}
-    for r in cgc_rows:
+    for r in src["cgc_rows"]:
         cgc_by_category_id.setdefault(r.category_id, []).append(r)
 
-    bcg_groups = {r.category_group for r in bcg_rows}
+    bcg_groups = {r.category_group for r in src["bcg_rows"]}
 
     bcg_vendor_groups = {}
-    for r in bcgv_rows:
+    for r in src["bcgv_rows"]:
         bcg_vendor_groups.setdefault((r.brand_id, r.category_group), set()).add(r.vendor_name)
 
     rows = []
 
+    def add(preset, v, brand_id, pc, cg, default_brand_en, is_active):
+        rows.append({
+            "preset": preset,
+            "vendor_name": v.vendor_name,
+            "vendor_code": v.vendor_code,
+            "brand_id": brand_id,
+            "category_id": pc.category_id,
+            "mode": cg.mode,
+            "category_id_ebay": pc.category_id_ebay,
+            "department": pc.department,
+            "default_brand_en": default_brand_en,
+            "type_ebay": pc.type_ebay,
+            "category_group": cg.category_group,
+            "is_active": is_active,
+        })
+
     # 1) brand_category_groupsあり、is_brand_dependent=0
-    for bcg in bcg_rows:
+    for bcg in src["bcg_rows"]:
         brand = brand_by_id.get(bcg.brand_id)
         if not brand:
             continue
@@ -982,27 +1022,10 @@ def refresh_presets_lookup(conn):
                         + (v.vendor_code or "")
                         + preset_suffix
                     )
-
-                    rows.append((
-                        preset,
-                        v.vendor_name,
-                        out_brand_id,
-                        pc.category_id,
-                        cg.mode,
-                        cg.low_usd_target,
-                        cg.high_usd_target,
-                        pc.category_id_ebay,
-                        pc.department,
-                        brand.default_brand_en,
-                        pc.type_ebay,
-                        cg.low_jpy_target,
-                        cg.high_jpy_target,
-                        cg.category_group,
-                        brand.is_active,
-                    ))
+                    add(preset, v, out_brand_id, pc, cg, brand.default_brand_en, brand.is_active)
 
     # 2) brand_category_groupsに無いcategory_group、is_brand_dependent=0
-    for cgc in cgc_rows:
+    for cgc in src["cgc_rows"]:
         if cgc.is_brand_dependent != 0:
             continue
 
@@ -1023,27 +1046,10 @@ def refresh_presets_lookup(conn):
                 + ("men" if pc.department == "Men" else "")
                 + (v.vendor_code or "")
             )
-
-            rows.append((
-                preset,
-                v.vendor_name,
-                pc.brand_id,
-                pc.category_id,
-                cg.mode,
-                cg.low_usd_target,
-                cg.high_usd_target,
-                pc.category_id_ebay,
-                pc.department,
-                "",
-                pc.type_ebay,
-                cg.low_jpy_target,
-                cg.high_jpy_target,
-                cg.category_group,
-                1,
-            ))
+            add(preset, v, pc.brand_id, pc, cg, "", 1)
 
     # 3) is_brand_dependent=1
-    for pc in categories:
+    for pc in src["categories"]:
         brand = brand_by_id.get(pc.brand_id)
         if not brand:
             continue
@@ -1073,48 +1079,186 @@ def refresh_presets_lookup(conn):
                         + (v.vendor_code or "")
                         + preset_suffix
                     )
+                    add(preset, v, out_brand_id, pc, cg, brand.default_brand_en, brand.is_active)
 
-                    rows.append((
-                        preset,
-                        v.vendor_name,
-                        out_brand_id,
-                        pc.category_id,
-                        cg.mode,
-                        cg.low_usd_target,
-                        cg.high_usd_target,
-                        pc.category_id_ebay,
-                        pc.department,
-                        brand.default_brand_en,
-                        pc.type_ebay,
-                        cg.low_jpy_target,
-                        cg.high_jpy_target,
-                        cg.category_group,
-                        brand.is_active,
-                    ))
+    return rows
 
-    cur.fast_executemany = True
-    cur.executemany("""
-        INSERT INTO mst.presets_lookup (
-            preset,
-            vendor_name,
-            brand_id,
-            category_id,
-            mode,
-            low_usd_target,
-            high_usd_target,
-            category_id_ebay,
-            department,
-            default_brand_en,
-            type_ebay,
-            low_jpy_target,
-            high_jpy_target,
-            category_group,
-            is_active
+
+def plan_collection_ranges(price_ranges, accounts, listings, preset_pairs):
+    """
+    mst.presets_price_ranges から、カテゴリーグループ×仕入先ごとの収集価格帯と漸減の対象を決める。
+
+    price_ranges: preset_group, category_group, vendor_code, low/high_usd_target, delete_flag の行
+    accounts: account, preset_group の行
+    listings: 未終了出品の account, vendor_code, preset, cnt の行（preset は NULL がありうる）
+    preset_pairs: {preset: (category_group, vendor_code)}（generate_preset_rows で作った全preset）
+
+    価格帯の集約（行単位）:
+      - delete_flag=0 の行は常に集約に入れる。
+      - delete_flag=1 の行（新規出品しない）は、そのアカウントの未終了出品がその
+        カテゴリーグループ×仕入先に残っている間だけ集約に入れる。そのアカウント・仕入先に
+        preset の分からない未終了出品がある場合も、どの組の出品か分からないので入れる。
+      - 収集範囲は集約した行の MIN(low)〜MAX(high)（途中に空白があっても1つの範囲）。
+    lookup の漸減（preset単位）:
+      - delete_flag=0 の行が1つも無い組（どのアカウントも新規出品しない組）だけが対象。
+        未終了出品（全アカウント）がある preset の lookup は残し、無いものは作らない。
+      - その仕入先に preset の分からない未終了出品があれば、その組の lookup は全件残す。
+      - 集約に入る行が無くても、組に未終了出品が残っていれば delete_flag=1 の行の価格帯で残す。
+    戻り値: (ranges, prune)
+      ranges: {(category_group, vendor_code): (low_usd, high_usd)}（lookup を作る組だけ）
+      prune: {(category_group, vendor_code): {"keep": set(preset) or None(全件), "skip": 理由 or None,
+               "rows": [(preset_group, delete_flag, 集約に入れたか)]}}（漸減対象の組だけ）
+    """
+    group_of_account = {r.account: r.preset_group for r in accounts}
+
+    listed_presets = set()
+    listed_groups = set()       # (preset_group, category_group, vendor_code)
+    listed_pairs = set()        # (category_group, vendor_code)
+    unknown_groups = set()      # (preset_group, vendor_code)
+    unknown_vendors = {}        # vendor_code -> 件数
+    for r in listings:
+        pg = group_of_account.get(r.account)
+        pair = preset_pairs.get(r.preset) if r.preset is not None else None
+        if pair is None:
+            unknown_vendors[r.vendor_code] = unknown_vendors.get(r.vendor_code, 0) + r.cnt
+            unknown_groups.add((pg, r.vendor_code))
+            continue
+        listed_presets.add(r.preset)
+        listed_pairs.add(pair)
+        listed_groups.add((pg, pair[0], pair[1]))
+
+    by_pair = {}
+    for r in price_ranges:
+        by_pair.setdefault((r.category_group, r.vendor_code), []).append(r)
+
+    ranges, prune = {}, {}
+    for pair, rows in by_pair.items():
+        cg_name, vc = pair
+
+        def counted(r):
+            return (not r.delete_flag
+                    or (r.preset_group, cg_name, vc) in listed_groups
+                    or (r.preset_group, vc) in unknown_groups)
+
+        used = [r for r in rows if counted(r)]
+        keep_by_listing = pair in listed_pairs or vc in unknown_vendors
+        basis = used or (rows if keep_by_listing else [])
+        if basis:
+            ranges[pair] = (min(r.low_usd_target for r in basis), max(r.high_usd_target for r in basis))
+
+        if any(not r.delete_flag for r in rows):
+            continue
+        if vc in unknown_vendors:
+            keep, skip = None, f"preset が分からない未終了の出品 {unknown_vendors[vc]} 件"
+        else:
+            keep, skip = {p for p in listed_presets if preset_pairs[p] == pair}, None
+        prune[pair] = {
+            "keep": keep,
+            "skip": skip,
+            "rows": [(r.preset_group, r.delete_flag, counted(r)) for r in rows],
+        }
+    return ranges, prune
+
+
+LOOKUP_INSERT_COLUMNS = (
+    "preset", "vendor_name", "brand_id", "category_id", "mode",
+    "low_usd_target", "high_usd_target", "category_id_ebay", "department",
+    "default_brand_en", "type_ebay", "low_jpy_target", "high_jpy_target",
+    "category_group", "is_active", "keep_low_usd_target", "keep_high_usd_target",
+)
+
+
+def build_presets_lookup(src):
+    """
+    mst.presets_lookup に入れる行と漸減の結果を作る（DBは読まない）。
+    戻り値: (rows, prune_results)
+      rows: INSERT 用の tuple の list（LOOKUP_INSERT_COLUMNS の順）
+      prune_results: format_lookup_prune に渡す list
+    """
+    generated = generate_preset_rows(src)
+    preset_pairs = {g["preset"]: (g["category_group"], g["vendor_code"]) for g in generated}
+    ranges, prune = plan_collection_ranges(
+        src["price_ranges"], src["accounts"], src["listings"], preset_pairs
+    )
+    group_by_name = {r.category_group: r for r in src["category_groups"]}
+
+    rows = []
+    counts = {pair: [0, 0] for pair in prune}  # 漸減対象の組: [作れる数, 残した数]
+    for g in generated:
+        pair = (g["category_group"], g["vendor_code"])
+        p = prune.get(pair)
+        if p is not None:
+            counts[pair][0] += 1
+        rng = ranges.get(pair)
+        if rng is None:
+            continue
+        if p is not None:
+            if p["keep"] is not None and g["preset"] not in p["keep"]:
+                continue
+            counts[pair][1] += 1
+
+        low, high = rng
+        cg = group_by_name[g["category_group"]]
+        # 検索（make_search_url）と同じ換算。mode は mst.category_groups のまま。
+        low_jpy, high_jpy = compute_cost_range_jpy_from_usd_range(
+            mode=g["mode"], low_usd_target=float(low), high_usd_target=float(high),
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, rows)
+        rows.append((
+            g["preset"],
+            g["vendor_name"],
+            g["brand_id"],
+            g["category_id"],
+            g["mode"],
+            low,
+            high,
+            g["category_id_ebay"],
+            g["department"],
+            g["default_brand_en"],
+            g["type_ebay"],
+            low_jpy,
+            high_jpy,
+            g["category_group"],
+            g["is_active"],
+            # 既存出品を「価格範囲外」で終了する判定の範囲。収集範囲を狭めても、従来の範囲
+            # （mst.category_groups）の中にある既存出品は終了させない。
+            min(low, cg.low_usd_target),
+            max(high, cg.high_usd_target),
+        ))
 
-    prune = prune_unlisted_lookups(cur)
+    results = []
+    for (cg_name, vc), p in sorted(prune.items()):
+        made, kept = counts[(cg_name, vc)]
+        results.append({
+            "category_group": cg_name,
+            "vendor_code": vc,
+            "lookup": made,
+            "deleted": made - kept,
+            "kept": kept,
+            "skip": p["skip"],
+            "rows": p["rows"],
+        })
+    return rows, results
+
+
+def refresh_presets_lookup(conn):
+    """
+    mst.presets_lookup を作り直す（commit まで。呼び出し側で autocommit を切ってから呼ぶ）。
+    収集価格帯は mst.presets_price_ranges のカテゴリーグループ×仕入先ごとの MIN〜MAX
+    （詳細は plan_collection_ranges）。戻り値は漸減の結果（format_lookup_prune でログにする）。
+    """
+    cur = conn.cursor()
+    print("presets_lookup refresh start")
+
+    src = load_lookup_sources(cur)
+    rows, prune = build_presets_lookup(src)
+
+    cur.execute("TRUNCATE TABLE mst.presets_lookup;")
+    cur.fast_executemany = True
+    cur.executemany(
+        f"INSERT INTO mst.presets_lookup ({', '.join(LOOKUP_INSERT_COLUMNS)}) "
+        f"VALUES ({', '.join('?' for _ in LOOKUP_INSERT_COLUMNS)})",
+        rows,
+    )
 
     conn.commit()
     print(f"presets_lookup refresh done: {len(rows):,} rows")
@@ -1126,123 +1270,17 @@ def refresh_presets_lookup(conn):
     return prune
 
 
-# 新規出品を止めた仕入先の lookup を、既存出品が無くなったものから消していく対象。
-# 谷川④の「腕時計」グループ（谷川④専用）の メルカリ・メルカリshops だけ。
-LOOKUP_PRUNE_ACCOUNT = "谷川④"
-LOOKUP_PRUNE_CATEGORY_GROUP = "腕時計"
-LOOKUP_PRUNE_VENDOR_CODES = ("M", "MS")
-
-_LOOKUP_PRUNE_SCOPE_SQL = """
-    SELECT
-        vd.vendor_code,
-        vd.vendor_name,
-        (SELECT COUNT(*) FROM mst.presets_lookup AS p
-          WHERE p.category_group = ? AND p.vendor_name = vd.vendor_name) AS lookup_cnt,
-        CASE WHEN EXISTS (
-            SELECT 1 FROM mst.ebay_account_excluded_vendors AS x
-            WHERE x.account = ? AND x.vendor_code = vd.vendor_code
-        ) THEN 1 ELSE 0 END AS is_excluded,
-        -- 未終了の出品で、商品データが無い・preset が NULL のもの（どの lookup の出品か分からない）
-        (SELECT COUNT(*) FROM trx.listings AS l
-           LEFT JOIN trx.vendor_item AS v
-             ON v.vendor_name = l.vendor_name AND v.vendor_item_id = l.vendor_item_id
-          WHERE l.is_deleted = 0 AND l.vendor_name = vd.vendor_name
-            AND (v.vendor_item_id IS NULL OR v.preset IS NULL)) AS unknown_listing_cnt
-    FROM mst.vendors AS vd
-    WHERE vd.vendor_code IN ({codes})
-"""
-
-# 対象の lookup のうち、未終了のeBay出品（全アカウント）の preset に一致するものが無い行を消す。
-_LOOKUP_PRUNE_DELETE_SQL = """
-    DELETE p
-    OUTPUT deleted.preset
-    FROM mst.presets_lookup AS p
-    WHERE p.category_group = ?
-      AND p.vendor_name = ?
-      AND NOT EXISTS (
-          SELECT 1
-          FROM trx.listings AS l
-          INNER JOIN trx.vendor_item AS v
-              ON v.vendor_name = l.vendor_name AND v.vendor_item_id = l.vendor_item_id
-          WHERE l.is_deleted = 0
-            AND v.preset = p.preset
-      )
-"""
-
-
-def prune_unlisted_lookups(cur):
-    """
-    再生成した presets_lookup から、新規出品を止めた仕入先の lookup のうち既存出品が0件のものを消す
-    （呼び出し側の commit で TRUNCATE・INSERT と一緒に確定する）。
-    対象は LOOKUP_PRUNE_ACCOUNT の LOOKUP_PRUNE_CATEGORY_GROUP、仕入先 LOOKUP_PRUNE_VENDOR_CODES だけ。
-
-    lookup ごとに、未終了のeBay出品（is_deleted=0、全アカウント）の vendor_item.preset と照合する。
-    出品中の商品の preset は検索で見つけた別の preset に書き換わることがあるが、毎サイクル再生成直後の
-    preset で数え直すので、出品がある lookup は必ず残る（書き換わり先の lookup も検索している＝残っている）。
-    消した lookup は検索されず候補にもならないので、その preset の出品が新しくできることはない。
-
-    次の場合はその仕入先の lookup を消さない（全件残す）:
-      - 対象アカウントでその仕入先が新規出品除外（mst.ebay_account_excluded_vendors）になっていない
-      - 対象グループを対象アカウント以外の preset_group も使っている（mst.presets_price_ranges）
-      - 未終了の出品に、商品データが無い・preset が NULL のものがある（どの lookup の出品か分からない）
-    戻り値: 仕入先ごとの結果の list（format_lookup_prune でログ用の文字列にする）
-    """
-    account, group = LOOKUP_PRUNE_ACCOUNT, LOOKUP_PRUNE_CATEGORY_GROUP
-
-    row = cur.execute(
-        "SELECT preset_group FROM mst.ebay_accounts WHERE account = ?", account
-    ).fetchone()
-    preset_group = row.preset_group if row else None
-    other_groups = []
-    if preset_group is not None:
-        other_groups = [r.preset_group for r in cur.execute("""
-            SELECT DISTINCT preset_group FROM mst.presets_price_ranges
-            WHERE category_group = ? AND preset_group <> ?
-        """, group, preset_group).fetchall()]
-
-    codes = ", ".join("?" for _ in LOOKUP_PRUNE_VENDOR_CODES)
-    scope = cur.execute(
-        _LOOKUP_PRUNE_SCOPE_SQL.format(codes=codes), group, account, *LOOKUP_PRUNE_VENDOR_CODES
-    ).fetchall()
-
-    results = []
-    for s in scope:
-        res = {
-            "vendor_code": s.vendor_code,
-            "vendor_name": s.vendor_name,
-            "lookup": s.lookup_cnt,
-            "deleted": 0,
-            "kept": s.lookup_cnt,
-            "skip": None,
-        }
-        if preset_group is None:
-            res["skip"] = f"アカウント {account} が mst.ebay_accounts に無い"
-        elif other_groups:
-            res["skip"] = f"{group} を他の preset_group も使用（{', '.join(other_groups)}）"
-        elif not s.is_excluded:
-            res["skip"] = f"{account} の新規出品除外に {s.vendor_code} が無い"
-        elif s.unknown_listing_cnt:
-            res["skip"] = f"preset が分からない未終了の出品 {s.unknown_listing_cnt} 件"
-        elif s.lookup_cnt:
-            deleted = cur.execute(_LOOKUP_PRUNE_DELETE_SQL, group, s.vendor_name).fetchall()
-            res["deleted"] = len(deleted)
-            res["kept"] = s.lookup_cnt - len(deleted)
-        results.append(res)
-    return results
-
-
 def format_lookup_prune(results) -> str:
-    """prune_unlisted_lookups の結果をログ1行にする。"""
+    """build_presets_lookup の漸減の結果をログ1行にする。"""
     parts = []
     for r in results:
-        text = f"{r['vendor_code']} 削除 {r['deleted']:,} / 維持 {r['kept']:,}"
+        text = f"{r['category_group']} {r['vendor_code']} 削除 {r['deleted']:,} / 維持 {r['kept']:,}"
         if r["skip"]:
             text += f"（削除しない: {r['skip']}）"
+        rows = "・".join(f"{pg}{'' if used else '(出品なし)'}" for pg, _flag, used in r["rows"])
+        text += f"［{rows}］"
         parts.append(text)
-    return (
-        f"presets_lookup 漸減（{LOOKUP_PRUNE_ACCOUNT}・{LOOKUP_PRUNE_CATEGORY_GROUP}）: "
-        + ("、".join(parts) if parts else "対象の仕入先なし")
-    )
+    return "presets_lookup 漸減: " + ("、".join(parts) if parts else "対象なし")
 
 
 # ======================

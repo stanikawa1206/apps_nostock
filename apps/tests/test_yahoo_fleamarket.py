@@ -455,7 +455,7 @@ class CheckRemainingYahooTest(unittest.TestCase):
 
     def run_sync(self, status, price, old_price=9000):
         row = {"vendor_name": yf.VENDOR_NAME, "vendor_item_id": "z123", "account": "谷川④", "listing_id": "1",
-               "preset": "SEIKOメンズ腕時計menY", "mode": "DDP", "low_usd_target": 100.0, "high_usd_target": 300.0,
+               "preset": "SEIKOメンズ腕時計menY", "mode": "DDP", "low_usd_target": 100.0, "high_usd_target": 300.0, "search_low_usd_target": 100.0, "search_high_usd_target": 300.0,
                "has_preset": True}
         conn = mock.MagicMock()
         page = mock.MagicMock()

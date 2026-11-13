@@ -7,9 +7,10 @@
 #    low_jpy_target / high_jpy_target を UPDATE する。
 #
 # 2) 続いて同じ category_group に属する
-#    nostock.mst.presets_price_ranges の全行について、
+#    nostock.mst.presets_price_ranges の全行（アカウント×カテゴリーグループ×仕入先）について、
 #    （presets側の USDレンジを使い、mode は category_groups 側を使って）
 #    low_jpy_target / high_jpy_target を UPDATE する。
+#    仕入先ごとに USDレンジが違ってもよいように、1行ずつ vendor_code まで指定して更新する。
 # ============================================================
 
 # -*- coding: utf-8 -*-
@@ -42,11 +43,12 @@ SQL_SELECT_PRESETS_BY_CATEGORY_GROUP = """
 SELECT
     preset_group,
     category_group,
+    vendor_code,
     low_usd_target,
     high_usd_target
 FROM nostock.mst.presets_price_ranges
 WHERE category_group = ?
-ORDER BY preset_group
+ORDER BY preset_group, vendor_code
 """
 
 SQL_UPDATE_PRESETS_JPY = """
@@ -56,6 +58,7 @@ SET
     high_jpy_target = ?
 WHERE category_group = ?
   AND preset_group  = ?
+  AND vendor_code   = ?
 """
 
 
@@ -116,6 +119,7 @@ def main():
 
         for prow in preset_rows:
             preset_group = (prow.preset_group or "").strip()
+            vendor_code  = prow.vendor_code
             cg2          = (prow.category_group or "").strip()
             p_low_usd    = prow.low_usd_target
             p_high_usd   = prow.high_usd_target
@@ -145,16 +149,17 @@ def main():
                 p_max_cost,
                 category_group,
                 preset_group,
+                vendor_code,
             )
 
             if cur.rowcount != 1:
                 raise RuntimeError(
                     f"[presets] UPDATE一意でない: category_group={category_group} "
-                    f"preset_group={preset_group} rowcount={cur.rowcount}"
+                    f"preset_group={preset_group} vendor_code={vendor_code} rowcount={cur.rowcount}"
                 )
 
             print(
-                f"    [presets] 更新: preset={preset_group} "
+                f"    [presets] 更新: preset={preset_group} vendor={vendor_code} "
                 f"usd={p_low_usd}-{p_high_usd} -> jpy={p_min_cost}-{p_max_cost} (mode={mode})"
             )
 

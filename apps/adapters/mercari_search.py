@@ -248,7 +248,9 @@ def fetch_active_presets(conn) -> List[Dict]:
             department,
             default_brand_en,
             type_ebay,
-            category_group
+            category_group,
+            keep_low_usd_target,
+            keep_high_usd_target
           FROM [mst].[presets_lookup] WITH (NOLOCK)
          ORDER BY preset
     """
@@ -271,5 +273,8 @@ def fetch_active_presets(conn) -> List[Dict]:
             "default_brand_en": (r[9] or "").strip(),
             "type_ebay":        (r[10] or "").strip() if r[10] is not None else "",
             "category_group":     (r[11] or "").strip(),
+            # 既存出品を「価格範囲外」で終了する判定の範囲（low/high_usd_target は収集範囲）
+            "keep_low_usd_target":  float(r[12]),
+            "keep_high_usd_target": float(r[13]),
         })
     return out

@@ -77,8 +77,14 @@ def main():
                     "preset": p["preset"],
                     "vendor_name": p["vendor_name"],
                     "mode": p["mode"],
-                    "low_usd_target": p["low_usd_target"],
-                    "high_usd_target": p["high_usd_target"],
+                    # low/high_usd_target は既存出品を「価格範囲外」で終了する判定の範囲、
+                    # search_* は検索（収集）の範囲。新旧のワーカーが混在しても既存出品を
+                    # 収集範囲の変更で終了させないよう、旧ワーカーが読むキーには判定の範囲を入れる
+                    # （旧ワーカーは判定の範囲で検索する＝従来どおり）。
+                    "low_usd_target": p["keep_low_usd_target"],
+                    "high_usd_target": p["keep_high_usd_target"],
+                    "search_low_usd_target": p["low_usd_target"],
+                    "search_high_usd_target": p["high_usd_target"],
                     "brand_id": p["brand_id"],
                     "category_id": p["category_id"],
                 }
