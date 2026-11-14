@@ -1,16 +1,12 @@
 # ============================================================
-# update_category_groups_and_presets_price_ranges.py
+# update_jpy_price_range.py
 #
 # ■ 目的
-# 1) nostock.mst.category_groups の USD価格レンジを元に
-#    compute_cost_range_jpy_from_usd_range() で円レンジを逆算し、
-#    low_jpy_target / high_jpy_target を UPDATE する。
-#
-# 2) 続いて同じ category_group に属する
-#    nostock.mst.presets_price_ranges の全行（アカウント×カテゴリーグループ×仕入先）について、
-#    （presets側の USDレンジを使い、mode は category_groups 側を使って）
-#    low_jpy_target / high_jpy_target を UPDATE する。
-#    仕入先ごとに USDレンジが違ってもよいように、1行ずつ vendor_code まで指定して更新する。
+# nostock.mst.presets_price_ranges の全行（アカウント×カテゴリーグループ×仕入先）について、
+# USDレンジと mst.category_groups の mode から compute_cost_range_jpy_from_usd_range() で
+# 円レンジを逆算し、low_jpy_target / high_jpy_target を UPDATE する。
+# 仕入先ごとに USDレンジが違ってもよいように、1行ずつ vendor_code まで指定して更新する。
+# （2026-11-14 mst.category_groups の価格範囲4列は廃止。価格範囲は presets_price_ranges だけで管理する）
 # ============================================================
 
 # -*- coding: utf-8 -*-
@@ -24,19 +20,9 @@ from apps.common.utils import (
 SQL_SELECT_CATEGORY_GROUPS = """
 SELECT
     category_group,
-    mode,
-    low_usd_target,
-    high_usd_target
+    mode
 FROM nostock.mst.category_groups
 ORDER BY category_group
-"""
-
-SQL_UPDATE_CATEGORY_GROUPS_JPY = """
-UPDATE nostock.mst.category_groups
-SET
-    low_jpy_target  = ?,
-    high_jpy_target = ?
-WHERE category_group = ?
 """
 
 SQL_SELECT_PRESETS_BY_CATEGORY_GROUP = """
@@ -66,7 +52,7 @@ def main():
     conn = get_sql_server_connection()
     cur = conn.cursor()
 
-    # ===== 外側: category_groups =====
+    # ===== 外側: category_groups（mode だけ使う） =====
     cur.execute(SQL_SELECT_CATEGORY_GROUPS)
     category_rows = cur.fetchall()
     print(f"[category_groups] 対象件数: {len(category_rows)}")
@@ -74,42 +60,11 @@ def main():
     for row in category_rows:
         category_group = (row.category_group or "").strip()
         mode          = (row.mode or "").strip()
-        low_usd       = row.low_usd_target
-        high_usd      = row.high_usd_target
 
         if not category_group:
             raise RuntimeError(f"category_groupが空: {row}")
         if not mode:
             raise RuntimeError(f"modeが空: category_group={category_group}")
-        if low_usd is None or high_usd is None:
-            raise RuntimeError(
-                f"category_groups USDレンジNULL: category_group={category_group} mode={mode}"
-            )
-
-        # 1) category_groups を USD→JPY 逆算して更新
-        min_cost, max_cost = compute_cost_range_jpy_from_usd_range(
-            mode=mode,
-            low_usd_target=float(low_usd),
-            high_usd_target=float(high_usd),
-        )
-
-        cur.execute(
-            SQL_UPDATE_CATEGORY_GROUPS_JPY,
-            min_cost,
-            max_cost,
-            category_group,
-        )
-
-        if cur.rowcount != 1:
-            raise RuntimeError(
-                f"[category_groups] UPDATE一意でない: category_group={category_group} rowcount={cur.rowcount}"
-            )
-
-        print(
-            f"[category_groups] 更新: {category_group} mode={mode} "
-            f"usd={low_usd}-{high_usd} -> jpy={min_cost}-{max_cost}"
-        )
-
         # ===== 内側: presets_price_ranges（同じcategory_group配下を全部） =====
         cur.execute(SQL_SELECT_PRESETS_BY_CATEGORY_GROUP, category_group)
         preset_rows = cur.fetchall()

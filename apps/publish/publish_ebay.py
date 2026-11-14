@@ -3076,7 +3076,7 @@ DEADLOCK_SQLSTATE = "40001"
 #   ① 候補の確定: 候補集合を @all へ読むだけ（ロックヒント無しの READ COMMITTED）。
 #      DBはRCSIなので他workerの未commit行は確保前の版（processing_at IS NULL）で見え、待たずに候補に入る。
 #      そのため @cand が0件 = 本当に候補が無い。
-#      候補集合は fn_take_one_candidates_for_account と同じ条件（base関数＋アカウントの除外仕入先）で
+#      候補集合は fn_take_one_candidates_for_account と同じ条件（base関数。新規出品しない仕入先は delete_flag=1 で除外済み）で
 #      1回だけ評価し、最小優先度とキー順の先頭N件は @all から取る。TVFを直接 TOP(N) で読むと
 #      行目標のせいで vendor_item をキー順に全件近く読み、Allowed も2回評価していた（2026-10-29 実測で
 #      1回15〜23秒。@all 経由は2〜8秒で、候補50件は全アカウントで一致）。
@@ -3130,14 +3130,6 @@ SELECT
     t.is_ok_logic, t.is_collectibles,
     t.publish_priority * 1000 + t.category_priority
 FROM dbo.fn_take_one_candidates_base(?) t
-WHERE NOT EXISTS (
-    SELECT 1
-    FROM mst.ebay_account_excluded_vendors x
-    INNER JOIN mst.vendors vd
-        ON vd.vendor_code = x.vendor_code
-    WHERE x.account = ?
-      AND vd.vendor_name = t.vendor_name
-)
 OPTION (MAXDOP 1);
 
 -- 最小優先度の候補をキー順に先頭N件。base関数は同一商品を複数行返し得るため1商品1行に絞る。
@@ -3203,8 +3195,8 @@ def take_one_vendor_item(conn, preset_group, processing_by, account_name):
     """
     【TVF委譲版】
     候補抽出は dbo.fn_take_one_candidates_for_account(@preset_group, @account) と同じ条件を
-    TAKE_ONE_SQL 内で1回だけ評価する（base関数＋アカウントの除外仕入先、最小優先度のみ）。
-    （mst.ebay_account_excluded_vendors でアカウントごとに除外した仕入先の商品は候補にならない）
+    TAKE_ONE_SQL 内で1回だけ評価する（base関数の候補のうち最小優先度のみ）。
+    （新規出品しない仕入先は mst.presets_price_ranges の delete_flag=1。base関数が除くので候補にならない）
     この関数は TVF が返した候補の中から1件だけをロック・確保して返す（詳細は TAKE_ONE_SQL のコメント）。
 
     None を返すのは「ロックの影響を受けない読み取りで候補が0件だった」時だけ（呼び出し側でEMPTYにする）。
@@ -3218,7 +3210,7 @@ def take_one_vendor_item(conn, preset_group, processing_by, account_name):
         t_start = time.time()
         try:
             with conn.cursor() as cur:
-                cur.execute(TAKE_ONE_SQL, (preset_group, account_name, TAKE_ONE_CANDIDATE_LIMIT, processing_by))
+                cur.execute(TAKE_ONE_SQL, (preset_group, TAKE_ONE_CANDIDATE_LIMIT, processing_by))
                 row = cur.fetchone()
                 columns = [col[0] for col in cur.description]
             conn.commit()
