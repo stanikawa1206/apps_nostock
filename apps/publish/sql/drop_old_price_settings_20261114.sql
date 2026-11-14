@@ -7,8 +7,9 @@
 --      （新規出品しない仕入先は delete_flag=1 の行か行なしで、base 関数が既に除いている）。
 --   3. mst.ebay_account_excluded_vendors を削除。
 --   4. mst.category_groups の low/high_usd_target・low/high_jpy_target を削除（mode 等は残す）。
+--   5. mst.v_presets と、それを結合する dbo.vw_vendor_item_unlisted_active を削除
+--      （どちらも 2026-09-03 から is_listing_target が無く壊れていて、使われていない）。
 -- 適用は apply_drop_old_price_settings_20261114.py（1トランザクション・検査付き）。戻しは *_rollback.sql。
--- ※ mst.v_presets は 2026-09-03 から is_listing_target が無く壊れている（今回の対象外・未修正）。
 -- ============================================================================
 
 ALTER TABLE mst.presets_price_ranges ADD
@@ -57,4 +58,10 @@ DROP TABLE mst.ebay_account_excluded_vendors;
 GO
 
 ALTER TABLE mst.category_groups DROP COLUMN low_usd_target, high_usd_target, low_jpy_target, high_jpy_target;
+GO
+
+DROP VIEW dbo.vw_vendor_item_unlisted_active;
+GO
+
+DROP VIEW mst.v_presets;
 GO

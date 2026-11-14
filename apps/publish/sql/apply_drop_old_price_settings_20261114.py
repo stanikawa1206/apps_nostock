@@ -4,13 +4,14 @@
 
   1. drop_old_price_settings_20261114.sql
      （presets_price_ranges.keep_* 追加と値の移し替え・for_account 関数の除外をやめる・
-       mst.ebay_account_excluded_vendors 削除・mst.category_groups の価格4列削除）
+       mst.ebay_account_excluded_vendors 削除・mst.category_groups の価格4列削除・
+       壊れていた mst.v_presets と dbo.vw_vendor_item_unlisted_active の削除）
   2. 検査
      - presets_price_ranges の keep_* が全行入り、category_groups の値と一致していた
      - 新しい daily_check（このリポジトリ）で作る lookup が、今の mst.presets_lookup と全列一致
        （収集範囲・JPY・keep_* が変わらない。漸減する組は出品の増減で preset が変わりうる）
      - アカウント別の出品候補（fn_take_one_candidates_for_account）の件数が変更前と一致
-     - 旧テーブル・旧列を参照する SQL モジュールが無い（壊れている mst.v_presets は除く）
+     - 旧テーブル・旧列・削除したビューを参照する SQL モジュールが無い
   3. --commit のときだけ commit。指定しなければ rollback（予行）。
 
 在庫管理ループを止め、出品処理が動いていない時間に実行する。
@@ -135,9 +136,12 @@ def main():
             SELECT OBJECT_SCHEMA_NAME(m.object_id) + '.' + OBJECT_NAME(m.object_id)
             FROM sys.sql_modules m
             WHERE m.definition LIKE '%ebay_account_excluded_vendors%'
+               OR m.definition LIKE '%v[_]presets%'
+               OR m.definition LIKE '%vw[_]vendor[_]item[_]unlisted[_]active%'
                OR (m.definition LIKE '%category_groups%' AND m.definition LIKE '%cg.low_%')""")]
-        print(f"旧テーブル {'残っている' if t else 'なし'} / category_groups の旧列 {c} / 参照するSQLモジュール {refs}")
-        ok &= t is None and c == 0 and refs in ([], [("mst.v_presets",)])
+        views = cur.execute("SELECT COUNT(*) FROM sys.views WHERE object_id IN (OBJECT_ID('mst.v_presets'), OBJECT_ID('dbo.vw_vendor_item_unlisted_active'))").fetchone()[0]
+        print(f"旧テーブル {'残っている' if t else 'なし'} / category_groups の旧列 {c} / 削除するビュー残り {views} / 参照するSQLモジュール {refs}")
+        ok &= t is None and c == 0 and views == 0 and refs == []
 
         if not ok:
             raise RuntimeError("検査で不一致があったので中止します")
