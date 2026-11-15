@@ -456,14 +456,37 @@ def detect_status_from_mercari_shops(
         pass
 
     time.sleep(0.2)
-    soup = BeautifulSoup(driver.page_source, "html.parser")
+    return judge_shops_product_html(driver.page_source, url=getattr(driver, "current_url", None))
+
+
+# 購入ボタンの文言。数量を選べる商品（在庫が複数）は「購入へ」になる（2026-11-15 確認: 2JUgYuUVZySYRbdUCEPW8K、在庫残り3点）。
+SHOPS_BUY_BUTTON_TEXTS = ("購入手続きへ", "購入へ")
+# この商品自身の売り切れ表示（data-testid="out-of-stock" の要素）の文言（2026-11-15 確認）
+SHOPS_SOLD_TEXTS = ("売り切れ", "在庫切れ")
+SHOPS_DELETED_TEXTS = ("ページが見つかりませんでした", "該当する商品は削除されています。")
+
+
+def judge_shops_product_html(html: str, url: Optional[str] = None) -> tuple[Status, Optional[int]]:
+    """
+    メルカリShops の商品ページの HTML から状態を判定する（detect_status_from_mercari_shops の本体）。
+
+    売り切れにするのは、この商品自身の売り切れ表示（data-testid="out-of-stock"、文言「売り切れ」「在庫切れ」）が
+    あり、かつ有効な購入ボタンが無いときだけ。買えるかどうかが分からない場合は「判定不可」を返す
+    （check_remaining は出品を維持して次回に再確認し、出品前の確認は出品しない）。
+      - 削除表示（「ページが見つかりませんでした」等） → 削除
+      - 価格が取れない → RuntimeError（従来どおり。出品前の確認では解析失敗）
+      - 有効な購入ボタン（「購入手続きへ」「購入へ」）があり、売り切れ表示が無い → 販売中
+      - 売り切れ表示があり、有効な購入ボタンが無い → 売り切れ（ボタンは無効表示か、無いか）
+      - それ以外（ボタンも売り切れ表示も無い、両方ある、知らないボタン等） → 判定不可
+    2026-11-15 までは「購入手続きへ」のボタンが見つからないと無条件に売り切れにしていたため、
+    「購入へ」の販売中の商品を売り切れと誤判定していた（check_remaining では eBay の出品終了につながる）。
+    「他の商品」欄（data-testid="shopOtherItem…"）は商品詳細の枠の中にあるが、別の商品なので判定に使わない。
+    """
+    soup = BeautifulSoup(html or "", "html.parser")
     main = soup.select_one("#main") or soup
 
     whole = main.get_text(" ", strip=True)
-    if any(t in whole for t in [
-        "ページが見つかりませんでした",
-        "該当する商品は削除されています。",
-    ]):
+    if any(t in whole for t in SHOPS_DELETED_TEXTS):
         return "削除", None
 
     price_el = main.select_one('[data-testid="product-price"]')
@@ -477,20 +500,33 @@ def detect_status_from_mercari_shops(
 
     price = int(m.group(1).replace(",", ""))
 
-    # ===== 売り切れ（disabledボタン）判定 =====
-    try:
-        btn = driver.find_element(By.XPATH, "//button[normalize-space()='購入手続きへ']")
+    for other in main.select('[data-testid^="shopOtherItem"]'):
+        other.decompose()
 
-        # disabled 属性が付いていれば売り切れ
-        if btn.get_attribute("disabled") is not None:
-            return "売り切れ", None
+    buy_buttons = [
+        b for b in main.select("button")
+        if " ".join(b.get_text(" ", strip=True).split()) in SHOPS_BUY_BUTTON_TEXTS
+    ]
+    enabled = [
+        b for b in buy_buttons
+        if not b.has_attr("disabled") and (b.get("aria-disabled") or "").lower() != "true"
+    ]
+    sold_marks = [
+        el for el in main.select('[data-testid="out-of-stock"]')
+        if any(s in el.get_text(" ", strip=True) for s in SHOPS_SOLD_TEXTS)
+    ]
 
-        # disabled が無ければ販売中
+    if enabled and not sold_marks:
         return "販売中", price
-
-    except Exception:
-        # ボタンが存在しない場合は販売不可
+    if sold_marks and not enabled:
         return "売り切れ", None
+
+    print(
+        f"[SHOPS_STATUS] 判定不可 url={url} 購入ボタン={[b.get_text(' ', strip=True) for b in buy_buttons]} "
+        f"有効={len(enabled)} 売り切れ表示={[el.get_text(' ', strip=True) for el in sold_marks]}",
+        flush=True,
+    )
+    return "判定不可", None
 
 # ================================
 # vendor_item 更新
