@@ -3108,7 +3108,7 @@ DEADLOCK_SQLSTATE = "40001"
 #      DBはRCSIなので他workerの未commit行は確保前の版（processing_at IS NULL）で見え、待たずに候補に入る。
 #      そのため @cand が0件 = 本当に候補が無い。
 #      候補集合は fn_take_one_candidates_for_account と同じ条件（base関数。新規出品しない仕入先は delete_flag=1 で除外済み）で
-#      1回だけ評価し、最小優先度とキー順の先頭N件は @all から取る。TVFを直接 TOP(N) で読むと
+#      1回だけ評価し、最小優先度の先頭N件（仕入先での出品日時が新しい順。2026-11-15 まではキー順）は @all から取る。TVFを直接 TOP(N) で読むと
 #      行目標のせいで vendor_item をキー順に全件近く読み、Allowed も2回評価していた（2026-10-29 実測で
 #      1回15〜23秒。@all 経由は2〜8秒で、候補50件は全アカウントで一致）。
 #   ② 1件の確保: @cand を順に Nested Loops で vendor_item の主キーへ当て、UPDLOCK/READPAST で
@@ -3119,6 +3119,8 @@ TAKE_ONE_SQL = r"""
 SET NOCOUNT ON;
 
 DECLARE @cand TABLE (
+    -- 処理する順番（1 = 最初）。② はこの主キーの順に読むので、並べ替えを挟まずに先頭から確保できる。
+    ord              INT           NOT NULL PRIMARY KEY,
     vendor_name      NVARCHAR(100) NOT NULL,
     vendor_item_id   NVARCHAR(200) NOT NULL,
     preset           NVARCHAR(200) NULL,
@@ -3132,7 +3134,7 @@ DECLARE @cand TABLE (
     high_jpy_target  INT           NULL,
     is_ok_logic      BIT           NULL,
     is_collectibles  BIT           NULL,
-    PRIMARY KEY (vendor_name, vendor_item_id)
+    UNIQUE (vendor_name, vendor_item_id)
 );
 DECLARE @all TABLE (
     vendor_name      NVARCHAR(100) NOT NULL,
@@ -3163,22 +3165,31 @@ SELECT
 FROM dbo.fn_take_one_candidates_base(?) t
 OPTION (MAXDOP 1);
 
--- 最小優先度の候補をキー順に先頭N件。base関数は同一商品を複数行返し得るため1商品1行に絞る。
+-- 最小優先度の候補を、仕入先での出品日時が新しい順に先頭N件。base関数は同一商品を複数行返し得るため1商品1行に絞る。
+-- 出品日時は vendor_created_at。ラクマ・Yahoo!フリマは検索結果に出品日時が無く NULL なので、
+-- この仕組みで最初に取り込んだ日時（created_at）で代える。同じ日時は仕入先・商品IDの順。
+-- 2026-11-15 までは商品IDの順で、古い（仕入先で削除済みの多い）商品から確認していた。
+-- 優先度（仕入先×カテゴリー）は仕入先ごとに異なるので、同じ優先度に別の仕入先の商品が混ざることはない。
 DECLARE @min_prio INT = (SELECT MIN(prio) FROM @all);
 
 INSERT INTO @cand
 SELECT TOP (?)
+    ROW_NUMBER() OVER (ORDER BY t.sort_at DESC, t.vendor_name, t.vendor_item_id),
     t.vendor_name, t.vendor_item_id, t.preset, t.mode, t.default_brand_en, t.category_id_ebay,
     t.department, t.type_ebay, t.category_group, t.low_jpy_target, t.high_jpy_target,
     t.is_ok_logic, t.is_collectibles
 FROM (
     SELECT a.*,
+           COALESCE(v.vendor_created_at, v.created_at) AS sort_at,
            ROW_NUMBER() OVER (PARTITION BY a.vendor_name, a.vendor_item_id ORDER BY (SELECT NULL)) AS rn
     FROM @all a
+    INNER JOIN trx.vendor_item v
+        ON  v.vendor_name    = a.vendor_name
+        AND v.vendor_item_id = a.vendor_item_id
     WHERE a.prio = @min_prio
 ) t
 WHERE t.rn = 1
-ORDER BY t.vendor_name, t.vendor_item_id
+ORDER BY t.sort_at DESC, t.vendor_name, t.vendor_item_id
 OPTION (MAXDOP 1);
 
 DECLARE @cand_count INT = @@ROWCOUNT;
@@ -3193,7 +3204,7 @@ WITH x AS (
         ON  v.vendor_name    = c.vendor_name
         AND v.vendor_item_id = c.vendor_item_id
     WHERE v.processing_at IS NULL
-    ORDER BY c.vendor_name, c.vendor_item_id
+    ORDER BY c.ord
 )
 UPDATE x
 SET processing_by = ?,
