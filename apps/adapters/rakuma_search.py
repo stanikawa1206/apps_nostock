@@ -23,36 +23,19 @@ RAKUMA_USER_AGENT = (
 
 FETCH_TIMEOUT_SEC = 20
 
-# 時間をおけば回復する見込みのあるHTTPステータス。scrape_worker はこれらのときジョブを再試行待ちにする。
-# 2026-10-28 01:06〜02:00 に fril.jp が全ワーカーへ 503 を返し、fetch_active の318ジョブが error のまま残った。
-TRANSIENT_HTTP_STATUSES = {429, 500, 502, 503, 504}
-
-# エラーログに残すレスポンス本文の先頭の文字数
-ERROR_BODY_HEAD_CHARS = 300
+# ラクマへの HTTP アクセスの結果は rakuma_outage が記録し、障害中（5xx は全台、429 はその台）はアクセスしない。
+# RakumaHttpError・TRANSIENT_HTTP_STATUSES・ERROR_BODY_HEAD_CHARS は以前ここにあった（呼び出し側のため名前を残す）。
+from apps.adapters.rakuma_outage import (  # noqa: E402
+    ERROR_BODY_HEAD_CHARS,
+    TRANSIENT_HTTP_STATUSES,
+    RakumaHttpError,
+    RakumaPausedError,
+    check_response,
+    raise_if_paused,
+)
 
 # https://item.fril.jp/<32桁hex> から末尾のIDを取り出す
 _ITEM_ID_PATTERN = re.compile(r"item\.fril\.jp/([0-9a-f]+)", re.IGNORECASE)
-
-
-class RakumaHttpError(Exception):
-    """検索結果ページの取得が 2xx / 404 以外で失敗した。原因調査用にレスポンスの情報を持つ。"""
-
-    def __init__(self, url: str, status_code: int, retry_after: Optional[str],
-                 server: Optional[str], content_type: Optional[str], body_head: str):
-        self.url = url
-        self.status_code = status_code
-        self.retry_after = retry_after
-        self.server = server
-        self.content_type = content_type
-        self.body_head = body_head
-        super().__init__(
-            f"RAKUMA_HTTP status={status_code} retry_after={retry_after} server={server} "
-            f"content_type={content_type} url={url} body_head={body_head!r}"
-        )
-
-    @property
-    def transient(self) -> bool:
-        return self.status_code in TRANSIENT_HTTP_STATUSES
 
 
 def rakuma_page_url(base_url: str, page_idx_zero: int) -> str:
@@ -71,24 +54,15 @@ def fetch_rakuma_search_html(url: str) -> Optional[str]:
     それ以外の失敗は RakumaHttpError（レスポンス情報をログに出してから送出）。
     ログには応答の情報だけを出す（リクエストヘッダー・Cookie は出さない）。
     """
+    raise_if_paused(url)  # 障害中は送らずに RakumaPausedError（RakumaHttpError の一種・再試行対象）
     resp = requests.get(
         url,
         headers={"User-Agent": RAKUMA_USER_AGENT},
         timeout=FETCH_TIMEOUT_SEC,
     )
+    check_response(resp, url)  # 2xx / 404 以外は RakumaHttpError（5xx・429 は障害として記録）
     if resp.status_code == 404:
         return None
-    if resp.status_code >= 400:
-        err = RakumaHttpError(
-            url=url,
-            status_code=resp.status_code,
-            retry_after=resp.headers.get("Retry-After"),
-            server=resp.headers.get("Server"),
-            content_type=resp.headers.get("Content-Type"),
-            body_head=" ".join(resp.text[:ERROR_BODY_HEAD_CHARS].split()),
-        )
-        print(f"[RAKUMA HTTP ERROR] {err}", flush=True)
-        raise err
     return resp.text
 
 

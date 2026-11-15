@@ -74,6 +74,8 @@ from apps.adapters.mercari_item_status import (
 )
 from apps.adapters.mercari_item_status import fetch_shops_api_data,fetch_mercari_api_data,_parse_status_from_res,detect_status_from_mercari_shops
 from apps.adapters.rakuma_item_status import parse_detail_rakuma, RakumaItemUnavailableError, is_rakuma_update_too_old
+from apps.adapters import rakuma_outage
+from apps.adapters.rakuma_outage import RakumaHttpError
 from apps.adapters import yahoo_fleamarket as yahoo
 from apps.publish.material_check import (
     adjust_title_materials, check_material_with_cache, description_material_note, ensure_title_labels, material_labels,
@@ -1391,6 +1393,23 @@ JSON format:
 # =========================
 # heavy_check_detail / post_to_ebay（あなたが貼った版のまま）
 # =========================
+def release_vendor_item(conn, vendor_name, sku):
+    """take_one で確保した候補を、出品状況を書かずに手放す（このワーカーが確保したものだけ）。"""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE trx.vendor_item
+               SET processing_by = NULL,
+                   processing_at = NULL
+             WHERE vendor_name = ?
+               AND vendor_item_id = ?
+               AND processing_by = ?;
+            """,
+            (vendor_name, sku, get_processing_by()),
+        )
+    conn.commit()
+
+
 def heavy_check_detail(
     conn,
     page,
@@ -1468,7 +1487,18 @@ def heavy_check_detail(
         return None, debug_unavailable_dump, writes_since_commit, 1, 0
 
 
+
     except Exception as e:
+        if isinstance(e, RakumaHttpError) and e.transient:
+            # ラクマの 5xx・429、または障害中でアクセスしなかった（rakuma_outage が記録・判定する）。
+            # 商品のせいではないので「解析失敗」にせず、候補を手放して後で取り直せるようにする。
+            # 障害中は TAKE_ONE_SQL がラクマの候補を外すので、すぐに同じ商品を取り直すことはない。
+            # 2026-11-15 はこの場合も解析失敗にしていたため、503 の 1,490 件を当日の候補から失った。
+            # それ以外の RakumaHttpError（403 など）は従来どおり下の「解析失敗」。
+            print(f"[RAKUMA] 一時的なエラーのため候補を戻します SKU={sku}: {str(e)[:200]}", flush=True)
+            release_vendor_item(conn, vendor_name, sku)
+            return None, debug_unavailable_dump, writes_since_commit, 0, 0
+
         # chromedriver だけが死んでいる（Playwright の driver は生きている）場合は、プロセスを終了せず
         # Selenium の driver を作り直して続ける。この商品は下の「解析失敗」として記録してから知らせる
         # （作り直した driver で同じ商品を取り直さない＝同じ商品で繰り返し失敗し続けることはない）。
@@ -3115,6 +3145,9 @@ DEADLOCK_SQLSTATE = "40001"
 #      最初に確保できた1行だけを更新する（途中に集約を挟まないよう結合順・方式・索引を固定）。
 #      ①の後に他workerが確保済みにした行は processing_at IS NULL の再確認で除外する。
 # 最後に @cand の件数と確保した1行を返す（確保できなかった場合は候補件数だけの行）。
+# 候補がラクマだけでラクマの障害中のとき、取り直すまでの秒数
+RAKUMA_PAUSED_WAIT_SEC = 60
+
 TAKE_ONE_SQL = r"""
 SET NOCOUNT ON;
 
@@ -3165,6 +3198,15 @@ SELECT
 FROM dbo.fn_take_one_candidates_base(?) t
 OPTION (MAXDOP 1);
 
+-- ①' ラクマの障害中（apps/adapters/rakuma_outage.py。5xx は全台、429 はこの台）はラクマの候補を外す。
+-- 外した件数を返し、候補がラクマだけだった場合に「在庫枯渇(EMPTY)」と区別する。
+DECLARE @rakuma_paused INT = 0;
+IF {PAUSED_EXISTS}
+BEGIN
+    DELETE FROM @all WHERE vendor_name = N'ラクマ';
+    SET @rakuma_paused = @@ROWCOUNT;
+END
+
 -- 最小優先度の候補を、仕入先での出品日時が新しい順に先頭N件。base関数は同一商品を複数行返し得るため1商品1行に絞る。
 -- 出品日時は vendor_created_at。ラクマ・Yahoo!フリマは検索結果に出品日時が無く NULL なので、
 -- この仕組みで最初に取り込んだ日時（created_at）で代える。同じ日時は仕入先・商品IDの順。
@@ -3214,6 +3256,7 @@ OPTION (FORCE ORDER, LOOP JOIN, MAXDOP 1);
 
 SELECT
     @cand_count AS cand_count,
+    @rakuma_paused AS rakuma_paused_count,
     r.vendor_item_id, r.vendor_name, r.price, r.shipping_region, r.shipping_days,
     r.preset, r.mode, r.default_brand_en, r.category_id_ebay, r.department, r.type_ebay,
     r.category_group, r.low_jpy_target, r.high_jpy_target, r.item_condition_id,
@@ -3231,6 +3274,8 @@ LEFT JOIN (
         ON c.vendor_name = p.vendor_name AND c.vendor_item_id = p.vendor_item_id
 ) AS r ON 1 = 1;
 """
+# 障害中の判定は在庫管理と同じ条件（? = このワーカーの名前）。
+TAKE_ONE_SQL = TAKE_ONE_SQL.replace("{PAUSED_EXISTS}", rakuma_outage.PAUSED_EXISTS_SQL.strip())
 
 
 def take_one_vendor_item(conn, preset_group, processing_by, account_name):
@@ -3252,7 +3297,7 @@ def take_one_vendor_item(conn, preset_group, processing_by, account_name):
         t_start = time.time()
         try:
             with conn.cursor() as cur:
-                cur.execute(TAKE_ONE_SQL, (preset_group, TAKE_ONE_CANDIDATE_LIMIT, processing_by))
+                cur.execute(TAKE_ONE_SQL, (preset_group, processing_by, TAKE_ONE_CANDIDATE_LIMIT, processing_by))
                 row = cur.fetchone()
                 columns = [col[0] for col in cur.description]
             conn.commit()
@@ -3270,6 +3315,15 @@ def take_one_vendor_item(conn, preset_group, processing_by, account_name):
 
         result = dict(zip(columns, row))
         cand_count = result.pop("cand_count")
+        rakuma_paused_count = result.pop("rakuma_paused_count")
+
+        if cand_count == 0 and rakuma_paused_count > 0:
+            # 候補はラクマだけで、ラクマの障害中のため外した。枯渇ではないので、障害が明けるまで待って取り直す
+            # （EMPTY にすると、このアカウントはその日もう取得されない）。
+            print(f"  [DB_INFO] account={account_name} 候補はラクマの{rakuma_paused_count}件だけで、ラクマの障害中です。"
+                  f"{RAKUMA_PAUSED_WAIT_SEC}秒後に再試行します (attempt={attempt})", flush=True)
+            time.sleep(RAKUMA_PAUSED_WAIT_SEC)
+            continue
 
         if cand_count == 0:
             # ロックの影響を受けない読み取りで候補が0件 = そのグループの担当レンジに在庫がない（枯渇）

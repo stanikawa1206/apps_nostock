@@ -281,6 +281,11 @@ def error_reason(error_message) -> str:
         # 例: "[再試行を使い切った retry=6/6] RAKUMA_HTTP status=503 retry_after=..." → 区分とステータスだけ
         head, rest = last.split(" RAKUMA_HTTP status=", 1)
         return f"{head} HTTP {rest.split()[0]}"
+    if " RAKUMA_PAUSED kind=" in last:
+        # 例: "[再試行を使い切った retry=6/6] RAKUMA_PAUSED kind=OUTAGE paused_until=... url=..."
+        #   （ラクマの障害中のためアクセスしなかった。rakuma_outage）→ 区分と障害の種類だけ
+        head, rest = last.split(" RAKUMA_PAUSED kind=", 1)
+        return f"{head} ラクマ障害中 {rest.split()[0]}"
     return last.split(" for url:")[0][:150]
 
 

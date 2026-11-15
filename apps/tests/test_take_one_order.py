@@ -63,6 +63,9 @@ class TakeOneOrderTest(DbTestBase):
             assert cur.fetchone()[0] == "nostock_test_blocked"
             for sql in OBJECTS:
                 cur.execute(sql)
+            # TAKE_ONE_SQL はラクマの障害情報（mst.control）も読む。本番と同じ定義
+            cur.execute("IF OBJECT_ID('mst.control') IS NULL CREATE TABLE mst.control ("
+                        "param_key NVARCHAR(200) NOT NULL CONSTRAINT PK_control_parameter PRIMARY KEY, param_value INT NULL)")
             c.commit()
 
     def setUp(self):
@@ -140,6 +143,29 @@ class TakeOneOrderTest(DbTestBase):
             holder.rollback()
         finally:
             holder.close()
+
+    def test_rakuma_paused_keeps_newest_first(self):
+        # ラクマの障害中（mst.control の全台の停止期限）はラクマの候補を外し、次の優先度を新しい順に取る。期限後はラクマを新しい順に
+        self.sql("DELETE FROM mst.control")
+        self.add("ラクマ", "r_old", None, first_seen=T0 - timedelta(days=2), prio=(1, 1))
+        self.add("ラクマ", "r_new", None, first_seen=T0 - timedelta(hours=1), prio=(1, 1))
+        self.add("メルカリshops", "s_old", T0 - timedelta(days=5))
+        self.add("メルカリshops", "s_new", T0 - timedelta(hours=3))
+        # 全台の停止（ラクマ障害_停止期限 = 今から10分後）
+        self.sql("INSERT INTO mst.control VALUES (N'ラクマ障害_停止期限', DATEDIFF(SECOND, '20000101', SYSDATETIME()) + 600)")
+        self.conn.commit()
+        conn = pe.get_sql_server_connection()
+        try:
+            got = [pe.take_one_vendor_item(conn, "g", "w1", "acct")["vendor_item_id"] for _ in range(2)]
+        finally:
+            conn.close()
+        self.assertEqual(got, ["s_new", "s_old"])
+        self.sql("UPDATE mst.control SET param_value = DATEDIFF(SECOND, '20000101', SYSDATETIME()) - 1 "
+                 "WHERE param_key = N'ラクマ障害_停止期限'")
+        self.conn.commit()
+        self.assertEqual(self.take_all(), ["r_new", "r_old"])
+        self.sql("DELETE FROM mst.control")
+        self.conn.commit()
 
     def test_empty(self):
         self.assertEqual(self.take_all(group="none"), [])

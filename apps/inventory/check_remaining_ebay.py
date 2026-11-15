@@ -84,7 +84,7 @@ from apps.adapters.mercari_item_status import (
 from apps.adapters.mercari_scraper import build_driver
 from apps.common.utils import get_sql_server_connection, compute_start_price_usd
 from apps.common.process_watchdog import kill_own_descendants, playwright_driver_monitor, start_watchdog
-from apps.adapters.rakuma_item_status import check_rakuma_item_status, RakumaItemUnavailableError
+from apps.adapters.rakuma_item_status import check_rakuma_item_status, RakumaItemUnavailableError, RakumaHttpError
 from apps.adapters import yahoo_fleamarket as yahoo
 
 # 1回の繰り返し（10件ごとのブラウザ再起動・対象取得・1商品の処理）の上限秒数。これを超えたら
@@ -191,6 +191,14 @@ def get_status(page, driver: Optional[webdriver.Chrome], url: str) -> tuple[Stat
             return check_rakuma_item_status(url)
         except RakumaItemUnavailableError:
             return "削除", None
+        except RakumaHttpError as e:
+            # 5xx・429 と障害中（rakuma_outage が全台／この台を止めている間はアクセスしない）は、
+            # 出品を終了せず「判定不可」（出品維持・次回の在庫確認で再確認）。Yahoo!フリマと同じ扱い。
+            # それ以外の HTTP エラー（403 など）は従来どおり例外のまま。
+            if not e.transient:
+                raise
+            print(f"[RAKUMA FETCH ERROR] {url} {str(e)[:200]} → 判定不可（出品維持）", flush=True)
+            return "判定不可", None
 
     # --- 0'. Yahoo!フリマの場合：商品詳細APIをHTTP GETのみ ---
     #     削除済み（商品の404）だけを「削除」にする。取得エラー（5xx・商品以外の404・通信エラー）は

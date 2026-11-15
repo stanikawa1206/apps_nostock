@@ -29,6 +29,24 @@ sys.stdout, sys.stderr = _stdout, _stderr
 sw._log_file.close()
 
 
+# 障害情報（rakuma_outage）は DB を使うので、このテストでは「障害なし」に固定し、記録は呼び出しだけ見る。
+from apps.adapters import rakuma_outage as _ro  # noqa: E402
+_RO_PATCHES = [
+    mock.patch.object(_ro, "_current_state", return_value={"paused_until": None, "kind": None, "open": 0}),
+    mock.patch.object(_ro, "_run", return_value=(None, 100, 50)),  # (変更前の期限, 変更後の期限, 今)
+]
+
+
+def setUpModule():
+    for p in _RO_PATCHES:
+        p.start()
+
+
+def tearDownModule():
+    for p in _RO_PATCHES:
+        p.stop()
+
+
 class FakeResponse:
     def __init__(self, status_code, text="", headers=None):
         self.status_code = status_code

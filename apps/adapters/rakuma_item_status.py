@@ -44,6 +44,8 @@ from typing import Any, Dict, List, Optional
 import requests
 from bs4 import BeautifulSoup
 
+from apps.adapters.rakuma_outage import RakumaHttpError, RakumaPausedError, check_response, raise_if_paused  # noqa: F401
+
 RAKUMA_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -202,14 +204,20 @@ def _extract_ld_json_product(soup: BeautifulSoup) -> Optional[dict]:
 
 
 def fetch_rakuma_item_html(url: str) -> str:
+    """
+    障害中（rakuma_outage）は送らずに RakumaPausedError。2xx / 404 以外は RakumaHttpError
+    （5xx は全台、429 はこの台の障害として記録してから送出する）。
+    以前は raise_for_status() の requests.HTTPError だった（2026-11-15 から RakumaHttpError）。
+    """
+    raise_if_paused(url)
     resp = requests.get(
         url,
         headers={"User-Agent": RAKUMA_USER_AGENT},
         timeout=FETCH_TIMEOUT_SEC,
     )
+    check_response(resp, url)
     if resp.status_code == 404:
         raise RakumaItemUnavailableError(f"item not found (404): {url}", state="削除")
-    resp.raise_for_status()
     return resp.text
 
 
