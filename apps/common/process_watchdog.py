@@ -80,17 +80,27 @@ def write_exit_report(reason: str, exit_code: int) -> None:
         print(f"[WATCHDOG] 終了記録の書き込みに失敗しました: {e!r}", flush=True)
 
 
-def kill_own_descendants_and_exit(reason: str, exit_code: int) -> None:
-    write_exit_report(reason, exit_code)
-    print(f"[WATCHDOG] {reason} → 子プロセスを強制終了して exit {exit_code}", flush=True)
-    # 対象はこのプロセスから起動された子孫だけ（psutil は親より後に作られたプロセスだけを子とみなすため、
-    # PID が再利用された無関係のプロセスや、利用者が開いている Chrome などは含まれない）。
+def kill_own_descendants() -> list:
+    """
+    このプロセスから起動された子孫（Playwright driver・Chromium・chromedriver・Chrome）だけを kill し、
+    kill を送ったプロセスの一覧（psutil.Process）を返す。
+    psutil は親より後に作られたプロセスだけを子とみなすため、PID が再利用された無関係のプロセスや、
+    同じPCで動く別の処理（出品の publish_ebay・購入処理など）の chromedriver・Chrome、
+    利用者が開いている Chrome は含まれない。
+    """
     children = psutil.Process(os.getpid()).children(recursive=True)
     for child in children:
         try:
             child.kill()
         except psutil.NoSuchProcess:
             pass
+    return children
+
+
+def kill_own_descendants_and_exit(reason: str, exit_code: int) -> None:
+    write_exit_report(reason, exit_code)
+    print(f"[WATCHDOG] {reason} → 子プロセスを強制終了して exit {exit_code}", flush=True)
+    children = kill_own_descendants()
     print(f"[WATCHDOG] 子プロセス{len(children)}件にkillを送信しました", flush=True)
     sys.stdout.flush()
     sys.stderr.flush()

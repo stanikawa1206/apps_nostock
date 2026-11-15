@@ -17,11 +17,11 @@ if %code% == 0 (
 :: 異常終了なら再起動
 echo CRASHED or RELOAD: Restarting in 15 seconds...
 
-:: 【修正ポイント】名前で一括削除するのをやめる
-:: もしどうしても掃除したい場合は、Python側で処理を完結させるのがベストですが、
-:: ここでは「自分のChromeを巻き込まない」ために一旦コメントアウト（無効化）します。
-:: taskkill /F /IM chrome.exe /T >nul 2>&1
-taskkill /F /IM chromedriver.exe /T >nul 2>&1
+:: chromedriver / Chrome の後片付けは check_remaining_ebay.py が、この実行で起動したプロセスだけを対象に行う
+:: (終了時の kill_own_descendants と、監視による自己終了時の kill_own_descendants_and_exit。apps/common/process_watchdog.py)。
+:: 2026-11-15 まではここで taskkill /F /IM chromedriver.exe /T を実行しており、同じPCの出品(publish_ebay)や
+:: 購入処理の chromedriver まで終了させていた(11/2〜15 の mouse の出品の Renderer異常 7回の原因)。
+:: 名前を指定した taskkill は使わないこと。VPS の check_remaining_ebay.sh も自分の実行だけを片付ける方式。
 
 :: 15秒待機
 timeout /t 15

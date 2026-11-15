@@ -229,6 +229,23 @@ class FatalRendererError(Exception):
     pass
 
 
+def is_selenium_driver_connection_refused(e: Exception) -> bool:
+    """
+    Selenium の chromedriver が既に終了していて、localhost の chromedriver へ接続できない（接続拒否）。
+    例: HTTPConnectionPool(host='localhost', port=63481): Max retries exceeded with url: /session/.../url
+        (Caused by NewConnectionError(... [WinError 10061] ...))   ※Linux は [Errno 111] Connection refused
+    Playwright は localhost の HTTP を使わないので、この形は Selenium（メルカリshops）だけで起きる。
+    応答が無い（read timed out）場合は含めない（chromedriver が固まっている可能性があり、従来どおり致命扱い）。
+    """
+    s = str(e)
+    return "host='localhost'" in s and "NewConnectionError" in s
+
+
+class SeleniumDriverDeadError(Exception):
+    """メルカリshops の確認中に chromedriver が死んでいた。呼び出し側で driver を捨てて作り直す。"""
+    pass
+
+
 # ========= プロセスが処理を進められなくなった時の自己終了 =========
 # 仕組みは apps/common/process_watchdog.py（check_remaining_ebay と共通）。
 # exit code は 0/10 以外なので VPS の publish_ebay_loop.sh が15秒後に新しい publish_ebay を起動する。
@@ -1452,7 +1469,18 @@ def heavy_check_detail(
 
 
     except Exception as e:
-        if is_fatal_renderer_error(e):
+        # chromedriver だけが死んでいる（Playwright の driver は生きている）場合は、プロセスを終了せず
+        # Selenium の driver を作り直して続ける。この商品は下の「解析失敗」として記録してから知らせる
+        # （作り直した driver で同じ商品を取り直さない＝同じ商品で繰り返し失敗し続けることはない）。
+        # 2026-11-02〜15 の mouse では、check_remaining_ebay.bat の taskkill /IM chromedriver.exe に
+        # chromedriver を終了させられ、Renderer異常として exit 1 し、自動再起動しないため以後止まっていた
+        # （bat は 2026-11-15 に修正。これは他の原因で chromedriver が消えた場合の安全策）。
+        selenium_dead = (
+            vendor_name == "メルカリshops"
+            and is_selenium_driver_connection_refused(e)
+            and not playwright_driver_is_dead()
+        )
+        if not selenium_dead and is_fatal_renderer_error(e):
             import traceback
             print("!!! [FATAL RENDERER ERROR] !!!", flush=True)
             print(f"Target URL: {item_url}", flush=True)
@@ -1486,6 +1514,9 @@ def heavy_check_detail(
 
         upsert_vendor_item(conn, rec_fail)
         writes_since_commit += 1
+        if selenium_dead:
+            conn.commit()
+            raise SeleniumDriverDeadError(str(e))
         writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
         return None, debug_unavailable_dump, writes_since_commit, 0, 1
 
@@ -3592,6 +3623,17 @@ def main():
                         )
                         print(f"⛔ {acct.account} eBayの新規出品制限を検知しました。当日の出品を終了します。 {close_detail}")
                         break
+
+                    except SeleniumDriverDeadError as e:
+                        # chromedriver が死んでいた（heavy_check_detail がこの商品を解析失敗として記録済み）。
+                        # 死んだ driver を捨て、次のメルカリshops の商品で作り直す（遅延生成と同じ経路）。
+                        print(f"[Selenium] chromedriver に接続できません（接続拒否）→ driver を作り直して続けます "
+                              f"account={acct.account} SKU={sku}: {str(e)[:200]}", flush=True)
+                        try:
+                            driver.quit()
+                        except Exception as quit_err:
+                            print(f"[Selenium] 死んだ driver の quit() は失敗しました（想定内）: {quit_err!r}", flush=True)
+                        driver = None
 
                     except FatalRendererError:
                         # [publish_ebay 全体の終了③] ブラウザ(renderer)側の致命的クラッシュ。

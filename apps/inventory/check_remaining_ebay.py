@@ -83,7 +83,7 @@ from apps.adapters.mercari_item_status import (
 )
 from apps.adapters.mercari_scraper import build_driver
 from apps.common.utils import get_sql_server_connection, compute_start_price_usd
-from apps.common.process_watchdog import playwright_driver_monitor, start_watchdog
+from apps.common.process_watchdog import kill_own_descendants, playwright_driver_monitor, start_watchdog
 from apps.adapters.rakuma_item_status import check_rakuma_item_status, RakumaItemUnavailableError
 from apps.adapters import yahoo_fleamarket as yahoo
 
@@ -468,6 +468,22 @@ def run_remaining_worker(worker_name: str):
         safe_quit(driver)
         if pull_conn: pull_conn.close()
         if work_conn: work_conn.close()
+        # quit()/close() で終わらなかった、この実行が起動したプロセス（chromedriver・Chrome・Playwright）
+        # だけを片付ける。mouse の check_remaining_ebay.bat は以前、ここで
+        # taskkill /F /IM chromedriver.exe /T を実行しており、同じPCの出品(publish_ebay)・購入処理の
+        # chromedriver まで終了させていた（2026-11-02〜15 の mouse の出品の Renderer異常 7回の原因）。
+        # 監視による自己終了（os._exit）の経路は、kill_own_descendants_and_exit が同じ範囲を kill する。
+        leftovers = kill_own_descendants()
+        if leftovers:
+            print(f"[CLEANUP] この実行が起動した残りのプロセス{len(leftovers)}件を終了しました: "
+                  f"{sorted({_proc_name(p) for p in leftovers})}", flush=True)
+
+
+def _proc_name(p) -> str:
+    try:
+        return p.name()
+    except Exception:
+        return f"pid={p.pid}"
 
 def process_status_and_sync(
     conn,
