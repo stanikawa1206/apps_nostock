@@ -126,6 +126,24 @@ class DetectWithDriverTest(unittest.TestCase):
         self.assertEqual(self.detect(fixture("sold2")), ("売り切れ", None))
         self.assertEqual(self.detect(page()), ("判定不可", None))
 
+    def test_communication_error_is_not_sold(self):
+        # chromedriver との通信が切れてページを読めない場合は例外のまま（売り切れ・判定結果を返さない）
+        driver = mock.MagicMock()
+        type(driver).page_source = mock.PropertyMock(side_effect=ConnectionError("chromedriver に接続できません"))
+        with mock.patch.object(mis, "WebDriverWait"), mock.patch.object(mis, "_wait_product_price_ready"), \
+                mock.patch.object(mis.time, "sleep"):
+            with self.assertRaises(ConnectionError):
+                mis.detect_status_from_mercari_shops(driver)
+
+    def test_price_wait_timeout_still_judges_safely(self):
+        # 価格の表示待ちが時間切れでも（読み込み途中）、ボタンが描画されていなければ売り切れにしない
+        driver = mock.MagicMock()
+        driver.page_source = page()
+        with mock.patch.object(mis, "WebDriverWait"), \
+                mock.patch.object(mis, "_wait_product_price_ready", side_effect=TimeoutError("timeout")), \
+                mock.patch.object(mis.time, "sleep"), mock.patch("builtins.print"):
+            self.assertEqual(mis.detect_status_from_mercari_shops(driver), ("判定不可", None))
+
 
 # ============================================================
 # 呼び出し側（出品前の確認・在庫確認）
