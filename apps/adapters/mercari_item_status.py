@@ -464,6 +464,8 @@ SHOPS_BUY_BUTTON_TEXTS = ("購入手続きへ", "購入へ")
 # この商品自身の売り切れ表示（data-testid="out-of-stock" の要素）の文言（2026-11-15 確認）
 SHOPS_SOLD_TEXTS = ("売り切れ", "在庫切れ")
 SHOPS_DELETED_TEXTS = ("ページが見つかりませんでした", "該当する商品は削除されています。")
+# 画面の幅が狭いときに購入ボタンが置かれる、画面下の固定欄（#main の外）（2026-11-16 確認、780×580）
+SHOPS_STICKY_BUTTON_TESTID = "mobile-bottom-sticky-button"
 
 
 def judge_shops_product_html(html: str, url: Optional[str] = None) -> tuple[Status, Optional[int]]:
@@ -503,8 +505,15 @@ def judge_shops_product_html(html: str, url: Optional[str] = None) -> tuple[Stat
     for other in main.select('[data-testid^="shopOtherItem"]'):
         other.decompose()
 
+    # 画面の幅が狭いと（出品側の Chrome は 780×580）、購入ボタンは #main の外の、
+    # body 直下の画面下に固定された欄（data-testid="mobile-bottom-sticky-button"）に表示される。
+    # この欄はこの商品自身のボタンなので #main と合わせて探す（ページ全体は探さない）。
+    # 2026-11-16 は #main の中だけを探していたため、出品側では Shops の候補がすべて「判定不可」になった。
+    button_areas = [main]
+    if main is not soup:
+        button_areas += soup.select(f'[data-testid="{SHOPS_STICKY_BUTTON_TESTID}"]')
     buy_buttons = [
-        b for b in main.select("button")
+        b for area in button_areas for b in area.select("button")
         if " ".join(b.get_text(" ", strip=True).split()) in SHOPS_BUY_BUTTON_TEXTS
     ]
     enabled = [

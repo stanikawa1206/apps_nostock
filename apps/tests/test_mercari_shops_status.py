@@ -65,6 +65,77 @@ class RealPagesTest(unittest.TestCase):
         self.assertEqual(judge(fixture("deleted")), ("削除", None))
 
 
+class ScreenSizeRealPagesTest(unittest.TestCase):
+    """
+    2026-11-16 に、出品側と同じ画面（780×580、--headless=new だけで起動した Chrome）と、
+    在庫確認側と同じ画面（1400×1000、build_driver）で取得した実際のページ（w780_* / w1400_*）。
+    #main と、画面下の固定欄（mobile-bottom-sticky-button）だけを残している。
+    780×580 では購入ボタンが #main の外の固定欄にあり、#main だけを見ていた 2026-11-16 の判定では
+    販売中の商品がすべて「判定不可」になった（出品側の Shops の成功が0件）。
+    """
+
+    CASES = {
+        "buy_he": "販売中",          # 「購入へ」（数量選択あり）
+        "buy_tetsuzuki": "販売中",   # 「購入手続きへ」
+        "buy_today": "販売中",       # 11/16 に出品側で判定不可になった商品
+        "sold1": "売り切れ",         # 「売り切れ」表示・ボタン無効
+        "sold2": "売り切れ",         # 「在庫切れ」表示・ボタン無効
+        "deleted": "削除",
+        "undet": "判定不可",         # 「予約する」ボタンの予約商品
+    }
+
+    def test_both_screen_sizes(self):
+        for width in ("780", "1400"):
+            for name, expected in self.CASES.items():
+                with self.subTest(width=width, name=name):
+                    self.assertEqual(judge(fixture(f"w{width}_{name}"))[0], expected)
+
+    def test_780_buttons_are_outside_main(self):
+        # 前提の確認: 780×580 では購入ボタンが #main の中に無く、固定欄にだけある
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(fixture("w780_buy_today"), "html.parser")
+        self.assertFalse([b for b in soup.select_one("#main").select("button") if "購入" in b.get_text()])
+        sticky = soup.select_one('[data-testid="mobile-bottom-sticky-button"]')
+        self.assertIn("購入手続きへ", sticky.get_text())
+
+    def test_sold_780_keeps_disabled_sticky_button_as_sold(self):
+        # 780×580 の売り切れは、固定欄の無効なボタン + #main の売り切れ表示 → 売り切れ（販売中にしない）
+        self.assertEqual(judge(fixture("w780_sold1")), ("売り切れ", None))
+
+
+def sticky(button):
+    return f"<div data-testid='mobile-bottom-sticky-button'><div>{button}</div></div>"
+
+
+def page_with_sticky(main_parts=(), sticky_html=""):
+    return ('<html><body><main id="main"><div data-testid="product-detail-container">'
+            '<div data-testid="product-price">¥3,980</div>' + "".join(main_parts) + "</div></main>"
+            + sticky_html + "</body></html>")
+
+
+class StickyButtonRulesTest(unittest.TestCase):
+    def test_sticky_buttons(self):
+        self.assertEqual(judge(page_with_sticky(sticky_html=sticky(BUY))), ("販売中", 3980))
+        self.assertEqual(judge(page_with_sticky(sticky_html=sticky(BUY_HE))), ("販売中", 3980))
+        self.assertEqual(judge(page_with_sticky([SOLD], sticky(BUY_DISABLED))), ("売り切れ", None))
+        self.assertEqual(judge(page_with_sticky(sticky_html=sticky(BUY_DISABLED))), ("判定不可", None))
+        self.assertEqual(judge(page_with_sticky([SOLD], sticky(BUY))), ("判定不可", None))  # 矛盾
+        self.assertEqual(judge(page_with_sticky(sticky_html=sticky("<button>予約する</button>"))), ("判定不可", None))
+
+    def test_buttons_elsewhere_outside_main_are_ignored(self):
+        # #main の外でも、固定欄以外（ヘッダー・おすすめ欄など）のボタンは見ない
+        for other in ("<header>" + BUY + "</header>",
+                      "<div data-testid='recommend'>" + BUY_HE + "</div>",
+                      BUY):
+            with self.subTest(other=other[:40]):
+                self.assertEqual(judge(page_with_sticky(sticky_html=other)), ("判定不可", None))
+
+    def test_other_items_in_main_still_ignored_with_sticky(self):
+        other_buy = "<div data-testid='shopOtherItem-1'><button>購入へ</button></div>"
+        self.assertEqual(judge(page_with_sticky([other_buy])), ("判定不可", None))
+        self.assertEqual(judge(page_with_sticky([other_buy], sticky(BUY_DISABLED))), ("判定不可", None))
+
+
 class RulesTest(unittest.TestCase):
     def test_buttons(self):
         self.assertEqual(judge(page(BUY)), ("販売中", 3980))
