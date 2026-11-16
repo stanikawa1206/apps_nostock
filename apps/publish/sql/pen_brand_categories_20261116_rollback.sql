@@ -1,0 +1,24 @@
+-- pen_brand_categories_20261116.sql の戻し（is_active=0 の行なので lookup には影響しない）。
+SET XACT_ABORT ON;
+BEGIN TRAN;
+DELETE FROM mst.presets_categories WHERE vendor_group = N'メルカリ' AND category_id = 5249 AND brand_id = 1912 AND category_id_ebay = N'29828' AND is_active = 0;
+DELETE FROM mst.presets_categories WHERE vendor_group = N'メルカリ' AND category_id = 5249 AND brand_id = 57582 AND category_id_ebay = N'165643' AND is_active = 0;
+DELETE FROM mst.presets_categories WHERE vendor_group = N'メルカリ' AND category_id = 5249 AND brand_id = 49148 AND category_id_ebay = N'7279' AND is_active = 0;
+DELETE FROM mst.presets_categories WHERE vendor_group = N'メルカリ' AND category_id = 5249 AND brand_id = 34953 AND category_id_ebay = N'7279' AND is_active = 0;
+DELETE FROM mst.presets_categories WHERE vendor_group = N'メルカリ' AND category_id = 5249 AND brand_id = 42196 AND category_id_ebay = N'7279' AND is_active = 0;
+DELETE FROM mst.presets_categories WHERE vendor_group = N'メルカリ' AND category_id = 5249 AND brand_id = 44990 AND category_id_ebay = N'7279' AND is_active = 0;
+DELETE FROM mst.presets_categories WHERE vendor_group = N'メルカリ' AND category_id = 5249 AND brand_id = 16649 AND category_id_ebay = N'7279' AND is_active = 0;
+DELETE FROM mst.presets_categories WHERE vendor_group = N'メルカリ' AND category_id = 5249 AND brand_id = 30428 AND category_id_ebay = N'7279' AND is_active = 0;
+DELETE FROM mst.presets_categories WHERE vendor_group = N'メルカリ' AND category_id = 5249 AND brand_id = 34791 AND category_id_ebay = N'7279' AND is_active = 0;
+DELETE FROM mst.presets_categories WHERE vendor_group = N'メルカリ' AND category_id = 5249 AND brand_id = 39214 AND category_id_ebay = N'7279' AND is_active = 0;
+DELETE FROM mst.presets_categories WHERE vendor_group = N'メルカリ' AND category_id = 5249 AND brand_id = 34088 AND category_id_ebay = N'7279' AND is_active = 0;
+DELETE FROM mst.presets_categories WHERE vendor_group = N'メルカリ' AND category_id = 5249 AND brand_id = 25669 AND category_id_ebay = N'7279' AND is_active = 0;
+DELETE FROM mst.presets_categories WHERE vendor_group = N'メルカリ' AND category_id = 5249 AND brand_id = 47727 AND category_id_ebay = N'7279' AND is_active = 0;
+DELETE FROM mst.presets_categories WHERE vendor_group = N'メルカリ' AND category_id = 5249 AND brand_id = 30033 AND category_id_ebay = N'7279' AND is_active = 0;
+DELETE FROM mst.presets_categories WHERE vendor_group = N'メルカリ' AND category_id = 5262 AND brand_id = 13843 AND category_id_ebay = N'14002' AND is_active = 0;
+DELETE FROM mst.presets_categories WHERE vendor_group = N'メルカリ' AND category_id = 5262 AND brand_id = 44990 AND category_id_ebay = N'7281' AND is_active = 0;
+DELETE FROM mst.presets_categories WHERE vendor_group = N'メルカリ' AND category_id = 5262 AND brand_id = 42986 AND category_id_ebay = N'165626' AND is_active = 0;
+DELETE FROM mst.presets_categories WHERE vendor_group = N'メルカリ' AND category_id = 5262 AND brand_id = 34088 AND category_id_ebay = N'7281' AND is_active = 0;
+DELETE FROM mst.presets_categories WHERE vendor_group = N'メルカリ' AND category_id = 5262 AND brand_id = 39214 AND category_id_ebay = N'7281' AND is_active = 0;
+UPDATE mst.presets_brand SET default_brand_en = N'Marien' WHERE brand_id = 47727 AND default_brand_en = N'Marlen';
+COMMIT;

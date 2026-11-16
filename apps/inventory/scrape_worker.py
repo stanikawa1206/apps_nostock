@@ -1413,24 +1413,31 @@ def run_fetch_sold_rakuma(payload: dict, job_id: int) -> Tuple[int, int]:
 YAHOO_PAGE_TARGET_SEC = 8.0
 
 
-def load_yahoo_preset_map(conn) -> Dict[Tuple[int, int], str]:
-    """{(Yahoo!フリマのブランドID, カテゴリーID): preset}。mst.presets_lookup の ＰａｙＰａｙフリマ 分。"""
+def load_yahoo_preset_map(conn) -> Tuple[Dict[Tuple[int, int], str], Dict[int, str]]:
+    """
+    mst.presets_lookup の ＰａｙＰａｙフリマ 分から
+    ({(Yahoo!フリマのブランドID, カテゴリーID): preset}, {カテゴリーID: カテゴリーグループ})。
+    Yahoo!フリマのカテゴリーIDは1つのグループにだけ属する（腕時計・レンズ・製図用品などの判定を選ぶのに使う）。
+    """
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT brand_id, category_id, preset FROM mst.presets_lookup WITH (NOLOCK) WHERE vendor_name = ?",
+            "SELECT brand_id, category_id, preset, category_group FROM mst.presets_lookup WITH (NOLOCK) WHERE vendor_name = ?",
             yahoo.VENDOR_NAME,
         )
-        return {(int(b), int(c)): p for b, c, p in cur.fetchall()}
+        rows = cur.fetchall()
+    return ({(int(b), int(c)): p for b, c, p, _ in rows},
+            {int(c): g for _, c, _, g in rows})
 
 
-def _yahoo_resolve_page(items, category_id: int, preset_map, job_preset: str, search_brand_id: int):
+def _yahoo_resolve_page(items, category_id: int, preset_map, job_preset: str, search_brand_id: int,
+                        category_group: Optional[str]):
     """商品ごとに preset を決める。(保存する商品と preset の組の一覧, 付け替え件数, 保存しない件数)"""
     kept = []
     moved = 0
     skipped = 0
     for it in items:
         preset, reason = yahoo.resolve_item_preset(
-            it["brand_id"], it["title_jp"], category_id, preset_map, search_brand_id
+            it["brand_id"], it["title_jp"], category_id, preset_map, search_brand_id, category_group
         )
         if preset is None:
             skipped += 1
@@ -1466,7 +1473,8 @@ def run_fetch_active_yahoo(payload: dict, job_id: int) -> Tuple[int, int]:
     conn = get_sql_server_connection()
 
     try:
-        preset_map = load_yahoo_preset_map(conn)
+        preset_map, group_by_category = load_yahoo_preset_map(conn)
+        category_group = group_by_category.get(category_id)
         while True:
             offset = page_idx * yahoo.SEARCH_PAGE_SIZE
             if offset >= yahoo.SEARCH_OFFSET_LIMIT:
@@ -1485,7 +1493,8 @@ def run_fetch_active_yahoo(payload: dict, job_id: int) -> Tuple[int, int]:
                 break
 
             total_items += len(items)
-            kept, moved, skipped = _yahoo_resolve_page(items, category_id, preset_map, preset, int(payload["brand_id"]))
+            kept, moved, skipped = _yahoo_resolve_page(items, category_id, preset_map, preset, int(payload["brand_id"]),
+                                                       category_group)
 
             item_ids = [it["vendor_item_id"] for it, _ in kept]
             existing_dates = get_vendor_item_dates_batch(conn, vendor_name, item_ids)
@@ -1572,7 +1581,8 @@ def run_fetch_sold_yahoo(payload: dict, job_id: int) -> Tuple[int, int]:
     conn = get_sql_server_connection()
 
     try:
-        preset_map = load_yahoo_preset_map(conn)
+        preset_map, group_by_category = load_yahoo_preset_map(conn)
+        category_group = group_by_category.get(category_id)
         for page_idx in range(SOLD_MAX_PAGES):
             write_status(job_id, page_idx + 1)
             params = yahoo.search_params(
@@ -1586,7 +1596,8 @@ def run_fetch_sold_yahoo(payload: dict, job_id: int) -> Tuple[int, int]:
             if not items:
                 break
 
-            kept, _, _ = _yahoo_resolve_page(items, category_id, preset_map, preset_name, int(payload["brand_id"]))
+            kept, _, _ = _yahoo_resolve_page(items, category_id, preset_map, preset_name, int(payload["brand_id"]),
+                                             category_group)
             fetched_items += len(kept)
 
             existing_dates = get_vendor_item_dates_batch(conn, vendor_name, [it["vendor_item_id"] for it, _ in kept])

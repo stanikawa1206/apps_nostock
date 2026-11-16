@@ -881,9 +881,12 @@ def load_lookup_sources(cur):
             WHERE is_active = 1
             ORDER BY brand_id, vendor_name, is_primary DESC, vendor_brand_id
         """),
+        # is_active=0 は「マスターとして持つが preset を作らない」行（2026-11-16 メルカリのペンのブランド別カテゴリーを
+        # 将来の再開用に整備した分。M・MS の収集対象を増やさない）。有効にするときは is_active=1 にする。
         "categories": q("""
             SELECT category_id, vendor_group, category_name_ja, type_ebay, category_id_ebay, department, brand_id
             FROM mst.presets_categories
+            WHERE is_active = 1
         """),
         # mode（GA/DDP）。価格帯は mst.presets_price_ranges だけで持つ（2026-11-14 category_groups の価格列は廃止）
         "category_groups": q("""
