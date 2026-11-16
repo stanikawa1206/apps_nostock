@@ -116,35 +116,16 @@ class LensTypeTest(unittest.TestCase):
         self.assertTrue(yf.listing_ng_reason("Canon EXTENDER EF1.4X III", LENS_CAT, LENS).startswith("レンズ種別不明"))
 
 
-class DraftingBoardTest(unittest.TestCase):
-    NG = [
-        "DRAPAS ドラパス ベニヤ製図板 簡易平行定規",
-        "MUTOH UT-06 ライナーボード 製図板 平行定規 建築士試験対応 ケース",
-        "製図版　平行定規 建築士",                    # 「版」の誤記
-        "UCHIDA ウチダ 製図台 DB-3 平行定規 製図スタンド",
-        "MUTOH Liner Board UM-06NB",
-        "ステッドラー 平行定規　製図道具　建築士試験対策",
-        "MAX 製図ボード A2",
-        "武藤工業 ドラフター MH-2",
-    ]
-    OK = [
-        "未使用・昭和レトロ MAXマグネットプレート10本フルセット平行定規用当時物",   # 製図板の部品（小物）
-        "STAEDTLER マルス⚫︎方眼三角定規⚫︎30cm型 966 30",
-        "TISUR チタン 定規 12cm 直尺 両目盛 レーザー刻印 測定ツール 8mm 六角レンチ 高級",
-        "ステッドラー 製図用シャープペンシル 925 35",
-    ]
+class DraftingNoTitleRuleTest(unittest.TestCase):
+    """製図用品はタイトルで除外しない（製図板はメルカリと同じくカテゴリーで外す: Y の 47524 を登録しない）"""
 
-    def test_ng(self):
-        for t in self.NG:
-            self.assertIsNotNone(yf.drafting_board_reason(t), t)
-            self.assertIsNotNone(yf.listing_ng_reason(t, OTHER_DRAFT, DRAFT), t)
-
-    def test_ok(self):
-        for t in self.OK:
+    def test_no_ng(self):
+        for t in ["STAEDTLER マルス⚫︎方眼三角定規⚫︎30cm型 966 30",
+                  "ステッドラー 製図用シャープペンシル 925 35",
+                  "MUTOH 製図板 A2"]:
             self.assertIsNone(yf.listing_ng_reason(t, OTHER_DRAFT, DRAFT), t)
-
-    def test_only_drafting_group(self):
-        self.assertIsNone(yf.listing_ng_reason("製図板 A2", BALLPOINT, PEN))
+        self.assertNotIn(DRAFT, yf.LISTING_NG_HEADS)
+        self.assertFalse(hasattr(yf, "drafting_board_reason"))
 
 
 class ResolveGroupsTest(unittest.TestCase):
@@ -159,7 +140,7 @@ class ResolveGroupsTest(unittest.TestCase):
         self.assertEqual(yf.resolve_item_preset(NAMIKI_UNDER_PILOT, "x", FOUNTAIN, PRESETS, PILOT, PEN)[0], "PILOT万年筆Y")
 
     def test_pen_no_preset_for_category(self):
-        # ペリカンはボールペンの preset が無い → 保存しない（他ブランドの eBay カテゴリーに入れない）
+        # そのカテゴリーに preset の無いブランド（ここではモックのペリカンのボールペン）→ 保存しない（他ブランドの eBay カテゴリーに入れない）
         preset, reason = yf.resolve_item_preset(PELIKAN, "Pelikan ボールペン", BALLPOINT, PRESETS, PELIKAN, PEN)
         self.assertIsNone(preset)
 
@@ -181,10 +162,10 @@ class ResolveGroupsTest(unittest.TestCase):
                 yf.resolve_item_preset(brand, "STAEDTLER 方眼定規 30cm", RULER, PRESETS, yf.NO_BRAND_ID, DRAFT)[0],
                 "直線、方眼定規Y")
 
-    def test_no_brand_drafting_board_skipped(self):
-        preset, reason = yf.resolve_item_preset(None, "MUTOH 製図板セット UM-09N", OTHER_DRAFT, PRESETS, yf.NO_BRAND_ID, DRAFT)
-        self.assertIsNone(preset)
-        self.assertIn("製図板", reason)
+    def test_no_brand_other_drafting_kept(self):
+        # その他製図用品はメルカリの 5317 と同じくタイトルで除かない
+        preset, _ = yf.resolve_item_preset(None, "MUTOH 製図板セット UM-09N", OTHER_DRAFT, PRESETS, yf.NO_BRAND_ID, DRAFT)
+        self.assertEqual(preset, "その他製図用品Y")
 
     def test_no_brand_preset_missing(self):
         self.assertIsNone(yf.resolve_item_preset(None, "x", 47522, PRESETS, yf.NO_BRAND_ID, DRAFT)[0])
@@ -248,9 +229,10 @@ class PublishYahooNgTest(unittest.TestCase):
         sql = conn.cursor.return_value.__enter__.return_value.execute.call_args[0][0]
         self.assertIn("出品不可flg = 1", sql)
 
-    def test_drafting_board(self):
-        out, up, _ = self.run_heavy({"title_jp": "MUTOH 製図板 A2", "description": "", "yahoo_category_id": OTHER_DRAFT}, DRAFT)
-        self.assertEqual(up.call_args[0][1]["listing_head"], "NG(製図板)")
+    def test_drafting_not_ng(self):
+        # 出品前の NG 判定（heavy_check_detail が使う関数）も製図用品では何も返さない
+        self.assertIsNone(yf.listing_ng_reason_rec(
+            {"title_jp": "MUTOH 製図板 A2", "description": "", "yahoo_category_id": OTHER_DRAFT}, DRAFT))
 
     def test_watch_head_unchanged(self):
         out, up, _ = self.run_heavy({"title_jp": "SEIKO 純正部品 時計ベルト 22mm", "description": "", "yahoo_category_id": MEN}, WATCH)

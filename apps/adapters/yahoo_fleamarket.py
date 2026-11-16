@@ -24,8 +24,8 @@ Playwright/Selenium は使わず、サイト自身が使う JSON API を HTTP GE
     （他のグループに適用すると、ペンの「ギフトボックス入り」「ノブレス」などを誤って除外する）。
   - レンズ: Yahoo!フリマの交換レンズは単焦点／ズームの区別が無いので、タイトルから eBay の Type を決める
     （lens_type_from_title）。決められない商品（付属品・焦点距離の表記なし）は出品しない。
-  - 製図用品: 製図板（平行定規・ライナーボード・ドラフター等を含む）は大きく仕入れ・発送に向かないので出品しない。
   - 製図用品はブランドなしの preset（brand_id=0）。検索に brandIds を付けず、商品のブランドに関係なくその preset にする。
+    製図板はメルカリと同じくカテゴリーで外す（Yahoo!フリマの「製図板」カテゴリー 47524 を登録しない）。
 """
 from __future__ import annotations
 
@@ -72,7 +72,6 @@ ITEM_CONDITION_MAP = {
 # カテゴリーグループ（mst.presets_lookup.category_group）
 WATCH_CATEGORY_GROUP = "腕時計"
 LENS_CATEGORY_GROUP = "レンズ"
-DRAFTING_CATEGORY_GROUP = "製図用品"
 
 # ブランドなしの preset のブランドID（mst.presets_categories.brand_id=0 から作られる。製図用品）
 NO_BRAND_ID = 0
@@ -285,28 +284,10 @@ def lens_type_from_title(title: Optional[str]) -> Tuple[Optional[str], str]:
     return None, "焦点距離・F値の記載なし"
 
 
-# =========================
-# 製図板（製図用品）
-# 製図板は大きく、仕入れ・発送に向かないので出品しない（平行定規・ライナーボード・製図台・ドラフターは製図板と一体の商品）。
-# Yahoo!フリマの「製図板」カテゴリー(47524)は登録せず、他の製図用品カテゴリーに混ざる製図板をタイトルで除く。
-# 「平行定規用」（マグネットプレート等の部品）は製図板ではないので数えない。
-# =========================
-_DRAFTING_BOARD = re.compile(
-    r"製図[板版台]|製図\s*ボード|平行定規(?!用)|ライナー\s*ボード|liner\s*board|ドラフター|drafter"
-    r"|ドラフティング\s*(?:ボード|テーブル|マシン)|drafting\s*(?:board|table|machine)"
-)
-
-
-def drafting_board_reason(title: Optional[str]) -> Optional[str]:
-    m = _DRAFTING_BOARD.search(_normalize_title(title))
-    return f"製図板「{m.group(0)}」" if m else None
-
-
 # 出品前の NG の listing_head（trx.vendor_item）。腕時計は従来どおり
 LISTING_NG_HEADS = {
     WATCH_CATEGORY_GROUP: "NG(腕時計以外)",
     LENS_CATEGORY_GROUP: "NG(レンズ種別不明)",
-    DRAFTING_CATEGORY_GROUP: "NG(製図板)",
 }
 
 
@@ -321,8 +302,6 @@ def listing_ng_reason(title: Optional[str], category_id: Optional[int], category
     if category_group == LENS_CATEGORY_GROUP:
         lens_type, why = lens_type_from_title(title)
         return None if lens_type else f"レンズ種別不明: {why}"
-    if category_group == DRAFTING_CATEGORY_GROUP:
-        return drafting_board_reason(title)
     return None
 
 

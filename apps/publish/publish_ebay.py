@@ -1560,7 +1560,7 @@ def heavy_check_detail(
         writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
         return None, debug_unavailable_dump, writes_since_commit, 1, 0
 
-    # === Yahoo!フリマ: カテゴリーグループごとの NG（腕時計以外・レンズ種別不明・製図板） ===
+    # === Yahoo!フリマ: カテゴリーグループごとの NG（腕時計以外・レンズ種別不明） ===
     # 検索時にタイトルで除外しているが、検索前から保存済みの商品と、説明文にだけ書かれている場合（腕時計）をここで止める。
     # 偽物疑いと同じく 出品不可flg=1 にして候補から外す（毎回の再判定をしない）。
     if vendor_name == yahoo.VENDOR_NAME:

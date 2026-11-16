@@ -20,14 +20,14 @@ SQL は2段階:
 - ビデオカメラ: アクションカメラ（Y 49419。GoPro・DJI・insta360 は Y ではこちら）も追加。eBay は 11724 Camcorders・Type Helmet/Action。
 - レンズ: Y の交換レンズ(2465)は単焦点／ズームが1カテゴリー。Type は出品時にタイトルから決め、決められない商品は出品しない
   （apps/adapters/yahoo_fleamarket.py lens_type_from_title）。presets_categories.type_ebay は NULL。
-- 製図用品: ブランドなし（brand_id=0）。製図板は出品しない → Y の製図板カテゴリー(47524)は登録せず、
-  他のカテゴリーに混ざる製図板はタイトルで除く（drafting_board_reason）。
+- 製図用品: ブランドなし（brand_id=0）。製図板はメルカリと同じくカテゴリーで外す（Y の製図板カテゴリー 47524 を登録しない）。
+  タイトルでの除外はしない（メルカリの 5317 その他製図用品と同じ扱い。11/16 ユーザー指示）。
 - ペンのボールペン・万年筆の eBay カテゴリー: メルカリの presets_categories（5249 ボールペン・5262 万年筆）の
-  ブランド別の行（brand_id → category_id_ebay）をそのまま Y の 47303・47315 に写す。
-  メルカリに行の無い組（例: モンブランのボールペン）は Y でも作らない（集めない）。
-  - ペリカン: メルカリでは brand_id 13843「ペリカン」(ボールペン 165643) と 57582「Pelikan」(万年筆 14002) の2つ。
+  ブランド別の行（brand_id → category_id_ebay）を Y の 47303・47315 に写す。
+  メルカリに足りなかった組（モンブランのボールペン等）は PEN_ADDITIONS でメルカリにも足す（pen_brand_categories_20261116.sql）。
+  - ペリカン: メルカリでは brand_id 13843「ペリカン」と 57582「Pelikan」の2つのブランド（商品はどちらか一方）。
     Y のブランドは1つ(101780)で、vendor_brand_map は (vendor_name, vendor_brand_id) が一意なので 13843 だけに対応させ、
-    万年筆の行は 57582 の eBay カテゴリー(14002)を 13843 に写す（ラクマも 13843 だけ）。
+    57582 の行は 13843 に写す（同じ eBay カテゴリーなので1行にまとめる。ラクマも 13843 だけ）。
 - 優先順位は R → Y → MS → M のまま（mst.vendors は変更しない）。
 - ブランドは、谷川② の価格帯・状態で Y の販売中が1件以上あるものだけ登録（谷川④ の腕時計と同じ。0件は対応不可）。
 """
@@ -85,6 +85,39 @@ BRAND_DEPENDENT = {
 }
 # 写すときの brand_id の付け替え（Y では1ブランドにまとめる）
 BRAND_MERGE = {57582: 13843}   # Pelikan → ペリカン（Y 101780）
+
+# メルカリ（vendor_group メルカリ = M・MS）のボールペン・万年筆に足りなかったブランド別の行（2026-11-16 調査）。
+# (メルカリ category_id, brand_id) → eBay category_id。ブランド別の eBay カテゴリーが無いブランドは Other（7279 / 7281）。
+# 件数はメルカリの販売中（谷川②のペンの価格帯 5,690〜131,550円）/ Y の販売中（同）。
+OTHER_BALLPOINT, OTHER_FOUNTAIN = "7279", "7281"
+PEN_ADDITIONS = {
+    (5249, 1912): "29828",          # モンブラン ボールペン（eBay 29828 Montblanc）  M 203 / Y 430
+    (5249, 57582): "165643",        # Pelikan ボールペン（13843 ペリカンと同じ 165643） M 70（13843 とは別のメルカリのブランド）
+    (5249, 49148): OTHER_BALLPOINT,  # 三菱鉛筆／uni                                   M 400 / Y 180
+    (5249, 8710): OTHER_BALLPOINT,   # ユニ（Y では三菱鉛筆の子。メルカリの 8710 は0件）  M 0 / Y 83
+    (5249, 34953): OTHER_BALLPOINT,  # ゼブラ                                          M 240 / Y 27
+    (5249, 42196): OTHER_BALLPOINT,  # ハローキティ（メルカリは vendor_brand_map 無効のため集めない） M 145 / Y 7
+    (5249, 44990): OTHER_BALLPOINT,  # プラチナ                                        M 37 / Y 3
+    (5249, 16649): OTHER_BALLPOINT,  # コクヨ                                          M 33 / Y 13
+    (5249, 30428): OTHER_BALLPOINT,  # サクラクレパス                                  M 31 / Y 7
+    (5249, 34791): OTHER_BALLPOINT,  # セーラー                                        M 27 / Y 4
+    (5249, 39214): OTHER_BALLPOINT,  # トンボ                                          M 18 / Y 0
+    (5249, 34088): OTHER_BALLPOINT,  # ステッドラー                                    M 16 / Y 6
+    (5249, 25669): OTHER_BALLPOINT,  # OMAS                                            M 8 / Y 5
+    (5249, 47727): OTHER_BALLPOINT,  # マーレン                                        M 7 / Y 1
+    (5249, 30033): OTHER_BALLPOINT,  # コンクリン                                      M 2 / Y 9
+    (5262, 13843): "14002",         # ペリカン 万年筆（57582 Pelikan と同じ 14002）  M 80（57582 は M 230 で既存）
+    (5262, 44990): OTHER_FOUNTAIN,   # プラチナ 万年筆                                 M 364 / Y 93
+    (5262, 42986): "165626",        # ビスコンティ 万年筆（eBay 165626 Visconti）      M 23 / Y 1
+    (5262, 34088): OTHER_FOUNTAIN,   # ステッドラー 万年筆                             M 7 / Y 0
+    (5262, 39214): OTHER_FOUNTAIN,   # トンボ 万年筆                                   M 2 / Y 2
+}
+# Y にだけ写し、メルカリには足さない組（メルカリのそのブランドIDでは0件。足すと空振りの M・MS preset ができる）
+PEN_Y_ONLY = {(5249, 8710)}
+# 足さなかった組（メルカリ・Y とも0件、または別ブランドの誤登録だけ）: ユニ・三菱鉛筆・コクヨの万年筆、ゼブラの万年筆（M 1件は ZEEBRA）、
+#   Namiki・コンウェイ・スチュワートのボールペン（M 0件）
+# eBay の Brand（presets_brand.default_brand_en）の誤記の修正
+BRAND_EN_FIX = {47727: ("Marien", "Marlen")}   # マーレン（eBay カテゴリー 165623 も Marlen）
 
 # ---------------------------------------------------------------------------
 # ブランド: brand_id → (Yahoo!フリマのブランドID, Yahoo!フリマのブランド名, 谷川②の条件内の販売中件数 2026-11-16)
@@ -196,11 +229,34 @@ def plan(cur):
                        category_id_ebay=s.category_id_ebay, department=s.department, brand_id=0,
                        is_collectibles=s.is_collectibles, src=f"メルカリ {src_id} {s.category_name_ja}"))
         cgc.append(dict(category_group=group, category_id=cid, is_brand_dependent=0))
+    # メルカリに足すペンの行（既存の同じカテゴリーの行と同じ列の値で、eBay カテゴリーだけ違う）
+    additions = []
+    have = {(int(r.category_id), r.brand_id): r.category_id_ebay for r in m_dep}
+    for (src_id, brand_id), ebay in PEN_ADDITIONS.items():
+        if (src_id, brand_id) in have and have[(src_id, brand_id)] != ebay:
+            raise RuntimeError(f"メルカリに別の eBay カテゴリーで既にある組 {(src_id, brand_id)}（PEN_ADDITIONS を見直す）")
+        tmpl = next(r for r in m_dep if int(r.category_id) == src_id)
+        additions.append(dict(category_id=src_id, category_name_ja=tmpl.category_name_ja, type_ebay=None, category_id_ebay=ebay,
+                              department=None, brand_id=brand_id, is_collectibles=tmpl.is_collectibles,
+                              applied=(src_id, brand_id) in have))
+    # メルカリに足す行（pen_brand_categories_20261116.sql。is_active=0 で入れて M・MS の preset は作らない）。適用済みの行は除く
+    m_pc = [r for r in additions if (r["category_id"], r["brand_id"]) not in PEN_Y_ONLY and not r["applied"]]
+    cols_pc = ("category_id", "brand_id", "category_id_ebay", "type_ebay", "department", "is_collectibles")
+    # Y に写す元: メルカリの行（is_active=0 の行も含む）＋まだメルカリに無い追加分（Y だけの組を含む）
+    m_all = [SimpleNamespace(**{k: getattr(r, k) for k in cols_pc}) for r in m_dep]
+    m_all += [SimpleNamespace(**{k: r[k] for k in cols_pc}) for r in additions if not r["applied"]]
     for cid, (name, src_id) in BRAND_DEPENDENT.items():
-        for s in (r for r in m_dep if r.category_id == src_id):
+        seen = {}
+        for s in sorted((r for r in m_all if r.category_id == src_id), key=lambda r: r.brand_id):
+            brand_id = BRAND_MERGE.get(s.brand_id, s.brand_id)
+            if brand_id in seen:
+                # まとめたブランド（ペリカン）は eBay カテゴリーが同じなら1行（違えば登録案の誤り）
+                if seen[brand_id] != s.category_id_ebay:
+                    raise RuntimeError(f"まとめるブランドの eBay カテゴリーが違う {src_id} {brand_id}: {seen[brand_id]} / {s.category_id_ebay}")
+                continue
+            seen[brand_id] = s.category_id_ebay
             pc.append(dict(category_id=cid, category_name_ja=name, type_ebay=s.type_ebay,
-                           category_id_ebay=s.category_id_ebay, department=s.department,
-                           brand_id=BRAND_MERGE.get(s.brand_id, s.brand_id),
+                           category_id_ebay=s.category_id_ebay, department=s.department, brand_id=brand_id,
                            is_collectibles=s.is_collectibles, src=f"メルカリ {src_id} brand_id={s.brand_id}"))
         cgc.append(dict(category_group="ペン", category_id=cid, is_brand_dependent=1))
 
@@ -230,7 +286,7 @@ def plan(cur):
     price = [dict(category_group=r.category_group, low_usd_target=r.low_usd_target, high_usd_target=r.high_usd_target,
                   low_jpy_target=r.low_jpy_target, high_jpy_target=r.high_jpy_target, category_priority=r.category_priority)
              for r in sorted(m_price, key=lambda r: GROUPS.index(r.category_group))]
-    return dict(pc=pc, cgc=cgc, vbm=vbm, bcgv=bcgv_y, keep_other=keep_other, price=price)
+    return dict(pc=pc, cgc=cgc, vbm=vbm, bcgv=bcgv_y, keep_other=keep_other, price=price, m_pc=m_pc, pen_additions=additions)
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +340,7 @@ def write(cur):
     w("-- 谷川② デジカメ・ビデオカメラ・レンズ・ペン・製図用品に Yahoo!フリマ を追加: 段階1 マスター（2026-11-16）")
     w("-- 生成: python -m apps.publish.sql.yahoo_tanikawa2_master_20261116 write（方針・ブランドIDの根拠はそのファイル）")
     w("-- この段階では presets_price_ranges に Y の行が無いので、lookup に Y の preset は作られない（在庫取得・出品は始まらない）。")
-    w("-- 前提: Yahoo!フリマのグループ別判定（腕時計以外の判定を腕時計だけに・レンズの Type・製図板・ブランドなし検索）の")
+    w("-- 前提: Yahoo!フリマのグループ別判定（腕時計以外の判定を腕時計だけに・レンズの Type・ブランドなし検索）の")
     w("--       コードを本番（mouse・全VPS）に反映してから。古いコードはブランドなし（brand_id=0）を brandIds=0 で検索してしまう。")
     w(f"-- 件数: presets_categories {len(p['pc'])} / category_group_categories {len(p['cgc'])} / vendor_brand_map {len(p['vbm'])} / "
       f"brand_category_group_vendors {len(p['bcgv'])}+{len(p['keep_other'])} / 関数 dbo.fn_take_one_candidates_base")
@@ -364,7 +420,54 @@ def write(cur):
         f"DELETE FROM mst.presets_price_ranges WHERE preset_group = {sqlv(ACCOUNT)} AND vendor_code = 'Y' AND category_group IN ("
         + ",".join(sqlv(g) for g in GROUPS) + ");",
         "COMMIT;"])
+    write_pen(cur, p)
     print({k: len(v) for k, v in p.items()})
+
+
+def write_pen(cur, p):
+    """メルカリ（M・MS）のボールペン・万年筆の不足分。Y の段階1・2とは別に流せる（Y の行は写した値を持つので依存しない）。"""
+    names = dict(cur.execute("SELECT brand_id, brand_name_ja FROM mst.presets_brand").fetchall())
+    out = ["-- メルカリ（M・MS）のボールペン(5249)・万年筆(5262)のブランド別 eBay カテゴリーの不足分をマスターに足す（2026-11-16）。",
+           "-- 生成: python -m apps.publish.sql.yahoo_tanikawa2_master_20261116 write（件数・根拠は PEN_ADDITIONS）",
+           "-- is_active=0 で入れる = マスターとして持つだけで preset は作らない（M・MS の収集・出品は増えない。ユーザー指示 11/16）。",
+           "-- 将来メルカリで再開するときは、その行を is_active=1 にする。",
+           "-- 前提: presets_categories_is_active_20261116.sql（列の追加）と、lookup 生成が is_active=1 だけを使うコードの本番反映",
+           "--       （古いコードの在庫管理ループが動いている間に流すと、次の lookup 再生成で M・MS の preset ができてしまう）。",
+           "-- ラクマのペンは1カテゴリー（1604 ペン/マーカー → eBay 967）でブランド別にできないので変更しない。",
+           "SET XACT_ABORT ON;", "BEGIN TRAN;",
+           "IF COL_LENGTH('mst.presets_categories', 'is_active') IS NULL THROW 50001, N'先に presets_categories_is_active_20261116.sql を流す', 1;"]
+    for r in p["m_pc"]:
+        out.append("INSERT INTO mst.presets_categories (category_id, category_name_ja, type_ebay, category_id_ebay, department, brand_id, is_collectibles, vendor_group, is_active) "
+                   f"VALUES ({r['category_id']}, {sqlv(r['category_name_ja'])}, NULL, {sqlv(r['category_id_ebay'])}, NULL, {r['brand_id']}, "
+                   f"{sqlv(r['is_collectibles'])}, {sqlv(M_VENDOR)}, 0);  -- {names.get(r['brand_id'])}")
+    for b, (old, new) in BRAND_EN_FIX.items():
+        out.append(f"UPDATE mst.presets_brand SET default_brand_en = {sqlv(new)} WHERE brand_id = {b} AND default_brand_en = {sqlv(old)};"
+                   f"  -- {names.get(b)} の eBay Brand の誤記")
+    out.append("COMMIT;")
+    write_file("pen_brand_categories_20261116.sql", out)
+    rb = ["-- pen_brand_categories_20261116.sql の戻し（is_active=0 の行なので lookup には影響しない）。",
+          "SET XACT_ABORT ON;", "BEGIN TRAN;"]
+    for r in p["m_pc"]:
+        rb.append(f"DELETE FROM mst.presets_categories WHERE vendor_group = {sqlv(M_VENDOR)} AND category_id = {r['category_id']} "
+                  f"AND brand_id = {r['brand_id']} AND category_id_ebay = {sqlv(r['category_id_ebay'])} AND is_active = 0;")
+    for b, (old, new) in BRAND_EN_FIX.items():
+        rb.append(f"UPDATE mst.presets_brand SET default_brand_en = {sqlv(old)} WHERE brand_id = {b} AND default_brand_en = {sqlv(new)};")
+    rb.append("COMMIT;")
+    write_file("pen_brand_categories_20261116_rollback.sql", rb)
+    write_file("presets_categories_is_active_20261116.sql", [
+        "-- mst.presets_categories に is_active を足す（2026-11-16）。既存の行はすべて 1（今と同じ）。",
+        "-- lookup 生成（daily_check.load_lookup_sources）は is_active=1 の行だけを使う。0 の行は「マスターとして持つが preset を作らない」。",
+        "-- 古いコードは列を選ばないので、列を足しても今の動きは変わらない（コードより先に流す）。",
+        "SET XACT_ABORT ON;",
+        "IF COL_LENGTH('mst.presets_categories', 'is_active') IS NULL",
+        "    ALTER TABLE mst.presets_categories ADD is_active BIT NOT NULL CONSTRAINT DF_presets_categories_is_active DEFAULT (1);"])
+    write_file("presets_categories_is_active_20261116_rollback.sql", [
+        "-- presets_categories_is_active_20261116.sql の戻し。先に is_active=0 の行（pen_brand_categories_20261116_rollback.sql）を消し、",
+        "-- lookup 生成のコードを戻してから流す（新しいコードは列が無いと lookup 再生成で失敗する）。",
+        "SET XACT_ABORT ON;",
+        "IF EXISTS (SELECT 1 FROM mst.presets_categories WHERE is_active = 0) THROW 50001, N'is_active=0 の行が残っている', 1;",
+        "ALTER TABLE mst.presets_categories DROP CONSTRAINT DF_presets_categories_is_active;",
+        "ALTER TABLE mst.presets_categories DROP COLUMN is_active;"])
 
 
 def write_file(name, lines):
@@ -380,6 +483,21 @@ def ns(d, **kw):
     x = dict(d)
     x.update(kw)
     return SimpleNamespace(**x)
+
+
+def apply_pen(src, p):
+    """メルカリのペンの不足分（pen_brand_categories_20261116.sql）を足したもの。"""
+    s = {k: list(v) for k, v in src.items()}
+    # メルカリの行は is_active=0 で入れるので、load_lookup_sources（is_active=1 だけ）には現れない
+    s["categories"] += [ns(r, vendor_group=M_VENDOR) for r in p["m_pc"] if r.get("is_active", 0) == 1]
+    brands = []
+    for b in s["brands"]:
+        fix = BRAND_EN_FIX.get(b.brand_id)
+        if fix and b.default_brand_en == fix[0]:
+            b = SimpleNamespace(brand_id=b.brand_id, brand_name_ja=b.brand_name_ja, default_brand_en=fix[1], is_active=b.is_active)
+        brands.append(b)
+    s["brands"] = brands
+    return s
 
 
 def apply_plan(src, p, stage):
@@ -459,9 +577,11 @@ def verify(cur):
     # ペン: ブランド別 eBay カテゴリーがメルカリの規則と一致
     y_to_brand = {r["vendor_brand_id"]: r["brand_id"] for r in p["vbm"]}
     y_to_brand.update({vb: b for vb, b in used.items()})
-    m_rule = {(BRAND_MERGE.get(r.brand_id, r.brand_id), r.category_id): r.category_id_ebay for r in cur.execute(
+    m_rule = {(BRAND_MERGE.get(r.brand_id, r.brand_id), int(r.category_id)): r.category_id_ebay for r in cur.execute(
         "SELECT brand_id, category_id, category_id_ebay FROM mst.presets_categories WHERE vendor_group = ? AND category_id IN (5249, 5262)",
         M_VENDOR).fetchall()}
+    for r in p["pen_additions"]:   # 足す組（メルカリに足す行と Y だけの組）も同じ規則
+        m_rule[(BRAND_MERGE.get(r["brand_id"], r["brand_id"]), r["category_id"])] = r["category_id_ebay"]
     to_m = {47303: 5249, 47315: 5262}
     bad, n_dep = [], 0
     for v in added.values():
@@ -486,6 +606,39 @@ def verify(cur):
         detail[v[i_group]][v[i_cat]] += 1
     for g in GROUPS:
         print(f"     {g}: " + ", ".join(f"{c}={n}" for c, n in sorted(detail[g].items())))
+
+    # メルカリのペンの不足分（pen_brand_categories_20261116.sql）: 単独で流した場合と、Y の段階2と合わせた場合
+    pk_m = Counter((r["category_id"], r["brand_id"]) for r in p["m_pc"])
+    exist_m = {(int(r.category_id), r.brand_id) for r in cur.execute(
+        "SELECT category_id, brand_id FROM mst.presets_categories WHERE vendor_group = ?", M_VENDOR).fetchall()}
+    check(max(pk_m.values()) == 1 and not (set(pk_m) & exist_m), f"メルカリのペンの追加 {len(p['m_pc'])}行は主キーが既存と重ならない")
+    mp = {r[0]: r for r in dc.build_presets_lookup(apply_pen(src, p))[0]}
+    i_en = cols.index("default_brand_en")
+    m_added = {k: v for k, v in mp.items() if k not in base}
+    m_changed = {k for k in base if k in mp and mp[k] != base[k]}
+    m_lost = [k for k in base if k not in mp]
+    check(not m_added, f"メルカリのペン: is_active=0 なので lookup に preset は増えない（M・MS の収集対象は今のまま）{sorted(m_added)[:5]}")
+    # 参考: 将来メルカリで有効にした（is_active=1 にした）場合に増える preset
+    future = {r[0]: r for r in dc.build_presets_lookup(dict(apply_pen(src, p), categories=list(src["categories"]) + [
+        ns(r, vendor_group=M_VENDOR) for r in p["m_pc"]]))[0]}
+    future_added = sorted(k for k in future if k not in base)
+    print(f"     参考: メルカリで有効にすると増える M・MS の preset {len(future_added)}: {', '.join(future_added)}")
+    only_brand_fix = all(
+        [i for i in range(len(cols)) if mp[k][i] != base[k][i]] == [i_en] and mp[k][i_en] in {n for _, n in BRAND_EN_FIX.values()}
+        for k in m_changed)
+    check(not m_lost and only_brand_fix, f"メルカリのペン: 既存の lookup で変わるのは eBay Brand の誤記の修正だけ（{len(m_changed)}行 {sorted(m_changed)}）")
+    m_bad = [(k, future[k][i_ebay]) for k in future_added
+             if m_rule.get((BRAND_MERGE.get(future[k][i_brand], future[k][i_brand]), future[k][i_cat])) != future[k][i_ebay]]
+    check(not m_bad, f"メルカリのペン: 将来有効にしたときの preset の eBay カテゴリーもブランドの行どおり {m_bad[:5]}")
+
+    both = {r[0]: r for r in dc.build_presets_lookup(apply_plan(apply_pen(src, p), p, 2))[0]}
+    y_both = {k: v for k, v in both.items() if v[i_vendor] == Y_VENDOR}
+    y_s2 = {k: v for k, v in s2.items() if v[i_vendor] == Y_VENDOR}
+    y_diff = {k for k in set(y_both) | set(y_s2) if y_both.get(k) != y_s2.get(k)}
+    y_only_brand_fix = set(y_both) == set(y_s2) and all(
+        [i for i in range(len(cols)) if y_both[k][i] != y_s2[k][i]] == [i_en] for k in y_diff)
+    check(y_only_brand_fix, "メルカリのペンの SQL を流しても流さなくても Y の preset は同じ（違いは eBay Brand の誤記の修正だけ "
+          f"{sorted(y_diff)}。Y は写した行だけを使う）")
     print("結果:", "全項目 OK" if ok else "NG あり")
     return ok
 
