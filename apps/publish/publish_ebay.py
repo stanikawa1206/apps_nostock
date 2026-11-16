@@ -77,6 +77,7 @@ from apps.adapters.rakuma_item_status import parse_detail_rakuma, RakumaItemUnav
 from apps.adapters import rakuma_outage
 from apps.adapters.rakuma_outage import RakumaHttpError
 from apps.adapters import yahoo_fleamarket as yahoo
+from apps.publish.listing_images import select_listing_images, upload_upscaled_image
 from apps.publish.material_check import (
     adjust_title_materials, check_material_with_cache, description_material_note, ensure_title_labels, material_labels,
 )
@@ -269,11 +270,15 @@ CONSOLE_LOG_PATH_ENV = "PUBLISH_EBAY_LOG_PATH"
 
 
 # ========= 詳細解析（Shops / 通常） =========
-def parse_detail_shops(page, url: str, preset: str, vendor_name: str, driver) -> Dict[str, Any]:
+def parse_detail_shops(page, url: str, preset: str, vendor_name: str, driver,
+                       found: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     メルカリShops:
     状態判定 → Selenium
     データ取得 → Playwright(API)
+
+    found: API から取れた値を、この関数が例外で終わっても呼び出し側が使えるよう入れておく
+    （今は seller_id。画像不足などで解析失敗にしても trx.vendor_item にショップIDを残すため）。
     """
     import time
     
@@ -303,6 +308,8 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str, driver) ->
     detail = res.get("productDetail", {})
     shop = detail.get("shop", {})
     variants = res.get("variants", [])
+    if found is not None:
+        found["seller_id"] = shop.get("name", "")
 
     update_time_str = res.get("updateTime")
     vendor_updated_at = datetime.fromisoformat(update_time_str.replace("Z", "+00:00")) if update_time_str else None
@@ -333,26 +340,7 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str, driver) ->
             "variants": variants,
         }
 
-    raw_images = detail.get("photos", []) or []
-
-    filtered_images = []
-    for img_url in raw_images:
-        try:
-            res_img = requests.get(img_url, timeout=10)
-            res_img.raise_for_status()
-
-            img = Image.open(BytesIO(res_img.content))
-            width, height = img.size
-
-            if width < 500 or height < 500:
-                continue
-
-            filtered_images.append(img_url)
-
-        except Exception as e:
-            print(f"[IMAGE ERROR] {img_url} {e}")
-            continue
-
+    filtered_images, upscale_images = select_listing_images(detail.get("photos", []) or [])
     if not filtered_images:
         raise Exception("no valid images (all <500px or error)")
 
@@ -370,6 +358,7 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str, driver) ->
         "rating_count": int(shop.get("shopStats", {}).get("reviewCount", 0)),
         "num_likes": int((detail.get("productStats") or {}).get("likesCount", 0)),
         "images": filtered_images,
+        "upscale_images": upscale_images,
         "preset": preset,
         "description": detail.get("description", ""),
         "description_en": "",
@@ -379,10 +368,13 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str, driver) ->
     }
 
 
-def parse_detail_personal(page, url: str, preset: str, vendor_name: str) -> Dict[str, Any]:
+def parse_detail_personal(page, url: str, preset: str, vendor_name: str,
+                          found: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     【Newer Version】通常メルカリ: Playwright(API) 1回で全データを解析。
     Seleniumを使わず、JSONから直接「39分前」や「セラー評価」を抽出します。
+
+    found: parse_detail_shops と同じ（API から取れた seller_id を、例外で終わっても残す）。
     """
     # 1. APIからJSONデータを取得
     res, _ = fetch_mercari_api_data(page, url)
@@ -396,6 +388,8 @@ def parse_detail_personal(page, url: str, preset: str, vendor_name: str) -> Dict
         raise MercariItemUnavailableError(status)
     
     item = res.get("data", {})
+    if found is not None:
+        found["seller_id"] = str(item.get("seller", {}).get("id", ""))
 
     updated = item.get("updated")
 
@@ -408,29 +402,9 @@ def parse_detail_personal(page, url: str, preset: str, vendor_name: str) -> Dict
     if created:
         vendor_created_at = datetime.fromtimestamp(created)
 
-    raw_images = item.get("photos", []) or []
-
-    filtered_images = []
-    for img_url in raw_images:
-        try:
-            res_img = requests.get(img_url, timeout=10)
-            res_img.raise_for_status()
-
-            img = Image.open(BytesIO(res_img.content))
-            width, height = img.size
-
-            if width < 500 or height < 500:
-                continue
-
-            filtered_images.append(img_url)
-
-        except Exception as e:
-            print(f"[IMAGE ERROR] {img_url} {e}")
-            continue
-
+    filtered_images, upscale_images = select_listing_images(item.get("photos", []) or [])
     if not filtered_images:
         raise Exception("no valid images (all <500px or error)")
-
 
     # 4. rec の組み立て
     return {
@@ -447,6 +421,7 @@ def parse_detail_personal(page, url: str, preset: str, vendor_name: str) -> Dict
         "rating_count": int(item.get("seller", {}).get("num_ratings", 0)),
         "num_likes": int(item.get("num_likes", 0)),
         "images": filtered_images,
+        "upscale_images": upscale_images,
         "preset": preset,
         "description": item.get("description", ""),
         "description_en": "",
@@ -1436,11 +1411,13 @@ def heavy_check_detail(
     """
 
     # === STEP 1: Playwright (API) で最速生存確認 ===
+    # 解析の途中で API から取れた値（seller_id）。画像不足などで解析失敗になっても、下の rec_fail で保存する。
+    found: Dict[str, Any] = {}
     try:
         # === 解析実行 (すべて Playwright 1回完結) ===
         if vendor_name == "メルカリshops":
             # ★ ShopsもPlaywright化！
-            rec = parse_detail_shops(page, item_url, preset, vendor_name, driver)
+            rec = parse_detail_shops(page, item_url, preset, vendor_name, driver, found)
         elif vendor_name == "ラクマ":
             # HTTP GETのみ（Playwright/Selenium不使用）
             rec = parse_detail_rakuma(item_url, preset, vendor_name)
@@ -1449,7 +1426,7 @@ def heavy_check_detail(
             rec = yahoo.parse_detail_yahoo(sku, preset, vendor_name)
         elif vendor_name == "メルカリ":
             # 通常メルカリ
-            rec = parse_detail_personal(page, item_url, preset, vendor_name)
+            rec = parse_detail_personal(page, item_url, preset, vendor_name, found)
         else:
             # 未知の仕入先をメルカリの解析に流さない
             raise Exception(f"未対応の仕入先: {vendor_name}")
@@ -1532,7 +1509,8 @@ def heavy_check_detail(
             "last_updated_str": None,
             "shipping_region": None,
             "shipping_days": None,
-            "seller_id": None,
+            # API から取れていればその値。取れていなければ None（upsert_vendor_item は COALESCE で既存の値を残す）
+            "seller_id": found.get("seller_id"),
 
             "preset": preset,
             "vendor_page": None,
@@ -2074,6 +2052,10 @@ def build_pic_urls(
     ?なしURLでは差し替え前の古い画像が返ることがある（2026-10-26 川島 237145561379 で464pxの古い画像が
     eBayに渡り、以後の価格更新が 25002 画像500px未満で永久に失敗した）。
     ?付きURLの出品は 2026-11-04 に谷川③・川島で実出品して確認済み（画像サイズも元画像と一致）。
+
+    縦横とも500pxに足りず拡大して使う写真（rec["upscale_images"]、listing_images.select_listing_images）は、
+    NORMAL・CDN のどちらでも、拡大した画像を R2 に置いてその URL を渡す（元の小さい画像は渡さない）。
+    置いた URL は rec["upscaled_urls"] に残し、同じ商品の出品をやり直すときは置き直さない。
     """
     src_urls = []
     for u in (rec.get("images") or []):
@@ -2083,8 +2065,16 @@ def build_pic_urls(
         if len(src_urls) >= PIC_LIMIT:
             break
 
+    upscale = {u.strip().split("#")[0] for u in (rec.get("upscale_images") or {})}
+    upscaled = rec.setdefault("upscaled_urls", {})
+
+    def _upscaled_url(idx: int, u: str) -> str:
+        if u not in upscaled:
+            upscaled[u] = upload_upscaled_image(r2, r2_bucket, r2_public_base, u, f"{sku}/upscaled_{idx+1}.jpg")
+        return upscaled[u]
+
     if image_mode == "NORMAL":
-        return src_urls
+        return [_upscaled_url(idx, u) if u in upscale else u for idx, u in enumerate(src_urls)]
 
     # CDN mode
     if sku in cdn_cache:
@@ -2097,6 +2087,9 @@ def build_pic_urls(
 
     cdn_urls = []
     for idx, u in enumerate(src_urls):
+        if u in upscale:
+            cdn_urls.append(_upscaled_url(idx, u))
+            continue
         key = f"{sku}/{idx+1}.jpg"
         cdn_url = upload_image_to_r2(r2, r2_bucket, r2_public_base, u, key)
         cdn_urls.append(cdn_url)
