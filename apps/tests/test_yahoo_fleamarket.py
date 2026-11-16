@@ -54,7 +54,7 @@ class ResolvePresetTest(unittest.TestCase):
         self.addCleanup(p.stop)
 
     def resolve(self, brand, title="", cat=MEN):
-        return yf.resolve_item_preset(brand, title, cat, PRESETS, SEIKO)[0]
+        return yf.resolve_item_preset(brand, title, cat, PRESETS, SEIKO, "腕時計")[0]
 
     def test_same_brand(self):
         self.assertEqual(self.resolve(SEIKO, "SEIKO 5 自動巻き"), "SEIKOメンズ腕時計menY")
@@ -95,7 +95,7 @@ class ResolvePresetTest(unittest.TestCase):
         self.assertEqual(self.resolve(ALBA_SEIKO, "クレドール 風"), "アルバメンズ腕時計menY")
 
     def test_ng_brand_under_furla(self):
-        preset, reason = yf.resolve_item_preset(ALBA_UNDER_FURLA, "ALBA 腕時計", MEN, PRESETS, FURLA)
+        preset, reason = yf.resolve_item_preset(ALBA_UNDER_FURLA, "ALBA 腕時計", MEN, PRESETS, FURLA, "腕時計")
         self.assertIsNone(preset)
         self.assertIn("124244", reason)
 
@@ -292,7 +292,7 @@ class NonWatchTest(unittest.TestCase):
 
     def test_resolve_skips_non_watch(self):
         with mock.patch.object(yf, "get_brand_path", side_effect=lambda b, root: PATHS[b]):
-            preset, reason = yf.resolve_item_preset(SEIKO, "SEIKO 純正部品 時計ベルト 22mm", MEN, PRESETS, SEIKO)
+            preset, reason = yf.resolve_item_preset(SEIKO, "SEIKO 純正部品 時計ベルト 22mm", MEN, PRESETS, SEIKO, "腕時計")
         self.assertIsNone(preset)
         self.assertIn("腕時計以外", reason)
 

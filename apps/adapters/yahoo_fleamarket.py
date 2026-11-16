@@ -17,6 +17,15 @@ Playwright/Selenium は使わず、サイト自身が使う JSON API を HTTP GE
   - FURLA の下にある「ALBA」(124244) は出品しない（NG_BRAND_IDS。Yahoo!フリマ側のブランド構造の不備）。
   eBay の Brand・タイトル・説明文・高リスク判定は preset のブランド（presets_brand.default_brand_en）を使うため、
   preset を付け替えれば4つとも商品のブランドになる。
+
+【カテゴリーグループごとの判定】（2026-11-16 谷川② のデジカメ・ビデオカメラ・レンズ・ペン・製図用品を追加）
+  listing_ng_reason で、検索時（保存しない）と出品前（NG・出品不可flg=1）の両方で同じ判定をする。
+  - 腕時計: 腕時計以外（部品・ベルト・空箱など）。腕時計グループだけに適用する
+    （他のグループに適用すると、ペンの「ギフトボックス入り」「ノブレス」などを誤って除外する）。
+  - レンズ: Yahoo!フリマの交換レンズは単焦点／ズームの区別が無いので、タイトルから eBay の Type を決める
+    （lens_type_from_title）。決められない商品（付属品・焦点距離の表記なし）は出品しない。
+  - 製図用品: 製図板（平行定規・ライナーボード・ドラフター等を含む）は大きく仕入れ・発送に向かないので出品しない。
+  - 製図用品はブランドなしの preset（brand_id=0）。検索に brandIds を付けず、商品のブランドに関係なくその preset にする。
 """
 from __future__ import annotations
 
@@ -59,6 +68,14 @@ ITEM_CONDITION_MAP = {
     "used60": 5,   # 傷や汚れあり
     "used80": 6,   # 全体的に状態が悪い
 }
+
+# カテゴリーグループ（mst.presets_lookup.category_group）
+WATCH_CATEGORY_GROUP = "腕時計"
+LENS_CATEGORY_GROUP = "レンズ"
+DRAFTING_CATEGORY_GROUP = "製図用品"
+
+# ブランドなしの preset のブランドID（mst.presets_categories.brand_id=0 から作られる。製図用品）
+NO_BRAND_ID = 0
 
 # 出品しないブランド（Yahoo!フリマのブランドID）
 NG_BRAND_IDS = {
@@ -206,6 +223,109 @@ def department_from_title(title: Optional[str], department: Optional[str]) -> Op
     return department
 
 
+# =========================
+# レンズの Type（単焦点／ズーム）
+# Yahoo!フリマの交換レンズ(2465)は1カテゴリーだけなので、メルカリ・ラクマのカテゴリー（単焦点・ズーム）が
+# 決めていた eBay の Type をタイトルから決める。値はメルカリ・ラクマの presets_categories.type_ebay と同じ。
+# 2026-11-16 実測（販売中・価格帯内 1,732件）: 単焦点 約53%・ズーム 約37%・決められない 約10%。
+#   ズーム: 焦点距離の範囲（24-70mm 等）、「ズーム」「zoom」「vario」、ソニーの型番 SEL2470GM 等
+#   単焦点: 「単焦点」「パンケーキ」、ソニーの型番 SEL50F18F 等、または焦点距離1つ（50mm・3.5cm・1.8/32）と F値・T値
+#   付属品: テレコン・エクステンダー・「〜mm用」「レンズ用」等は常に。アダプター・フィルター・フード・ケースは
+#           焦点距離から本体と分からないときだけ（「フード付き」「フィルター径62mm」のレンズ本体を除外しない）
+# =========================
+LENS_TYPE_ZOOM = "Zoom Lenses"
+LENS_TYPE_PRIME = "Prime Lenses"
+
+_DASH = r"[-‐‑–—~〜]"
+_LENS_RANGE = re.compile(r"(?<![\d.])(\d{1,3}(?:\.\d)?)\s*" + _DASH + r"\s*(\d{1,4}(?:\.\d)?)\s*mm")
+_LENS_SINGLE = re.compile(
+    r"(?<![\d.])\d{1,4}(?:\.\d)?\s*(?:mm|cm)(?!\s*" + _DASH + r"\s*\d)"
+    r"|(?<![\d.])\d\.\d{1,2}\s*/\s*\d{2,3}(?![\d.])"   # ツァイスの表記 1.8/32
+)
+_LENS_FNUM = re.compile(
+    r"(?:(?<![a-z])|(?<=mm))[ft]\s*[/=]?\s*\d{1,2}(?:\.\d{1,2})?"   # F1.8・f/2.8・F=3.5・T1.5（シネレンズ）・35mmF2
+    r"|(?<![\d.])\d\.\d{1,2}\s*/\s*\d{2,3}(?![\d.])"
+    r"|1\s*:\s*\d(?:\.\d)?"                                          # 1:2.8
+)
+_LENS_SONY_ZOOM = re.compile(r"\bsel(\d{2})(\d{2,3})(?:gm|g|z|oss|b|pz|r)?\b")
+_LENS_SONY_PRIME = re.compile(r"\bsel\d{2,3}(?:m28|f\d)")
+_LENS_ZOOM_WORD = re.compile(r"ズーム|zoom|vario|バリオ")
+_LENS_PRIME_WORD = re.compile(r"単焦点|パンケーキ|pancake")
+_LENS_ACC_STRONG = re.compile(
+    r"テレコン|エクステンダー|extender|teleconverter|tele\s*converter|マウントコンバーター"
+    r"|中間リング|接写リング|エクステンションチューブ|extension\s*tube|リアキャップ|ボディキャップ"
+    r"|(?:mm|レンズ)\s*用"
+)
+_LENS_ACC_WEAK = re.compile(r"アダプター|アダプタ|adapter|フィルター|filter|フード|hood|キャップ|ケース|ポーチ")
+_LENS_FOLLOWED_BY_EXTRA = re.compile(r"^\s*(付き|付属|付|つき|セット|おまけ|同梱|あり|有り|込み|込)")
+
+
+def lens_type_from_title(title: Optional[str]) -> Tuple[Optional[str], str]:
+    """(eBay の Type, 説明)。決められなければ Type=None（説明に理由）。"""
+    t = _normalize_title(title)
+    for m in _LENS_ACC_STRONG.finditer(t):
+        if not _LENS_FOLLOWED_BY_EXTRA.match(t[m.end():m.end() + 6]):
+            return None, f"付属品「{m.group(0)}」"
+
+    if any(float(m.group(1)) < float(m.group(2)) for m in _LENS_RANGE.finditer(t)):
+        return LENS_TYPE_ZOOM, "焦点距離の範囲"
+    zoom = bool(_LENS_ZOOM_WORD.search(t) or _LENS_SONY_ZOOM.search(t))
+    prime = bool(_LENS_PRIME_WORD.search(t) or _LENS_SONY_PRIME.search(t))
+    if zoom and prime:
+        return None, "単焦点とズームの両方の記載"
+    if zoom:
+        return LENS_TYPE_ZOOM, "ズームの記載・型番"
+    if prime:
+        return LENS_TYPE_PRIME, "単焦点の記載・型番"
+    if _LENS_SINGLE.search(t) and _LENS_FNUM.search(t):
+        return LENS_TYPE_PRIME, "焦点距離1つとF値"
+    m = _LENS_ACC_WEAK.search(t)
+    if m:
+        return None, f"付属品「{m.group(0)}」"
+    return None, "焦点距離・F値の記載なし"
+
+
+# =========================
+# 製図板（製図用品）
+# 製図板は大きく、仕入れ・発送に向かないので出品しない（平行定規・ライナーボード・製図台・ドラフターは製図板と一体の商品）。
+# Yahoo!フリマの「製図板」カテゴリー(47524)は登録せず、他の製図用品カテゴリーに混ざる製図板をタイトルで除く。
+# 「平行定規用」（マグネットプレート等の部品）は製図板ではないので数えない。
+# =========================
+_DRAFTING_BOARD = re.compile(
+    r"製図[板版台]|製図\s*ボード|平行定規(?!用)|ライナー\s*ボード|liner\s*board|ドラフター|drafter"
+    r"|ドラフティング\s*(?:ボード|テーブル|マシン)|drafting\s*(?:board|table|machine)"
+)
+
+
+def drafting_board_reason(title: Optional[str]) -> Optional[str]:
+    m = _DRAFTING_BOARD.search(_normalize_title(title))
+    return f"製図板「{m.group(0)}」" if m else None
+
+
+# 出品前の NG の listing_head（trx.vendor_item）。腕時計は従来どおり
+LISTING_NG_HEADS = {
+    WATCH_CATEGORY_GROUP: "NG(腕時計以外)",
+    LENS_CATEGORY_GROUP: "NG(レンズ種別不明)",
+    DRAFTING_CATEGORY_GROUP: "NG(製図板)",
+}
+
+
+def listing_ng_reason(title: Optional[str], category_id: Optional[int], category_group: Optional[str]) -> Optional[str]:
+    """
+    タイトルから出品しないと分かる商品の理由（無ければ None）。検索時と出品前の両方で使う。
+    腕時計以外の判定は腕時計グループだけ。
+    """
+    if category_group == WATCH_CATEGORY_GROUP:
+        nw = non_watch_reason(title, category_id)
+        return f"腕時計以外: {nw}" if nw else None
+    if category_group == LENS_CATEGORY_GROUP:
+        lens_type, why = lens_type_from_title(title)
+        return None if lens_type else f"レンズ種別不明: {why}"
+    if category_group == DRAFTING_CATEGORY_GROUP:
+        return drafting_board_reason(title)
+    return None
+
+
 IMAGE_MIN_PX = 500
 IMAGE_LIMIT = 20
 
@@ -276,17 +396,21 @@ def item_url(item_id: str) -> str:
 # =========================
 def search_params(*, brand_id: int, category_id: int, status: str,
                   min_price: Optional[int], max_price: Optional[int], offset: int) -> dict:
-    """status は 'open'（販売中）または 'sold'（売り切れ）。並び順は新着順。"""
+    """
+    status は 'open'（販売中）または 'sold'（売り切れ）。並び順は新着順。
+    brand_id=NO_BRAND_ID（ブランドなしの preset）は brandIds を付けない（カテゴリーの全商品）。
+    """
     params = {
         "results": SEARCH_PAGE_SIZE,
         "offset": offset,
         "itemStatus": status,
-        "brandIds": int(brand_id),
         "genreCategoryIds": int(category_id),
         "itemConditions": SEARCH_ITEM_CONDITIONS,
         "sort": "openTime",
         "order": "DESC",
     }
+    if int(brand_id) != NO_BRAND_ID:
+        params["brandIds"] = int(brand_id)
     if min_price is not None:
         params["minPrice"] = int(min_price)
     if max_price is not None:
@@ -365,15 +489,24 @@ def _normalize_title(title: Optional[str]) -> str:
 
 def resolve_item_preset(item_brand_id: Optional[int], title: Optional[str], category_id: int,
                         preset_by_brand: Dict[Tuple[int, int], str],
-                        search_brand_id: int) -> Tuple[Optional[str], str]:
+                        search_brand_id: int,
+                        category_group: Optional[str]) -> Tuple[Optional[str], str]:
     """
     商品のブランドから preset を決める。戻り値は (preset, 説明)。出品しない商品は preset=None。
     preset_by_brand: {(Yahoo!フリマのブランドID, カテゴリーID): preset}（mst.presets_lookup の ＰａｙＰａｙフリマ 分）
-    search_brand_id: 検索に使ったブランドID
+    search_brand_id: 検索に使ったブランドID（ブランドなしの preset は NO_BRAND_ID）
+    category_group: 検索したカテゴリーのグループ（listing_ng_reason の判定を選ぶ）
     """
-    nw = non_watch_reason(title, category_id)
-    if nw:
-        return None, f"腕時計以外: {nw}"
+    ng = listing_ng_reason(title, category_id, category_group)
+    if ng:
+        return None, ng
+
+    if int(search_brand_id) == NO_BRAND_ID:
+        # ブランドなしの preset（製図用品）: 商品のブランドに関係なくカテゴリーの preset
+        preset = preset_by_brand.get((NO_BRAND_ID, category_id))
+        if preset is None:
+            return None, f"ブランドなしの preset が無い category_id={category_id}"
+        return preset, "ブランドなし"
 
     if item_brand_id is None:
         return None, "ブランドなし"
@@ -524,7 +657,15 @@ def parse_detail_yahoo(item_id: str, preset: str, vendor_name: str) -> Dict[str,
     }
 
 
-def non_watch_reason_rec(rec: Dict[str, Any]) -> Optional[str]:
-    """出品前の確認用: 商品詳細のタイトル・説明文から腕時計以外と分かればその理由。"""
-    return (non_watch_reason(rec.get("title_jp"), rec.get("yahoo_category_id"))
-            or non_watch_reason_desc(rec.get("description")))
+def listing_ng_reason_rec(rec: Dict[str, Any], category_group: Optional[str]) -> Optional[str]:
+    """
+    出品前の確認用: 商品詳細から出品しないと分かればその理由（listing_ng_reason と同じ判定）。
+    腕時計グループは説明文の「本体なし」等も見る。
+    """
+    reason = listing_ng_reason(rec.get("title_jp"), rec.get("yahoo_category_id"), category_group)
+    if reason:
+        return reason
+    if category_group == WATCH_CATEGORY_GROUP:
+        nw = non_watch_reason_desc(rec.get("description"))
+        return f"腕時計以外: {nw}" if nw else None
+    return None

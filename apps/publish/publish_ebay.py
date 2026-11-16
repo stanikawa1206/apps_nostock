@@ -1560,15 +1560,16 @@ def heavy_check_detail(
         writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
         return None, debug_unavailable_dump, writes_since_commit, 1, 0
 
-    # === Yahoo!フリマ: 腕時計以外（部品・ベルト・空箱・冊子など）NG ===
-    # 検索時にタイトルで除外しているが、検索前から保存済みの商品と、説明文にだけ書かれている場合をここで止める。
+    # === Yahoo!フリマ: カテゴリーグループごとの NG（腕時計以外・レンズ種別不明・製図板） ===
+    # 検索時にタイトルで除外しているが、検索前から保存済みの商品と、説明文にだけ書かれている場合（腕時計）をここで止める。
     # 偽物疑いと同じく 出品不可flg=1 にして候補から外す（毎回の再判定をしない）。
     if vendor_name == yahoo.VENDOR_NAME:
-        nw_reason = yahoo.non_watch_reason_rec(rec)
-        if nw_reason:
-            print(f"  └─ [NG] 腕時計以外: {nw_reason}", flush=True)
-            rec["listing_head"] = "NG(腕時計以外)"
-            rec["listing_detail"] = nw_reason
+        ng_reason = yahoo.listing_ng_reason_rec(rec, category_group)
+        if ng_reason:
+            ng_head = yahoo.LISTING_NG_HEADS[category_group]
+            print(f"  └─ [NG] {ng_head}: {ng_reason}", flush=True)
+            rec["listing_head"] = ng_head
+            rec["listing_detail"] = ng_reason
             upsert_vendor_item(conn, rec)
             with conn.cursor() as cur:
                 cur.execute(
@@ -1584,6 +1585,12 @@ def heavy_check_detail(
         if corrected != department:
             print(f"  └─ [DEPT] {department} → {corrected}（タイトル）", flush=True)
             department = corrected
+
+        # レンズ: Yahoo!フリマの交換レンズは単焦点／ズームが1カテゴリーなので、Type はタイトルから決める
+        # （決められない商品は上の NG で止めている）
+        if category_group == yahoo.LENS_CATEGORY_GROUP:
+            type_ebay, lens_why = yahoo.lens_type_from_title(rec.get("title_jp"))
+            print(f"  └─ [TYPE] {type_ebay}（{lens_why}）", flush=True)
 
     # === ラクマ: 購入申請ありNG ===
     # class="item__icon request-required"（「すぐに購入可」。タグはspanのこともdivのこともある）
