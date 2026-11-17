@@ -73,6 +73,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from apps.common.utils import send_mail, get_sql_server_connection, compute_cost_range_jpy_from_usd_range
+from apps.publish import listing_class
 import pyodbc
 
 # ======================
@@ -434,7 +435,7 @@ def format_duration_mmss(elapsed: timedelta) -> str:
 
 def build_publish_manager_account_summary(conn) -> str:
     """
-    publish_manager完了メール用に、各アカウントのclose_reason・当日出品件数・
+    publish_manager完了メール用に、各アカウントの区分（非Collectibles / Collectibles）ごとの終了理由・当日出品件数・
     本日LIMIT対応が発生した件数をまとめた文字列を作る。
 
     「LIMITになった回数」は正確な履歴カウンタがどこにも存在しないため、
@@ -445,25 +446,19 @@ def build_publish_manager_account_summary(conn) -> str:
     try:
         cur = conn.cursor()
 
-        cur.execute("""
-            SELECT account, close_reason, post_target, close_detail
-            FROM mst.ebay_accounts
-            WHERE ISNULL(is_excluded, 0) = 0
-            ORDER BY account
+        # 区分（非Collectibles / Collectibles）ごとの終了理由・目標・当日の出品数（2026-11-17）
+        cur.execute(f"""
+            SELECT A.account, A.close_reason, A.post_target, A.close_detail,
+                   A.close_reason_collectibles, A.post_target_collectibles,
+                   {listing_class.today_count_sql('A.account', listing_class.NON_COLLECTIBLES)} AS posted,
+                   {listing_class.today_count_sql('A.account', listing_class.COLLECTIBLES)} AS posted_collectibles
+            FROM mst.ebay_accounts A
+            WHERE ISNULL(A.is_excluded, 0) = 0
+            ORDER BY A.account
         """)
         rows = cur.fetchall()
-        accounts = [(r[0], r[1], r[2]) for r in rows]
-        # BLOCKED = eBayの新規出品制限（25019 Tutorial_Block_7D_NR）で当日の出品を終えたアカウント
-        blocked = [(r[0], r[3]) for r in rows if r[1] == "BLOCKED"]
-
-        cur.execute("""
-            SELECT account, COUNT(*) AS today_posted
-            FROM trx.listings
-            WHERE CAST(start_time AS DATE) = CAST(GETDATE() AS DATE)
-              AND is_deleted = 0
-            GROUP BY account
-        """)
-        today_posted_map = {r[0]: r[1] for r in cur.fetchall()}
+        # BLOCKED = eBayの新規出品制限（25019 Tutorial_Block_7D_NR）で当日の出品を終えたアカウント（両区分に書かれる）
+        blocked = [(r[0], r[3]) for r in rows if "BLOCKED" in (r[1], r[4])]
 
         cur.execute("""
             SELECT COUNT(DISTINCT account)
@@ -474,7 +469,7 @@ def build_publish_manager_account_summary(conn) -> str:
         """)
         limit_handled_accounts = cur.fetchone()[0]
 
-        limit_now_count = sum(1 for _, close_reason, _ in accounts if close_reason == "LIMIT")
+        limit_now_count = sum(1 for r in rows if "LIMIT" in (r[1], r[4]))
 
         lines = []
         if blocked:
@@ -485,11 +480,12 @@ def build_publish_manager_account_summary(conn) -> str:
             lines.append("")
 
         lines.append("【アカウント別状況】")
-        for account, close_reason, post_target in accounts:
-            posted = today_posted_map.get(account, 0)
+        for r in rows:
+            account = r[0]
             lines.append(
-                f"- {account}: close_reason={close_reason or 'NULL'} "
-                f"/ 本日出品={posted}件 / post_target={post_target}"
+                f"- {account}: close_reason={r[1] or 'NULL'} "
+                f"/ 本日出品={r[6]}件 / post_target={r[2]}"
+                f"  ｜ Collectibles: close_reason={r[4] or 'NULL'} / 本日出品={r[7]}件 / post_target={r[5]}"
             )
 
         lines.append("")

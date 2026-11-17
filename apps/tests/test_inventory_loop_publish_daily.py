@@ -93,7 +93,7 @@ class FakeQuotaDB:
 
     def __init__(self, reset_month, accounts):
         self.reset_month = reset_month          # None = 行なし
-        self.accounts = dict(accounts)          # account -> [listing_left, additional_listing_left]
+        self.accounts = dict(accounts)          # account -> [listing_left, listing_left_collectibles]
         self.commits = 0
         self.rollbacks = 0
         self.pending = None

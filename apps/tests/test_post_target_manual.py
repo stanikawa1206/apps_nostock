@@ -57,10 +57,17 @@ class UpdatePostTargetsTest(unittest.TestCase):
             pm.update_post_targets()
         return {params[1]: params[0] for sql, params in conn.updates if sql == pm.SQL_UPDATE_POST_TARGET}, out.getvalue()
 
+    def run_update_collectibles(self, rows):
+        conn = FakeConn(rows)
+        with mock.patch.object(pm, "get_sql_server_connection", return_value=conn), \
+                contextlib.redirect_stdout(io.StringIO()):
+            pm.update_post_targets()
+        return {params[1]: params[0] for sql, params in conn.updates if sql == pm.SQL_UPDATE_POST_TARGET_COLLECTIBLES}
+
     def test_manual_account_keeps_post_target(self):
         rows = [
-            ("BUZZ", 1289, 321),
-            ("貴文③", None, 10),     # 現在の状態（listing_left 未設定）
+            ("BUZZ", 1289, 321, 50000, None),
+            ("貴文③", None, 10, 49282, 100),     # 現在の状態（listing_left 未設定）
         ]
         updated, out = self.run_update(rows)
         self.assertNotIn("貴文③", updated)
@@ -70,15 +77,17 @@ class UpdatePostTargetsTest(unittest.TestCase):
 
     def test_manual_account_is_not_recalculated_even_with_listing_left(self):
         # 月次リセットで listing_left=10,000 になっても、手入力の post_target を上書きしない
-        updated, _ = self.run_update([("貴文③", 10000, 10), ("谷川②", 4112, 500)])
+        rows = [("貴文③", 10000, 10, 50000, 100), ("谷川②", 4112, 500, 45284, None)]
+        updated, _ = self.run_update(rows)
         self.assertEqual(list(updated), ["谷川②"])
+        self.assertEqual(list(self.run_update_collectibles(rows)), ["谷川②"])  # Collectibles の目標も手入力のまま
 
     def test_other_accounts_unchanged_behavior(self):
         # 他アカウントは従来どおり calculate_post_target の結果で更新される
-        rows = [("BUZZ", 1289, 0), ("川島", 1311, 0)]
+        rows = [("BUZZ", 1289, 0, 50000, None), ("川島", 1311, 0, 49622, None)]
         updated, _ = self.run_update(rows)
         us_date = datetime.now(pm.US_EASTERN_TZ).date()
-        for account, left, _ in rows:
+        for account, left, *_ in rows:
             self.assertEqual(updated[account], pm.calculate_post_target(left, us_date)["calculated_post_target"])
 
     def test_manual_list(self):

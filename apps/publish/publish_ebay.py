@@ -77,6 +77,7 @@ from apps.adapters.rakuma_item_status import parse_detail_rakuma, RakumaItemUnav
 from apps.adapters import rakuma_outage
 from apps.adapters.rakuma_outage import RakumaHttpError
 from apps.adapters import yahoo_fleamarket as yahoo
+from apps.publish import listing_class
 from apps.publish.listing_images import select_listing_images, upload_upscaled_image
 from apps.publish.material_check import (
     adjust_title_materials, check_material_with_cache, description_material_note, ensure_title_labels, material_labels,
@@ -682,8 +683,9 @@ def _is_deadlock_error(e: Exception) -> bool:
 def record_ebay_listing(listing_id: str, account_name: str, vendor_item_id: str, vendor_name: str,
                         start_price: float, is_collectibles=None):
     """
-    出品成功時の trx.listings 登録と、出品枠の残数(listing_left / additional_listing_left)の減算、
-    当日の出品数が post_target に達した場合の close_reason='DONE' を、1つのトランザクションで行う。
+    出品成功時の trx.listings 登録と、商品の区分の月間無料出品残数(listing_left / listing_left_collectibles)の減算、
+    区分の当日の出品数が目標(post_target / post_target_collectibles)に達した場合の区分の終了理由
+    (close_reason / close_reason_collectibles)='DONE' を、1つのトランザクションで行う。
     以前は登録と減算が別トランザクションで、減算側がデッドロック(1205)で失敗すると
     登録だけ残って残数が減らず、eBayの残数とずれていた（2026-10-16 谷川④ 137847598624）。
     デッドロック時はトランザクション全体がロールバックされるため、そのまま再実行しても二重減算にならない。
@@ -706,38 +708,30 @@ INSERT INTO [trx].[listings]
 VALUES
     (?, SYSDATETIME(), ?, ?, ?, ?, 0);
 """, (listing_id, account_name, vendor_item_id, vendor_name, start_price))
-                if is_collectibles:
-                    cur.execute("""
-                        UPDATE mst.ebay_accounts
-                        SET additional_listing_left = additional_listing_left - 1
-                        OUTPUT 'additional_listing_left', inserted.additional_listing_left
-                        WHERE account = ?
-                    """, account_name)
-                else:
-                    cur.execute("""
-                        UPDATE mst.ebay_accounts
-                        SET listing_left = listing_left - 1
-                        OUTPUT 'listing_left', inserted.listing_left
-                        WHERE account = ?
-                    """, account_name)
+                # 月間無料出品残数は商品の区分（Collectibles／非Collectibles）の列から1件減らす
+                cls = listing_class.class_of(is_collectibles)
+                left_col = listing_class.LEFT_COL[cls]
+                cur.execute(f"""
+                    UPDATE mst.ebay_accounts
+                    SET {left_col} = {left_col} - 1
+                    OUTPUT '{left_col}', inserted.{left_col}
+                    WHERE account = ?
+                """, account_name)
                 left = cur.fetchone()
 
-                # 投稿成功直後、その場で当日COUNTを再取得しtarget到達済みならDONEを確定する。
+                # 投稿成功直後、その場で区分の当日COUNTを再取得し、区分の目標に到達済みならその区分をDONEにする。
                 # close_reasonがLIMIT中でも上書き対象に含めるのは、このworkerの投稿が
                 # 確定する前に別workerが実際のeBay制限でLIMITを書いていた場合でも、
                 # target到達という事実が判明した時点で必ずDONEへ昇格させるため。
-                cur.execute("""
+                close_col = listing_class.CLOSE_COL[cls]
+                target_col = listing_class.TARGET_COL[cls]
+                cur.execute(f"""
                     UPDATE mst.ebay_accounts
-                    SET close_reason = 'DONE'
+                    SET {close_col} = 'DONE'
                     WHERE account = ?
-                      AND (close_reason IS NULL OR close_reason = 'LIMIT')
-                      AND (
-                          SELECT COUNT(*) FROM trx.listings
-                          WHERE account = ?
-                            AND CAST(start_time AS DATE) = CAST(GETDATE() AS DATE)
-                            AND is_deleted = 0
-                      ) >= (SELECT post_target FROM mst.ebay_accounts WHERE account = ?)
-                """, (account_name, account_name, account_name))
+                      AND ({close_col} IS NULL OR {close_col} = 'LIMIT')
+                      AND {listing_class.today_count_sql('?', cls)} >= ISNULL({target_col}, 0)
+                """, (account_name, account_name))
             conn.commit()
         except Exception as e:
             try:
@@ -2962,7 +2956,8 @@ def upload_image_to_r2(r2, bucket, public_base, image_url, key):
 class Account:
     account: str
     preset_group: str
-    post_target: Optional[int]
+    post_target: Optional[int]                 # 非Collectibles の当日の目標
+    post_target_collectibles: Optional[int] = None  # Collectibles の当日の目標
 
 
 # mst.execute_pcs の割り当て・解放を全workerで1件ずつ順番に行わせるため、各トランザクションの
@@ -2980,16 +2975,17 @@ SELECT @lock_execute_pcs = COUNT(*) FROM mst.execute_pcs WITH (TABLOCKX, HOLDLOC
 
 def fetch_next_account_and_lock(conn, current_pc):
     """
-    並行数が少ないアカウントから優先的に、かつアカウント順に1つ確保する
+    並行数が少ないアカウントから優先的に、かつアカウント順に1つ確保する。
+    対象は、Collectibles／非Collectibles のどちらかの区分が、終了理由なし（NULL）かつ当日の出品数が目標未満のアカウント。
     """
-    sql = SQL_LOCK_EXECUTE_PCS + """
+    sql = SQL_LOCK_EXECUTE_PCS + f"""
     UPDATE TOP (1) mst.execute_pcs
     SET account = Target.account
-    OUTPUT inserted.account, Target.preset_group, Target.post_target
+    OUTPUT inserted.account, Target.preset_group, Target.post_target, Target.post_target_collectibles
     FROM mst.execute_pcs AS P
     OUTER APPLY (
         SELECT TOP 1
-            A.account, A.preset_group, A.post_target
+            A.account, A.preset_group, A.post_target, A.post_target_collectibles
         FROM mst.ebay_accounts A
         LEFT JOIN (
             SELECT account, COUNT(*) as active_workers
@@ -2997,16 +2993,13 @@ def fetch_next_account_and_lock(conn, current_pc):
             WHERE account IS NOT NULL
             GROUP BY account
         ) W ON A.account = W.account
-        CROSS APPLY (
-            SELECT COUNT(*) as sent_count 
-            FROM trx.listings 
-            WHERE account = A.account 
-              AND CAST(start_time AS DATE) = CAST(GETDATE() AS DATE)
-              AND is_deleted = 0
-        ) T
         WHERE A.is_excluded = 0
-          AND A.close_reason IS NULL
-          AND T.sent_count < A.post_target
+          AND (
+                (A.close_reason IS NULL
+                 AND {listing_class.today_count_sql('A.account', listing_class.NON_COLLECTIBLES)} < ISNULL(A.post_target, 0))
+             OR (A.close_reason_collectibles IS NULL
+                 AND {listing_class.today_count_sql('A.account', listing_class.COLLECTIBLES)} < ISNULL(A.post_target_collectibles, 0))
+          )
           AND ISNULL(W.active_workers, 0) < ?  -- MAX_PARALLEL_PC
         ORDER BY 
             ISNULL(W.active_workers, 0) ASC, -- 1. 稼働中のWorkerが少ないアカウントを優先(分散)
@@ -3021,54 +3014,57 @@ def fetch_next_account_and_lock(conn, current_pc):
         # OUTER APPLY化により、候補が無い場合も1行返るが account 等は NULL になる
         # （このUPDATE自体でexecute_pcs.accountがNULLへ確実にクリアされる）。
         if row and row[0]:
-            return Account(account=row[0].strip(), preset_group=row[1].strip(), post_target=row[2])
+            return Account(account=row[0].strip(), preset_group=row[1].strip(), post_target=row[2],
+                           post_target_collectibles=row[3])
     return None
 
 def release_pc_and_close_account(conn, current_pc, account_name=None, close_reason=None, close_detail=None):
     """
-    PCの占有を解除する。close_reasonがある場合はアカウント自体を当日終了とする。
-    close_reason="BLOCKED"（eBayの新規出品制限）の時だけ close_detail（エラー内容）も記録する。
-    close_detail=None なら記録済みの内容を残す（他workerが検知済みで止まっただけの場合）。
+    PCの占有を解除する。close_reasonがある場合は、アカウントの未終了の区分（Collectibles／非Collectibles）を当日終了とする。
+    LIMIT（eBayの出品上限）・BLOCKED（新規出品制限）はアカウント全体の制限なので両区分に書く。
+      LIMIT  : 終了理由が NULL か LIMIT の区分だけ。区分の当日の出品数が目標に達していれば LIMIT ではなく DONE。
+      BLOCKED: 両区分（DONE・EMPTY の区分も BLOCKED にする）。close_detail（エラー内容）も記録する。
+               close_detail=None なら記録済みの内容を残す（他workerが検知済みで止まっただけの場合）。
+      その他 : 終了理由が NULL の区分だけ。
+    区分ごとの DONE・EMPTY は出品ループの中で listing_class.set_class_close が書く。
     """
     with conn.cursor() as cur:
         # 割り当て（fetch_next_account_and_lock）と同じ順でロックを取る（SQL_LOCK_EXECUTE_PCS参照）
         cur.execute(SQL_LOCK_EXECUTE_PCS)
 
-        # 1. アカウント自体の終了フラグ更新 (Limit検知や在庫切れ時)
+        # 1. アカウントの区分の終了理由 (Limit検知・新規出品制限)
         if account_name and close_reason:
             if close_reason == "LIMIT":
-                # LIMITを書き込む瞬間に、当日COUNTを再確認してから決める。
+                # LIMITを書き込む瞬間に、区分の当日COUNTを再確認してから決める。
                 # target到達済みならLIMITではなくDONEを確定する
                 # （Python側でclose_reason="LIMIT"と判断した時点と、
                 # 実際にDBへ書き込む時点との間に他workerの投稿が確定する
                 # 可能性があるため、書き込み文自身で最新のCOUNTを見て判定する）。
-                cur.execute("""
-                    UPDATE mst.ebay_accounts
-                    SET close_reason = CASE
-                            WHEN (
-                                SELECT COUNT(*) FROM trx.listings
-                                WHERE account = ?
-                                  AND CAST(start_time AS DATE) = CAST(GETDATE() AS DATE)
-                                  AND is_deleted = 0
-                            ) >= post_target
-                            THEN 'DONE'
-                            ELSE 'LIMIT'
-                        END
-                    WHERE account = ?
-                """, (account_name, account_name))
+                for cls in listing_class.CLASSES:
+                    col = listing_class.CLOSE_COL[cls]
+                    cur.execute(f"""
+                        UPDATE mst.ebay_accounts
+                        SET {col} = CASE
+                                WHEN {listing_class.today_count_sql('?', cls)} >= ISNULL({listing_class.TARGET_COL[cls]}, 0)
+                                THEN 'DONE'
+                                ELSE 'LIMIT'
+                            END
+                        WHERE account = ?
+                          AND ({col} IS NULL OR {col} = 'LIMIT')
+                    """, (account_name, account_name))
             elif close_reason == "BLOCKED":
                 cur.execute("""
                     UPDATE mst.ebay_accounts
                     SET close_reason = 'BLOCKED',
+                        close_reason_collectibles = 'BLOCKED',
                         close_detail = COALESCE(?, close_detail)
                     WHERE account = ?
                 """, (close_detail, account_name))
             else:
-                cur.execute("""
-                    UPDATE mst.ebay_accounts
-                    SET close_reason = ?
-                    WHERE account = ?
-                """, (close_reason, account_name))
+                for cls in listing_class.CLASSES:
+                    col = listing_class.CLOSE_COL[cls]
+                    cur.execute(f"UPDATE mst.ebay_accounts SET {col} = ? WHERE account = ? AND {col} IS NULL",
+                                (close_reason, account_name))
 
         # 2. PCの占有解除 (account を NULL に戻す)
         cur.execute("""
@@ -3083,13 +3079,13 @@ def release_pc_and_close_account(conn, current_pc, account_name=None, close_reas
 SQL_SELECT_HAS_LIMIT_ACCOUNT = """
 SELECT TOP 1 account
 FROM mst.ebay_accounts
-WHERE close_reason = 'LIMIT'
+WHERE close_reason = 'LIMIT' OR close_reason_collectibles = 'LIMIT'
 """
 
 
 def has_limit_accounts(conn):
     """
-    close_reason='LIMIT' のアカウントが1件でも残っているか確認する。
+    close_reason／close_reason_collectibles のどちらかが 'LIMIT' のアカウントが1件でも残っているか確認する。
 
     LIMITは「終了」ではなく「一時停止」。publish_manager.py が出品枠を確保して
     close_reason をクリアすれば再び取得できるようになるため、
@@ -3188,7 +3184,7 @@ DECLARE @all TABLE (
 DECLARE @pick TABLE (vendor_name NVARCHAR(100) NOT NULL, vendor_item_id NVARCHAR(200) NOT NULL);
 
 -- ① 候補の確定（ロックヒント無し）。
--- fn_take_one_candidates_for_account の Allowed と同じ条件の候補集合を1回だけ読む。
+-- fn_take_one_candidates_for_account の Allowed と同じ条件の候補集合（のうち指定の区分）を1回だけ読む。
 INSERT INTO @all
 SELECT
     t.vendor_name, t.vendor_item_id, t.preset, t.mode, t.default_brand_en, t.category_id_ebay,
@@ -3196,6 +3192,8 @@ SELECT
     t.is_ok_logic, t.is_collectibles,
     t.publish_priority
 FROM dbo.fn_take_one_candidates_base(?) t
+-- 区分（Collectibles=1／非Collectibles=0）。区分ごとに目標・終了理由を持つので、指定の区分の候補だけを読む（2026-11-17）
+WHERE ISNULL(CAST(t.is_collectibles AS int), 0) = ?
 OPTION (MAXDOP 1);
 
 -- ①' ラクマの障害中（apps/adapters/rakuma_outage.py。5xx は全台、429 はこの台）はラクマの候補を外す。
@@ -3280,15 +3278,22 @@ LEFT JOIN (
 TAKE_ONE_SQL = TAKE_ONE_SQL.replace("{PAUSED_EXISTS}", rakuma_outage.PAUSED_EXISTS_SQL.strip())
 
 
-def take_one_vendor_item(conn, preset_group, processing_by, account_name):
+# 候補が区分の中でラクマだけで、ラクマの障害中のため外した（枯渇ではない）ことを表す take_one_vendor_item の戻り値
+TAKE_RAKUMA_PAUSED = "RAKUMA_PAUSED"
+
+
+def take_one_vendor_item(conn, preset_group, processing_by, account_name, is_collectibles=False):
     """
     【TVF委譲版】
+    区分（is_collectibles: Collectibles／非Collectibles）の候補から1件を取る（2026-11-17 区分ごとに管理）。
     候補抽出は dbo.fn_take_one_candidates_for_account(@preset_group, @account) と同じ条件を
     TAKE_ONE_SQL 内で1回だけ評価する（base関数の候補のうち、仕入先の優先度 publish_priority が最小のものだけ）。
     （新規出品しない仕入先は mst.presets_price_ranges の delete_flag=1。base関数が除くので候補にならない）
     この関数は TVF が返した候補の中から1件だけをロック・確保して返す（詳細は TAKE_ONE_SQL のコメント）。
 
-    None を返すのは「ロックの影響を受けない読み取りで候補が0件だった」時だけ（呼び出し側でEMPTYにする）。
+    None を返すのは「ロックの影響を受けない読み取りで候補が0件だった」時だけ（呼び出し側でその区分をEMPTYにする）。
+    区分の候補がラクマだけで、ラクマの障害中のため外した場合は TAKE_RAKUMA_PAUSED を返す（呼び出し側で
+    その区分を RAKUMA_PAUSED_WAIT_SEC 秒あけて取り直し、その間はもう一方の区分を出品する）。
     候補はあるが全て他workerが確保中/確保済みだった場合、およびデッドロック(40001)の犠牲になった場合は
     None を返さず、少し待って再試行する（プロセスは終了させない）。
     """
@@ -3299,7 +3304,8 @@ def take_one_vendor_item(conn, preset_group, processing_by, account_name):
         t_start = time.time()
         try:
             with conn.cursor() as cur:
-                cur.execute(TAKE_ONE_SQL, (preset_group, processing_by, TAKE_ONE_CANDIDATE_LIMIT, processing_by))
+                cur.execute(TAKE_ONE_SQL, (preset_group, 1 if is_collectibles else 0, processing_by,
+                                           TAKE_ONE_CANDIDATE_LIMIT, processing_by))
                 row = cur.fetchone()
                 columns = [col[0] for col in cur.description]
             conn.commit()
@@ -3320,16 +3326,16 @@ def take_one_vendor_item(conn, preset_group, processing_by, account_name):
         rakuma_paused_count = result.pop("rakuma_paused_count")
 
         if cand_count == 0 and rakuma_paused_count > 0:
-            # 候補はラクマだけで、ラクマの障害中のため外した。枯渇ではないので、障害が明けるまで待って取り直す
-            # （EMPTY にすると、このアカウントはその日もう取得されない）。
-            print(f"  [DB_INFO] account={account_name} 候補はラクマの{rakuma_paused_count}件だけで、ラクマの障害中です。"
-                  f"{RAKUMA_PAUSED_WAIT_SEC}秒後に再試行します (attempt={attempt})", flush=True)
-            time.sleep(RAKUMA_PAUSED_WAIT_SEC)
-            continue
+            # 候補はラクマだけで、ラクマの障害中のため外した。枯渇ではないので、障害が明けてから取り直す
+            # （EMPTY にすると、この区分はその日もう出品されない）。待つのは呼び出し側（その間はもう一方の区分を出品する）。
+            print(f"  [DB_INFO] account={account_name} {listing_class.LABEL[listing_class.class_of(is_collectibles)]}の候補は"
+                  f"ラクマの{rakuma_paused_count}件だけで、ラクマの障害中です。{RAKUMA_PAUSED_WAIT_SEC}秒後に取り直します", flush=True)
+            return TAKE_RAKUMA_PAUSED
 
         if cand_count == 0:
             # ロックの影響を受けない読み取りで候補が0件 = そのグループの担当レンジに在庫がない（枯渇）
-            print(f"  [DB_INFO] account={account_name} 担当範囲({preset_group})の在庫が枯渇しました。")
+            print(f"  [DB_INFO] account={account_name} 担当範囲({preset_group})の"
+                  f"{listing_class.LABEL[listing_class.class_of(is_collectibles)]}の在庫が枯渇しました。")
             return None
 
         if result["vendor_item_id"] is None:
@@ -3350,7 +3356,78 @@ def take_one_vendor_item(conn, preset_group, processing_by, account_name):
         print(f"[〇価格OK] account={account_name} SKU={sku} 価格={price} 価格range {low_target}～{high_target} {preset_group}-{category_grp} (Time: {elapsed:.3f}s)")
         return result
 
-         
+
+
+# 他workerの処理中で区分の処理枠が空いていないときに、取り直すまでの秒数
+CLASS_SLOT_WAIT_SEC = 2
+
+
+def pick_next_item(conn, acct, processing_by, paused_until, now=None):
+    """
+    アカウントの区分（Collectibles／非Collectibles）のうち、まだ終わっていない区分から出品候補を1件取る（2026-11-17）。
+
+    戻り値 (kind, row, x):
+      ("ROW", 候補, 処理枠の名前) … 処理が終わったら listing_class.release_class_slot(conn, 処理枠) で返す
+      ("BLOCKED", None, None)     … 別workerが新規出品制限を検知済み
+      ("FINISHED", None, None)    … 両区分とも終了（DONE・EMPTY・LIMIT など）
+      ("WAIT", None, 秒数)        … 他workerの処理中で枠が空いていない／ラクマの障害中。待って取り直す
+
+    当日の出品数が目標に達した（目標0件を含む）区分は DONE、候補が無い区分は EMPTY を、その場で書く。
+    どちらの区分から取るかは、目標に対する進み具合（当日の出品数 ÷ 目標）が低い方を先にする
+    （同じなら非Collectibles）。取れない区分があれば、もう一方の区分を試す。
+    """
+    st = listing_class.read_class_state(conn, acct.account)
+    if any(st[c]["close"] == "BLOCKED" for c in listing_class.CLASSES):
+        return "BLOCKED", None, None
+
+    open_classes = []
+    for c in listing_class.CLASSES:
+        s = st[c]
+        if s["close"] is not None:
+            continue
+        if s["posted"] >= (s["target"] or 0):
+            if listing_class.set_class_close(conn, acct.account, c, "DONE"):
+                print(f"✅ {acct.account} {listing_class.LABEL[c]}の当日目標数に達しました"
+                      f"（{s['posted']}件 / 目標 {s['target']}）。")
+            continue
+        open_classes.append(c)
+    if not open_classes:
+        return "FINISHED", None, None
+
+    now = time.time() if now is None else now
+    ready = [c for c in open_classes if paused_until.get(c, 0) <= now]
+    ready.sort(key=lambda c: (st[c]["posted"] / st[c]["target"], c))
+    closed_now = False
+    for c in ready:
+        slot, _info = listing_class.reserve_class_slot(conn, acct.account, c, MAX_PARALLEL_PC)
+        if slot is None:
+            continue  # 他workerの処理中で空きが無い（その出品が成功して目標に達すれば、記録した worker が DONE にする）
+        try:
+            row = take_one_vendor_item(conn, acct.preset_group, processing_by, acct.account,
+                                       is_collectibles=(c == listing_class.COLLECTIBLES))
+        except BaseException:
+            listing_class.release_class_slot(conn, slot)
+            raise
+        if row is TAKE_RAKUMA_PAUSED:
+            listing_class.release_class_slot(conn, slot)
+            paused_until[c] = now + RAKUMA_PAUSED_WAIT_SEC
+            continue
+        if row is None:
+            # [区分の終了: EMPTY] この区分の担当レンジ(preset_group)に出品候補が無くなった（在庫枯渇）。
+            # 当日はこの区分をもう出品しない（もう一方の区分は続ける）。翌日の開始時のリセットで再び確認する。
+            listing_class.release_class_slot(conn, slot)
+            if listing_class.set_class_close(conn, acct.account, c, "EMPTY"):
+                print(f"[INFO] {acct.account} {listing_class.LABEL[c]}の在庫枯渇")
+            closed_now = True
+            continue
+        return "ROW", row, slot
+
+    if closed_now:
+        return "WAIT", None, 0  # 区分を終えたので、すぐに状態を読み直す
+    waits = [paused_until[c] - now for c in open_classes if paused_until.get(c, 0) > now]
+    return "WAIT", None, max(0, min([CLASS_SLOT_WAIT_SEC] + waits))
+
+
 def main():
     # publish_ebay 全体のエントリポイント。
     # アカウントの終了理由は DONE（目標達成）/ EMPTY（在庫枯渇）/ LIMIT（eBay側の出品制限）の3種類。
@@ -3455,8 +3532,8 @@ def main():
             #   ② stop_all = True （MAX_LISTINGS到達。現状 10**9 なので実運用では事実上起こらない）
             while not stop_all:
                 # ===== アカウント取得 =====
-                # close_reason IS NULL かつ sent_count<post_target のアカウントを1件確保する。
-                # DONE/EMPTY/LIMITいずれも close_reason が非NULLになるため、
+                # どちらかの区分が終了理由なし（NULL）かつ当日の出品数が目標未満のアカウントを1件確保する。
+                # DONE/EMPTY/LIMIT/BLOCKEDいずれも区分の終了理由が非NULLになるため、
                 # ここで None が返るのは「今すぐ処理できるアカウントが無い」状態。
                 acct = fetch_next_account_and_lock(conn, current_pc)
 
@@ -3478,7 +3555,8 @@ def main():
                     print("[INFO] 実行可能なアカウントがなく、LIMIT中のアカウントもありません。終了します。")
                     break
 
-                print(f"🚀 アカウント開始: {acct.account} (Target: {acct.post_target})")
+                print(f"🚀 アカウント開始: {acct.account} (Target: 非Collectibles {acct.post_target} / "
+                      f"Collectibles {acct.post_target_collectibles})")
 
                 acct_policies_map = {}
                 with conn.cursor() as cur:
@@ -3500,7 +3578,7 @@ def main():
                     }
 
                 acct_success = {acct.account: 0}
-                acct_targets = {acct.account: acct.post_target}
+                acct_targets = {acct.account: (acct.post_target or 0) + (acct.post_target_collectibles or 0)}
                 close_reason = None
 
                 # ===== 内側ループ: 1アカウント分の処理ループ =====
@@ -3511,37 +3589,11 @@ def main():
                 #   "LIMIT" : eBay側の出品制限（一時停止。publish_managerが解除すれば再開）
                 #   "BLOCKED": eBayのポリシー違反による新規出品制限（25019 Tutorial_Block_7D_NR。今日は終了）
                 close_detail = None
+                # 区分ごとの、ラクマの障害中で取り直しを待つ時刻（time.time()）
+                paused_until = {}
                 while not stop_all:
                     # UNPUBLISHED再公開待ち（保留）の再処理。当日の目標達成（DONE）の判定より前に行う
                     retry_pending_orphan_republishes(conn, acct.account)
-                    with conn.cursor() as cur:
-                        cur.execute("""
-                            SELECT
-                                (SELECT COUNT(*)
-                                 FROM trx.listings
-                                 WHERE account = ?
-                                 AND CAST(start_time AS DATE) = CAST(GETDATE() AS DATE)
-                                 AND is_deleted = 0),
-                                (SELECT close_reason FROM mst.ebay_accounts WHERE account = ?)
-                        """, (acct.account, acct.account))
-
-                        sent_now, current_close_reason = cur.fetchone()
-
-                    # [アカウント終了⓪: BLOCKED] 同じアカウントを処理中の別workerが新規出品制限を検知済み。
-                    # 制限中は出品が全件失敗するため、このworkerも次の商品へ進まずに終える
-                    # （記録済みのエラー内容は close_detail=None で残す）。
-                    if current_close_reason == "BLOCKED":
-                        close_reason = "BLOCKED"
-                        print(f"⛔ {acct.account} は別workerが新規出品制限を検知済みのため終了します。")
-                        break
-
-                    # [アカウント終了①: DONE] 当日の post_target に到達済み（DB上の実件数で判定）
-                    # → close_reason="DONE"。今日はもう処理しない
-                    #   （LIMITと違って一時停止ではなく、当日分の目標達成による正式な終了）。
-                    if sent_now >= acct.post_target:
-                        close_reason = "DONE"
-                        print(f"✅ {acct.account} 当日目標数に達しました。")
-                        break
 
                     if image_mode == "CDN" and cdn_mode_until and datetime.now() > cdn_mode_until:
                         print("[IMG_ERR] CDN timeout reached. Resetting to NORMAL.")
@@ -3549,17 +3601,29 @@ def main():
                         image_error_count = 0
                         cdn_mode_until = None
 
-                    row = take_one_vendor_item(conn, acct.preset_group, processing_by, acct.account)
-                    if row:
-                        print(f"[DEBUG] picked SKU={row['vendor_item_id']} price={row['price']} shipping_days={row['shipping_days']} 出品状況={row.get('出品状況')}", datetime.now().strftime("%H:%M:%S"))
-                    # [アカウント終了②] このアカウントの担当レンジ(preset_group)に
-                    # 出品candidate が無くなった（在庫枯渇）
-                    # → close_reason="EMPTY"。
-                    #   当日はこのアカウントは再取得されなくなる。
-                    if not row:
-                        print(f"[INFO] {acct.account} 在庫枯渇")
-                        close_reason = "EMPTY"
+                    # Collectibles／非Collectibles のうち、まだ終わっていない区分から1件を取る（区分の DONE・EMPTY は中で書く）
+                    kind, row, slot = pick_next_item(conn, acct, processing_by, paused_until)
+
+                    # [アカウント終了⓪: BLOCKED] 同じアカウントを処理中の別workerが新規出品制限を検知済み。
+                    # 制限中は出品が全件失敗するため、このworkerも次の商品へ進まずに終える
+                    # （記録済みのエラー内容は close_detail=None で残す）。
+                    if kind == "BLOCKED":
+                        close_reason = "BLOCKED"
+                        print(f"⛔ {acct.account} は別workerが新規出品制限を検知済みのため終了します。")
                         break
+
+                    # [アカウント終了①: 両区分の終了] 両区分とも DONE（当日の目標に到達）・EMPTY（在庫枯渇）・
+                    # LIMIT（別workerが検知済み）のどれか。区分の終了理由は書き込み済みなので、ここでは書かない。
+                    if kind == "FINISHED":
+                        print(f"✅ {acct.account} 両区分の当日の出品を終えました。")
+                        break
+
+                    # 他workerの処理中で区分の枠が空いていない／ラクマの障害中。少し待って取り直す
+                    if kind == "WAIT":
+                        time.sleep(slot)
+                        continue
+
+                    print(f"[DEBUG] picked SKU={row['vendor_item_id']} price={row['price']} shipping_days={row['shipping_days']} 出品状況={row.get('出品状況')}", datetime.now().strftime("%H:%M:%S"))
 
                     sku = row["vendor_item_id"].strip()
                     vendor_name = row["vendor_name"]
@@ -3668,7 +3732,7 @@ def main():
                             # acct_targets（残り投稿件数のカウントダウン）とLIMIT判定は完全に分離した。
                             # 目標件数ちょうどまで投稿できた場合はacct_targetsが0になるだけで
                             # listing_limit_hitはFalseのままなので、ここには来ない
-                            # （その場合は次のループ先頭のsent_now>=post_targetチェックで正常終了する）。
+                            # （その場合は次のループ先頭の pick_next_item が区分を DONE にして正常終了する）。
                             if listing_limit_hit:
                                 print(f"🚫 {acct.account} APIリミットを検知しました。")
                                 close_reason = "LIMIT"
@@ -3752,6 +3816,11 @@ def main():
 
                         item_watchdog.cancel()
                         set_exit_context(account=acct.account, sku=None)
+                        # 区分の処理枠を返す（出品成功の記録は枠を持ったまま確定済み）
+                        try:
+                            listing_class.release_class_slot(conn, slot)
+                        except Exception as e:
+                            print(f"[SLOT] 処理枠の解放に失敗（この接続が持ち続けるだけで、目標は超えない）: {e!r}")
 
                 # このアカウントの処理はここで終わり（close_reason: DONE/EMPTY/LIMIT/BLOCKEDのいずれか）。
                 # release_pc_and_close_account が close_reason を書き込む。
@@ -3761,7 +3830,7 @@ def main():
                 # 外側 while はここでは終わらず、次のアカウントを取りに戻る。
                 release_pc_and_close_account(conn, current_pc, acct.account, close_reason, close_detail)
                 summary_success[acct.account] = summary_success.get(acct.account, 0) + acct_success.get(acct.account, 0)
-                print(f"🏁 アカウント終了: {acct.account} (Reason: {close_reason})")
+                print(f"🏁 アカウント終了: {acct.account} (Reason: {close_reason or '区分ごとに記録'})")
 
 
         # [publish_ebay 全体の終了②] 外側 while を抜けた＝

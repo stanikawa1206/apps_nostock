@@ -5,7 +5,7 @@ publish_daily.py
 毎日 日本時間 3:00 にタスクスケジューラから起動する出品処理（在庫管理 inventory_loop.py とは独立）。
 
   1. 前回の出品（publish_daily / publish_manager / 旧 daily_check）が動いていれば起動せず異常通知して終了
-  2. 米国太平洋時間で月が替わっていれば、出品枠の残数を初期化（listing_left=10,000 / additional_listing_left=50,000）
+  2. 米国太平洋時間で月が替わっていれば、出品枠の残数を初期化（listing_left=10,000 / listing_left_collectibles=50,000）
   3. 古い出品の削除（delete_ebay_daily.py）
   4. 出品処理のロック解除 → publish_manager.py（Active Listing取得・post_target計算・出品・LIMIT監視）→ 結果メール
   5. 出品中に太平洋時間の月をまたいだ場合は、枠の残数がずれるため要確認通知
@@ -46,7 +46,7 @@ SERVER_TZ = ZoneInfo("Asia/Tokyo")
 
 CONTROL_KEY_LISTING_RESET_MONTH = "出品枠リセット月"
 MONTHLY_LISTING_LEFT = 10000
-MONTHLY_ADDITIONAL_LISTING_LEFT = 50000
+MONTHLY_LISTING_LEFT_COLLECTIBLES = 50000
 
 
 def pacific_month_key(now_utc: datetime) -> int:
@@ -68,7 +68,7 @@ def reset_listing_quota_if_new_month(conn, now_utc: datetime):
     同時に2回実行されても初期化は1回だけになる。
     キーの行が無い・値が NULL の場合は、どの月まで初期化済みか判断できないため例外にする（初期設定が必要）。
 
-    戻り値: 初期化した場合は {"month": 当月, "prev_month": 前回, "before": [(account, listing_left, additional_listing_left)]}、
+    戻り値: 初期化した場合は {"month": 当月, "prev_month": 前回, "before": [(account, listing_left, listing_left_collectibles)]}、
             初期化不要なら None
     """
     month = pacific_month_key(now_utc)
@@ -91,7 +91,7 @@ def reset_listing_quota_if_new_month(conn, now_utc: datetime):
             return None
 
         cur.execute("""
-            SELECT account, listing_left, additional_listing_left
+            SELECT account, listing_left, listing_left_collectibles
             FROM mst.ebay_accounts
             WHERE ISNULL(is_excluded, 0) = 0
             ORDER BY account
@@ -101,10 +101,10 @@ def reset_listing_quota_if_new_month(conn, now_utc: datetime):
         cur.execute(
             """
             UPDATE mst.ebay_accounts
-            SET listing_left = ?, additional_listing_left = ?
+            SET listing_left = ?, listing_left_collectibles = ?
             WHERE ISNULL(is_excluded, 0) = 0
             """,
-            MONTHLY_LISTING_LEFT, MONTHLY_ADDITIONAL_LISTING_LEFT,
+            MONTHLY_LISTING_LEFT, MONTHLY_LISTING_LEFT_COLLECTIBLES,
         )
         cur.execute(
             "UPDATE mst.control SET param_value = ? WHERE param_key = ?",
@@ -122,7 +122,7 @@ def reset_listing_quota_if_new_month(conn, now_utc: datetime):
 def notify_listing_quota_reset(result):
     lines = "\n".join(
         f"  {account}: listing_left {left} → {MONTHLY_LISTING_LEFT} / "
-        f"additional_listing_left {add_left} → {MONTHLY_ADDITIONAL_LISTING_LEFT}"
+        f"listing_left_collectibles {add_left} → {MONTHLY_LISTING_LEFT_COLLECTIBLES}"
         for account, left, add_left in result["before"]
     )
     body = (

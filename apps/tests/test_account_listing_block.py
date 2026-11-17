@@ -181,11 +181,26 @@ SCHEMA_SQL = [
     "CREATE SCHEMA trx",
     """CREATE TABLE mst.ebay_accounts (
         account NVARCHAR(100) NOT NULL PRIMARY KEY, preset_group NVARCHAR(20), post_target INT,
-        close_reason NVARCHAR(100), close_detail NVARCHAR(1000), is_excluded BIT,
-        fulfillment_policy_id NVARCHAR(100), payment_policy_id NVARCHAR(100), return_policy_id NVARCHAR(100))""",
+        close_reason NVARCHAR(50), close_detail NVARCHAR(1000), is_excluded BIT,
+        fulfillment_policy_id NVARCHAR(100), payment_policy_id NVARCHAR(100), return_policy_id NVARCHAR(100),
+        listing_left INT, listing_left_collectibles INT, post_target_collectibles INT,
+        close_reason_collectibles NVARCHAR(50))""",
     "CREATE TABLE mst.execute_pcs (execute_pc NVARCHAR(100) NOT NULL PRIMARY KEY, account NVARCHAR(100), is_active BIT)",
-    """CREATE TABLE trx.listings (id INT IDENTITY PRIMARY KEY, account NVARCHAR(100), start_time DATETIME,
+    """CREATE TABLE trx.listings (id INT IDENTITY PRIMARY KEY, listing_id NVARCHAR(50), account NVARCHAR(100),
+        start_time DATETIME, vendor_name NVARCHAR(100), vendor_item_id NVARCHAR(200), start_price DECIMAL(12, 2),
         is_deleted BIT, delete_reason NVARCHAR(100), deleted_at DATETIME)""",
+    # 区分（Collectibles／非Collectibles）ごとの当日件数は、出品 → 商品 → preset → カテゴリーの is_collectibles で数える
+    # （本番と同じ結合。test_take_one_order の列も含める）
+    """CREATE TABLE trx.vendor_item (
+        vendor_name NVARCHAR(100) NOT NULL, vendor_item_id NVARCHAR(200) NOT NULL, preset NVARCHAR(200) NULL,
+        price INT NULL, shipping_region NVARCHAR(100) NULL, shipping_days NVARCHAR(100) NULL,
+        item_condition_id INT NULL, processing_by NVARCHAR(100) NULL, processing_at DATETIME2 NULL,
+        vendor_created_at DATETIME2 NULL, created_at DATETIME2 NULL,
+        CONSTRAINT PK_vendor_item PRIMARY KEY CLUSTERED (vendor_name, vendor_item_id))""",
+    "CREATE TABLE mst.presets_lookup (preset NVARCHAR(200) NOT NULL PRIMARY KEY, category_id INT)",
+    "CREATE TABLE mst.vendors (vendor_code VARCHAR(10) NOT NULL PRIMARY KEY, vendor_name NVARCHAR(100), vendor_group NVARCHAR(50))",
+    """CREATE TABLE mst.presets_categories (category_id INT NOT NULL, vendor_group NVARCHAR(50) NOT NULL,
+        brand_id INT NOT NULL DEFAULT 0, is_collectibles BIT, PRIMARY KEY (category_id, vendor_group, brand_id))""",
     # main() が起動時に読み込む（2026-11-03 にタイトル置換ルールの読み込みを復活）
     "CREATE TABLE mst.title_replace_rules (rule_id INT NOT NULL PRIMARY KEY, pattern NVARCHAR(200), replacement NVARCHAR(200))",
 ]
@@ -228,7 +243,9 @@ class DbTestBase(unittest.TestCase):
         self.addCleanup(self.conn.close)
         self.sql("SELECT DB_NAME()")
         self.assertEqual(self.cur.fetchone()[0], TEST_DB)
-        self.sql("DELETE FROM mst.ebay_accounts; DELETE FROM mst.execute_pcs; DELETE FROM trx.listings;")
+        self.sql("DELETE FROM mst.ebay_accounts; DELETE FROM mst.execute_pcs; DELETE FROM trx.listings; "
+                 "DELETE FROM trx.vendor_item; DELETE FROM mst.presets_lookup; DELETE FROM mst.vendors; "
+                 "DELETE FROM mst.presets_categories;")
         self.conn.commit()
 
     def sql(self, q, *params):
@@ -236,11 +253,19 @@ class DbTestBase(unittest.TestCase):
         self.cur.execute(q, *params)
         return self.cur
 
-    def add_account(self, account, post_target=10, close_reason=None, close_detail=None, is_excluded=0):
+    def add_account(self, account, post_target=10, close_reason=None, close_detail=None, is_excluded=0,
+                    post_target_collectibles=None, close_reason_collectibles="same", listing_left=None,
+                    listing_left_collectibles=None):
+        # 既存のテストは非Collectiblesの区分だけを使う（close_reason を指定したら、eBay の LIMIT・BLOCKED と同じく
+        # Collectibles の区分にも同じ値を入れる。目標を指定しない Collectibles の区分は目標0件＝すぐ DONE）
+        if close_reason_collectibles == "same":
+            close_reason_collectibles = close_reason
         self.sql("INSERT INTO mst.ebay_accounts (account, preset_group, post_target, close_reason, close_detail, "
-                 "is_excluded, fulfillment_policy_id, payment_policy_id, return_policy_id) "
-                 "VALUES (?, ?, ?, ?, ?, ?, '1', '2', '3')",
-                 account, account, post_target, close_reason, close_detail, is_excluded)
+                 "is_excluded, fulfillment_policy_id, payment_policy_id, return_policy_id, "
+                 "post_target_collectibles, close_reason_collectibles, listing_left, listing_left_collectibles) "
+                 "VALUES (?, ?, ?, ?, ?, ?, '1', '2', '3', ?, ?, ?, ?)",
+                 account, account, post_target, close_reason, close_detail, is_excluded,
+                 post_target_collectibles, close_reason_collectibles, listing_left, listing_left_collectibles)
         self.conn.commit()
 
     def add_pc(self, pc, account=None):
@@ -285,7 +310,7 @@ class PublishMainTest(DbTestBase):
         """take_one(account) -> row|None、post(account, sku) -> post_to_ebay の戻り値 or 例外。"""
         calls = {"take": [], "post": []}
 
-        def _take(conn, preset_group, processing_by, account):
+        def _take(conn, preset_group, processing_by, account, is_collectibles=False):
             calls["take"].append(account)
             return take_one(account)
 
@@ -443,6 +468,9 @@ class ManagerTest(DbTestBase):
         pm.reset_close_status()
         for a in ("BUZZ", "川島", "貴文", "谷川②"):
             self.assertEqual(self.state(a), (None, None))
+        self.assertEqual(self.sql("SELECT COUNT(*) FROM mst.ebay_accounts WHERE close_reason_collectibles IS NOT NULL")
+                         .fetchone()[0], 0)  # Collectibles の区分（EMPTY 等）もクリア
+        self.conn.commit()
 
     def test_log_blocked_accounts(self):
         self.add_account("BUZZ", close_reason="BLOCKED", close_detail="detail-1")

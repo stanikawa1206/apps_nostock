@@ -235,7 +235,7 @@ class SeleniumRecoverMainTest(DbTestBase):
         self.conn.commit()
         skus = iter(["S1", "S2"])
 
-        def _take(conn, preset_group, processing_by, account):
+        def _take(conn, preset_group, processing_by, account, is_collectibles=False):
             sku = next(skus, None)
             if sku is None:
                 return None

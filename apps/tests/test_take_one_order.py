@@ -35,13 +35,13 @@ OBJECTS = [
         CONSTRAINT PK_vendor_item PRIMARY KEY CLUSTERED (vendor_name, vendor_item_id))""",
     """IF OBJECT_ID('trx.test_cand') IS NULL
     CREATE TABLE trx.test_cand (preset_group NVARCHAR(100), vendor_name NVARCHAR(100), vendor_item_id NVARCHAR(200),
-        publish_priority INT)""",
+        publish_priority INT, is_collectibles BIT)""",
     # 本物の base 関数と同じ列・同じく processing_at IS NULL の行だけを返す（重複行も返せる）
     """IF OBJECT_ID('dbo.fn_take_one_candidates_base') IS NULL EXEC('
     CREATE FUNCTION dbo.fn_take_one_candidates_base(@preset_group NVARCHAR(100)) RETURNS TABLE AS RETURN (
         SELECT v.vendor_item_id, v.vendor_name, v.price, v.shipping_region, v.shipping_days,
                N''p'' AS preset, CAST(NULL AS NVARCHAR(50)) AS mode, N''b'' AS default_brand_en, N''1'' AS category_id_ebay,
-               N''d'' AS department, N''t'' AS type_ebay, N''cg'' AS category_group, CAST(NULL AS BIT) AS is_collectibles,
+               N''d'' AS department, N''t'' AS type_ebay, N''cg'' AS category_group, c.is_collectibles,
                1 AS low_jpy_target, 2 AS high_jpy_target, v.item_condition_id,
                CAST(1 AS BIT) AS is_ok_logic, c.publish_priority
         FROM trx.vendor_item v
@@ -77,19 +77,19 @@ class TakeOneOrderTest(DbTestBase):
         p.start()
         self.addCleanup(p.stop)
 
-    def add(self, vendor, iid, created, first_seen=T0, prio=3, group="g", dup=False):
+    def add(self, vendor, iid, created, first_seen=T0, prio=3, group="g", dup=False, collectibles=None):
         self.sql("INSERT INTO trx.vendor_item (vendor_name, vendor_item_id, price, vendor_created_at, created_at) "
                  "VALUES (?, ?, 1000, ?, ?)", vendor, iid, created, first_seen)
         for _ in range(2 if dup else 1):
-            self.sql("INSERT INTO trx.test_cand VALUES (?, ?, ?, ?)", group, vendor, iid, prio)
+            self.sql("INSERT INTO trx.test_cand VALUES (?, ?, ?, ?, ?)", group, vendor, iid, prio, collectibles)
         self.conn.commit()
 
-    def take_all(self, group="g", worker="w1"):
+    def take_all(self, group="g", worker="w1", collectibles=False):
         conn = pe.get_sql_server_connection()
         try:
             got = []
             while True:
-                row = pe.take_one_vendor_item(conn, group, worker, "acct")
+                row = pe.take_one_vendor_item(conn, group, worker, "acct", is_collectibles=collectibles)
                 if row is None:
                     return got
                 got.append(row["vendor_item_id"])
@@ -168,6 +168,19 @@ class TakeOneOrderTest(DbTestBase):
         self.assertEqual(self.take_all(), ["r_new", "r_old"])
         self.sql("DELETE FROM mst.control")
         self.conn.commit()
+
+    def test_class_filter_keeps_vendor_priority(self):
+        # 2026-11-17 区分（Collectibles／非Collectibles）を指定して取る。区分の中は仕入先の優先度 → 新しい順のまま。
+        # 区分が NULL の候補は非Collectibles に数える
+        self.add("ラクマ", "R_cam", None, first_seen=T0 - timedelta(days=9), prio=1, collectibles=False)
+        self.add("ラクマ", "R_pen", None, first_seen=T0 - timedelta(days=9), prio=1, collectibles=True)
+        self.add("ＰａｙＰａｙフリマ", "Y_pen_old", None, first_seen=T0 - timedelta(days=3), prio=2, collectibles=True)
+        self.add("ＰａｙＰａｙフリマ", "Y_pen_new", None, first_seen=T0 - timedelta(hours=1), prio=2, collectibles=True)
+        self.add("メルカリshops", "S_cam", T0, prio=3, collectibles=False)
+        self.add("メルカリ", "M_pen", T0, prio=4, collectibles=True)
+        self.add("メルカリ", "M_null", T0, prio=4)
+        self.assertEqual(self.take_all(collectibles=True), ["R_pen", "Y_pen_new", "Y_pen_old", "M_pen"])
+        self.assertEqual(self.take_all(collectibles=False), ["R_cam", "S_cam", "M_null"])
 
     def test_empty(self):
         self.assertEqual(self.take_all(group="none"), [])

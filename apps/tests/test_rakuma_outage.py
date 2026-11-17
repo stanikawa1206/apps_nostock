@@ -389,7 +389,7 @@ class HeavyCheckTest(unittest.TestCase):
 # publish_ebay.take_one_vendor_item（候補がラクマだけで障害中）
 # ============================================================
 class TakeOneRakumaPausedTest(unittest.TestCase):
-    def test_waits_instead_of_empty(self):
+    def test_paused_instead_of_empty(self):
         cols = [("cand_count",), ("rakuma_paused_count",), ("vendor_item_id",)]
         results = iter([(0, 5, None), (0, 0, None)])  # 1回目: ラクマだけ・障害中 → 2回目: 本当に0件
 
@@ -400,10 +400,13 @@ class TakeOneRakumaPausedTest(unittest.TestCase):
         conn = mock.MagicMock()
         conn.cursor.return_value = cur
         with mock.patch.object(pe.time, "sleep") as sleep, mock.patch("builtins.print"):
-            self.assertIsNone(pe.take_one_vendor_item(conn, "貴文③", "mouse", "貴文③"))
-        sleep.assert_called_once_with(pe.RAKUMA_PAUSED_WAIT_SEC)
-        self.assertEqual(cur.execute.call_args.args[1], ("貴文③", "mouse", pe.TAKE_ONE_CANDIDATE_LIMIT, "mouse"))
-        self.assertEqual(pe.TAKE_ONE_SQL.count("?"), 4)
+            # 2026-11-17 区分ごとに管理: その区分は待たずに TAKE_RAKUMA_PAUSED（呼び出し側がもう一方の区分を出品して待つ）
+            self.assertIs(pe.take_one_vendor_item(conn, "貴文③", "mouse", "貴文③", is_collectibles=True),
+                          pe.TAKE_RAKUMA_PAUSED)
+            self.assertIsNone(pe.take_one_vendor_item(conn, "貴文③", "mouse", "貴文③", is_collectibles=True))
+        sleep.assert_not_called()
+        self.assertEqual(cur.execute.call_args.args[1], ("貴文③", 1, "mouse", pe.TAKE_ONE_CANDIDATE_LIMIT, "mouse"))
+        self.assertEqual(pe.TAKE_ONE_SQL.count("?"), 5)
         self.assertNotIn("{PAUSED_EXISTS}", pe.TAKE_ONE_SQL)
         self.assertIn("mst.control", pe.TAKE_ONE_SQL)
         self.assertNotIn("rakuma_outage", pe.TAKE_ONE_SQL.replace("rakuma_outage.py", ""))

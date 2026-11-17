@@ -48,6 +48,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from apps.common.utils import get_sql_server_connection
+from apps.publish import listing_class
 
 # ======================
 # 停止地点特定用トレースログ（次回再現時の切り分け専用。挙動は一切変更しない）
@@ -122,16 +123,19 @@ SQL_RESET_CLOSE_STATUS = """
 UPDATE mst.ebay_accounts
 SET
     close_reason = NULL,
+    close_reason_collectibles = NULL,
     close_detail = NULL
 WHERE
     close_reason IS NOT NULL
+    OR close_reason_collectibles IS NOT NULL
     OR close_detail IS NOT NULL
 """
 
 
 def reset_close_status():
     """
-    前日までのLIMIT/当日終了状態を全アカウント分クリアする。
+    前日までのLIMIT/当日終了状態を全アカウント・両区分（close_reason / close_reason_collectibles）分クリアする。
+    前日の EMPTY もクリアするので、候補が無かった区分も当日また候補を確認する。
     BLOCKED（新規出品制限）とその内容(close_detail)もクリアし、当日の出品で改めて判定する
     （制限が続いていれば、最初の出品失敗で再び BLOCKED になる）。
 
@@ -147,10 +151,12 @@ def reset_close_status():
         conn.close()
 
 
+# LIMIT の区分だけ再開する（DONE・EMPTY・BLOCKED の区分はそのまま）
 SQL_CLEAR_CLOSE_STATUS_FOR_ACCOUNT = """
 UPDATE mst.ebay_accounts
 SET
-    close_reason = NULL
+    close_reason = CASE WHEN close_reason = 'LIMIT' THEN NULL ELSE close_reason END,
+    close_reason_collectibles = CASE WHEN close_reason_collectibles = 'LIMIT' THEN NULL ELSE close_reason_collectibles END
 WHERE
     account = ?
 """
@@ -158,7 +164,7 @@ WHERE
 
 def clear_close_status(account):
     """
-    指定アカウントだけ、LIMIT/当日終了状態をクリアする。
+    指定アカウントだけ、LIMIT の区分の終了理由をクリアする（両区分とも LIMIT なら両方）。
 
     出品枠確保が完了し、そのアカウントの出品を再開してよくなったタイミングで呼び出す。
     他のアカウントの状態には影響しない。
@@ -177,10 +183,12 @@ def clear_close_status(account):
         _pm_log(f"[clear_close_status] end account={account}")
 
 
+# LIMIT の区分を DONE にする（呼び出し元が、LIMIT の区分の不足件数が0以下であることを確認済み）
 SQL_MARK_ACCOUNT_DONE = """
 UPDATE mst.ebay_accounts
 SET
-    close_reason = 'DONE'
+    close_reason = CASE WHEN close_reason = 'LIMIT' THEN 'DONE' ELSE close_reason END,
+    close_reason_collectibles = CASE WHEN close_reason_collectibles = 'LIMIT' THEN 'DONE' ELSE close_reason_collectibles END
 WHERE
     account = ?
 """
@@ -217,14 +225,17 @@ def mark_account_done(account):
 # 月間目標件数・1日あたりのpost_target上限・基準タイムゾーン（米国東部時間）。
 MONTHLY_TARGET = 10000
 MAX_DAILY_POST_TARGET = 500
+# Collectibles（2026-11-17 区分ごとに管理）。月間無料出品枠は 50,000件だが、使い切る必要はなく1日 333件までにする
+MONTHLY_TARGET_COLLECTIBLES = 50000
+MAX_DAILY_POST_TARGET_COLLECTIBLES = 333
 US_EASTERN_TZ = ZoneInfo("America/New_York")
 
-# post_target を自動計算しないアカウント（Access で手入力した mst.ebay_accounts.post_target をそのまま使う）。
+# post_target・post_target_collectibles を自動計算しないアカウント（Access で手入力した値をそのまま使う）。
 # 貴文③: 2026-10-29 出品開始の新規アカウント。最初の1週間は1日10品、翌週50品と段階的に手動で増やす。
 MANUAL_POST_TARGET_ACCOUNTS = ("貴文③",)
 
 SQL_SELECT_POST_TARGET_ACCOUNTS = """
-SELECT account, listing_left, post_target
+SELECT account, listing_left, post_target, listing_left_collectibles, post_target_collectibles
 FROM mst.ebay_accounts
 WHERE ISNULL(is_excluded, 0) = 0
 """
@@ -235,6 +246,19 @@ SET post_target = ?
 WHERE account = ?
 """
 
+SQL_UPDATE_POST_TARGET_COLLECTIBLES = """
+UPDATE mst.ebay_accounts
+SET post_target_collectibles = ?
+WHERE account = ?
+"""
+
+# 区分ごとの (月間無料出品枠, 1日の上限, 目標を書く SQL)
+POST_TARGET_RULES = {
+    listing_class.NON_COLLECTIBLES: (MONTHLY_TARGET, MAX_DAILY_POST_TARGET, SQL_UPDATE_POST_TARGET),
+    listing_class.COLLECTIBLES: (MONTHLY_TARGET_COLLECTIBLES, MAX_DAILY_POST_TARGET_COLLECTIBLES,
+                                 SQL_UPDATE_POST_TARGET_COLLECTIBLES),
+}
+
 
 def calculate_post_target(
     listing_left,
@@ -244,7 +268,8 @@ def calculate_post_target(
 ):
     """
     月間目標(monthly_target)件に対し、us_date(米国東部の「本日」の日付)時点で
-    必要なpost_targetを計算する。
+    必要なpost_targetを計算する。非Collectibles は (listing_left, 10,000件, 500件)、
+    Collectibles は (listing_left_collectibles, 50,000件, 333件) で呼ぶ（2026-11-17）。
 
     戻り値(dict):
         days_in_month:         当月の日数
@@ -253,7 +278,7 @@ def calculate_post_target(
         actual_progress:       実際進行数 (monthly_target - listing_left)
         required_count:        必要出品数 (target_progress - actual_progress)
         calculated_post_target: 最終post_target
-        cap_applied:           500件上限（max_daily_post_target）が適用されたかどうか
+        cap_applied:           1日の上限（max_daily_post_target。非Collectibles 500件・Collectibles 333件）が適用されたかどうか
         is_last_day_of_month:  当月最終日として特別処理を適用したかどうか
 
     通常日: calculated_post_target = max(0, min(max_daily_post_target, ceil(required_count)))
@@ -262,7 +287,7 @@ def calculate_post_target(
     毎日ceil()した端数が月末までに累積し、月間目標(10,000件)を超えてしまう
     可能性があるため、最終日は通常計算(required_countのceil)を使わず、
     その時点の残り出品可能数(listing_left)をそのまま採用する
-    （1日500件上限のみ維持する）:
+    （1日の上限のみ維持する）:
         calculated_post_target = min(max_daily_post_target, listing_left)
 
     副作用は一切ない（DBアクセス・日時取得を行わない）純粋関数。
@@ -300,41 +325,43 @@ def calculate_post_target(
     }
 
 
-def validate_listing_left(listing_left):
+def validate_listing_left(listing_left, monthly_target=MONTHLY_TARGET, column="listing_left"):
     """
-    listing_left が計算可能な値かどうかを判定する。
+    月間無料出品残数（listing_left / listing_left_collectibles）が計算可能な値かどうかを判定する。
 
     戻り値: (ok: bool, error_message: str or None)
     """
 
     if listing_left is None:
-        return False, "listing_left が NULL のため計算できません"
+        return False, f"{column} が NULL のため計算できません"
 
     if listing_left < 0:
-        return False, f"listing_left が異常値です（{listing_left} < 0）"
+        return False, f"{column} が異常値です（{listing_left} < 0）"
 
-    if listing_left > MONTHLY_TARGET:
-        return False, f"listing_left が異常値です（{listing_left} > {MONTHLY_TARGET}）"
+    if listing_left > monthly_target:
+        return False, f"{column} が異常値です（{listing_left} > {monthly_target}）"
 
     return True, None
 
 
 def update_post_targets():
     """
-    is_excluded=0 の全アカウントについて、米国東部時間の本日時点で必要な
-    post_targetを自動計算し、mst.ebay_accounts.post_target へ反映する。
+    is_excluded=0 の全アカウントについて、米国東部時間の本日時点で必要な当日の目標を区分ごとに自動計算し、
+    mst.ebay_accounts.post_target（非Collectibles）・post_target_collectibles（Collectibles）へ反映する。
+    どちらも calculate_post_target（月間無料出品残数と当月の進み具合から計算）で、
+    非Collectibles は月 10,000件・1日 500件まで、Collectibles は月 50,000件・1日 333件まで。
 
     publish_manager起動直後（reset_close_status()の後、get_active_listings
-    開始前）に一度だけ実行する。listing_leftが異常値(NULL・0未満・monthly_target超)
-    のアカウントはWARNINGを出してスキップし、post_targetは更新しない。
-    MANUAL_POST_TARGET_ACCOUNTS のアカウントは計算せず、手入力の post_target を残す。
+    開始前）に一度だけ実行する。月間無料出品残数が異常値(NULL・0未満・月間枠超)の区分は
+    WARNINGを出してスキップし、その区分の目標は更新しない。
+    MANUAL_POST_TARGET_ACCOUNTS のアカウントは計算せず、手入力の目標を残す。
     """
 
     now_et = datetime.now(US_EASTERN_TZ)
     us_date = now_et.date()
 
     print("=" * 40)
-    print("post_target自動計算開始")
+    print("post_target自動計算開始（非Collectibles / Collectibles）")
     print("=" * 40)
     print()
 
@@ -345,7 +372,9 @@ def update_post_targets():
             rows = cur.fetchall()
 
         accounts = [
-            {"account": row[0], "listing_left": row[1], "post_target": row[2]}
+            {"account": row[0],
+             listing_class.NON_COLLECTIBLES: (row[1], row[2]),
+             listing_class.COLLECTIBLES: (row[3], row[4])}
             for row in rows
         ]
 
@@ -353,33 +382,42 @@ def update_post_targets():
 
         for account_info in accounts:
             account = account_info["account"]
-            listing_left = account_info["listing_left"]
-            current_post_target = account_info["post_target"]
 
             if account in MANUAL_POST_TARGET_ACCOUNTS:
-                print(f"{account:<10}: {current_post_target}（手動設定のため自動計算しない）")
+                print(f"{account:<10}: 非Collectibles {account_info[listing_class.NON_COLLECTIBLES][1]} / "
+                      f"Collectibles {account_info[listing_class.COLLECTIBLES][1]}（手動設定のため自動計算しない）")
                 continue
 
-            ok, error_message = validate_listing_left(listing_left)
-            if not ok:
-                print(f"WARNING {account} : {error_message}のためスキップします")
-                continue
+            parts = []
+            for cls in listing_class.CLASSES:
+                listing_left, current_post_target = account_info[cls]
+                monthly_target, max_daily, update_sql = POST_TARGET_RULES[cls]
+                label = listing_class.LABEL[cls]
 
-            result = calculate_post_target(listing_left, us_date)
-            new_post_target = result["calculated_post_target"]
+                ok, error_message = validate_listing_left(listing_left, monthly_target, listing_class.LEFT_COL[cls])
+                if not ok:
+                    print(f"WARNING {account} : {label} {error_message}のためスキップします")
+                    parts.append(f"{label} {current_post_target}（スキップ）")
+                    continue
 
-            with conn.cursor() as cur:
-                cur.execute(SQL_UPDATE_POST_TARGET, new_post_target, account)
-            conn.commit()
+                result = calculate_post_target(listing_left, us_date, monthly_target=monthly_target,
+                                               max_daily_post_target=max_daily)
+                new_post_target = result["calculated_post_target"]
 
-            updated_count += 1
-            print(f"{account:<10}: {current_post_target} → {new_post_target}")
+                with conn.cursor() as cur:
+                    cur.execute(update_sql, new_post_target, account)
+                conn.commit()
+
+                updated_count += 1
+                parts.append(f"{label} {current_post_target} → {new_post_target}")
+
+            print(f"{account:<10}: " + " / ".join(parts))
 
         print()
         print("=" * 40)
         print("post_target更新完了")
         print(f"対象アカウント : {len(accounts)}")
-        print(f"更新件数       : {updated_count}")
+        print(f"更新件数（区分ごと） : {updated_count}")
         print("=" * 40)
 
     finally:
@@ -743,7 +781,7 @@ def _run_with_deadlock_retry(operation_name, work_fn):
 SQL_SELECT_LIMIT_ACCOUNTS = """
 SELECT
     A.account,
-    A.post_target,
+    ISNULL(A.post_target, 0) + ISNULL(A.post_target_collectibles, 0) AS post_target,
     ISNULL(W.active_workers, 0) AS active_workers
 FROM mst.ebay_accounts A
 LEFT JOIN (
@@ -752,13 +790,13 @@ LEFT JOIN (
     WHERE account IS NOT NULL
     GROUP BY account
 ) W ON A.account = W.account
-WHERE A.close_reason = 'LIMIT'
+WHERE A.close_reason = 'LIMIT' OR A.close_reason_collectibles = 'LIMIT'
 """
 
 
 def get_limit_accounts():
     """
-    LIMITになったアカウントを取得する。
+    LIMITになったアカウント（どちらかの区分が LIMIT）を取得する。post_target は両区分の目標の合計（表示用）。
 
     post_target は mst.ebay_accounts.post_target の値をそのまま使用する。
     publish_manager.py 側に post_target の固定値は持たせない
@@ -798,46 +836,20 @@ def get_limit_accounts():
     return _run_with_deadlock_retry("get_limit_accounts", _work)
 
 
-SQL_SELECT_TODAY_POSTED_COUNT = """
-SELECT COUNT(*)
-FROM trx.listings
-WHERE account = ?
-  AND CAST(start_time AS DATE) = CAST(GETDATE() AS DATE)
-  AND is_deleted = 0
-"""
-
-
-def get_today_posted_count(account):
+def calculate_remaining_count(account_info):
     """
-    指定アカウントの本日の出品成功件数を取得する。
-
-    publish_ebay.py が出品停止判定に使っているものと同じSQL・同じロジック
-    （trx.listings を start_time の日付(SQL Server側の当日)で絞り込み、
-    is_deleted = 0 で削除済みを除外）を使用する。
+    LIMIT の区分の、目標と本日の出品実績から、不足件数(remaining)を計算する（LIMIT の区分の不足件数の合計）。
+    eBay の出品上限（金額・件数）はアカウント全体の制限なので、LIMIT は未終了の両区分に同時に書かれる。
     """
 
+    account = account_info["account"]
     conn = get_sql_server_connection()
     try:
-        with conn.cursor() as cur:
-            cur.execute(SQL_SELECT_TODAY_POSTED_COUNT, account)
-            today_posted = cur.fetchone()[0]
-
-        return today_posted
-
+        state = listing_class.read_class_state(conn, account)
     finally:
         conn.close()
 
-
-def calculate_remaining_count(account_info):
-    """post_target と本日の出品実績から、不足件数(remaining)を計算する。"""
-
-    account = account_info["account"]
-    post_target = account_info["post_target"]
-
-    today_posted = get_today_posted_count(account)
-    remaining = post_target - today_posted
-
-    return remaining
+    return sum(max(0, (st["target"] or 0) - st["posted"]) for st in state.values() if st["close"] == "LIMIT")
 
 
 # ======================
@@ -885,9 +897,8 @@ def handle_limit_account(account_info):
         _pm_log(f"[calculate_remaining_count] account={account} remaining={remaining} post_target={account_info['post_target']}")
 
         print(f"🟡 {account} LIMITを検知しました")
-        print(f"   post_target={account_info['post_target']}")
-        print(f"   today_posted={account_info['post_target'] - remaining}")
-        print(f"   remaining={remaining}")
+        print(f"   post_target(両区分の合計)={account_info['post_target']}")
+        print(f"   remaining(LIMIT の区分の不足件数)={remaining}")
 
         if remaining <= 0:
             mark_account_done(account)
@@ -920,28 +931,36 @@ def handle_limit_accounts(limit_accounts):
 # ======================
 # DONE補正・終了判定
 # ======================
-SQL_AUTO_FIX_DONE_ACCOUNTS = """
+# 区分ごとに、当日の出品数が目標に達している（目標0件・NULL を含む）のに DONE になっていない区分を DONE にする
+SQL_AUTO_FIX_DONE_ACCOUNTS = f"""
 UPDATE A
-SET A.close_reason = 'DONE'
+SET A.close_reason = CASE
+        WHEN (A.close_reason IS NULL OR A.close_reason = 'LIMIT') AND T.posted >= ISNULL(A.post_target, 0)
+        THEN 'DONE' ELSE A.close_reason END,
+    A.close_reason_collectibles = CASE
+        WHEN (A.close_reason_collectibles IS NULL OR A.close_reason_collectibles = 'LIMIT')
+             AND T.posted_collectibles >= ISNULL(A.post_target_collectibles, 0)
+        THEN 'DONE' ELSE A.close_reason_collectibles END
 OUTPUT inserted.account
 FROM mst.ebay_accounts A
 CROSS APPLY (
-    SELECT COUNT(*) AS today_posted
-    FROM trx.listings L
-    WHERE L.account = A.account
-      AND CAST(L.start_time AS DATE) = CAST(GETDATE() AS DATE)
-      AND L.is_deleted = 0
+    SELECT {listing_class.today_count_sql('A.account', listing_class.NON_COLLECTIBLES)} AS posted,
+           {listing_class.today_count_sql('A.account', listing_class.COLLECTIBLES)} AS posted_collectibles
 ) T
 WHERE ISNULL(A.is_excluded, 0) = 0
-  AND (A.close_reason IS NULL OR A.close_reason = 'LIMIT')
-  AND T.today_posted >= A.post_target
+  AND (
+        ((A.close_reason IS NULL OR A.close_reason = 'LIMIT') AND T.posted >= ISNULL(A.post_target, 0))
+     OR ((A.close_reason_collectibles IS NULL OR A.close_reason_collectibles = 'LIMIT')
+         AND T.posted_collectibles >= ISNULL(A.post_target_collectibles, 0))
+  )
 """
 
 
 def auto_fix_done_accounts():
     """
-    目標件数(post_target)にすでに到達しているのに、DONEになっていない
-    アカウントを自己修復する。
+    区分（非Collectibles: post_target・close_reason ／ Collectibles: post_target_collectibles・
+    close_reason_collectibles）ごとに、目標件数にすでに到達しているのに DONE になっていない区分を自己修復する。
+    目標が0件（または NULL）の区分は、出品せずに DONE になる。
 
     is_excluded=0 の全アカウントについて、today_posted >= post_target なのに
     close_reason が NULL または LIMIT のままのものを 'DONE' に補正する。
@@ -980,7 +999,7 @@ SQL_SELECT_BLOCKED_ACCOUNTS = """
 SELECT account, close_detail
 FROM mst.ebay_accounts
 WHERE ISNULL(is_excluded, 0) = 0
-  AND close_reason = 'BLOCKED'
+  AND (close_reason = 'BLOCKED' OR close_reason_collectibles = 'BLOCKED')
 ORDER BY account
 """
 
@@ -1007,14 +1026,17 @@ SQL_SELECT_UNFINISHED_ACCOUNT = """
 SELECT TOP 1 account
 FROM mst.ebay_accounts
 WHERE ISNULL(is_excluded, 0) = 0
-  AND (close_reason IS NULL OR close_reason NOT IN ('DONE', 'EMPTY', 'BLOCKED'))
+  AND (
+        close_reason IS NULL OR close_reason NOT IN ('DONE', 'EMPTY', 'BLOCKED')
+     OR close_reason_collectibles IS NULL OR close_reason_collectibles NOT IN ('DONE', 'EMPTY', 'BLOCKED')
+  )
 """
 
 
 def is_all_accounts_finished():
     """
-    is_excluded=0 の全アカウントについて、close_reason が DONE か EMPTY か BLOCKED だけに
-    なっているかどうかを判定する。
+    is_excluded=0 の全アカウントについて、両区分の終了理由（close_reason / close_reason_collectibles）が
+    DONE か EMPTY か BLOCKED だけになっているかどうかを判定する。
     BLOCKED は eBay のポリシー違反による新規出品制限（25019 Tutorial_Block_7D_NR）で当日の出品を
     終えたアカウント。LIMIT と違って出品枠を確保しても解除されないため、終了扱いにする。
 
