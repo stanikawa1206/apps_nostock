@@ -3,7 +3,7 @@
 -- 適用日: 2026-10-14
 --
 -- ③共通TVF化: 本番 dbo.fn_take_one_candidates の「候補抽出条件（①〜⑧）」部分を
--- そのまま切り出した base TVF。最終的な優先順位（publish_priority/category_priority）
+-- そのまま切り出した base TVF。最終的な優先順位（publish_priority）
 -- による絞り込みは行わず、条件を満たす候補を全件返す。
 --
 -- dbo.fn_take_one_candidates（本番）と dbo.vw_take_one_summary（集計ビュー）の
@@ -19,6 +19,12 @@
 -- 追記 2026-11-13: mst.presets_price_ranges を仕入先別（vendor_code・delete_flag 追加）にしたのに
 -- 合わせて、価格帯の結合に仕入先と delete_flag=0 を追加。変更前は (preset_group, category_group)
 -- だけで結合していた（変更前の定義: fn_take_one_candidates_base_backup_20261113_before_vendor_ranges.sql）。
+--
+-- 追記 2026-11-16: presets_categories を (category_id, vendor_group) ごとに1行にして結合（ペンのブランド別の行で
+-- 候補が重複していた。yahoo_tanikawa2_master_20261116.sql の 5)）。
+--
+-- 追記 2026-11-17: mst.presets_price_ranges.category_priority を削除したので返さない
+-- （drop_category_priority_20261117.sql）。優先度は仕入先の publish_priority だけ。
 -- ============================================================================
 
 CREATE OR ALTER FUNCTION dbo.fn_take_one_candidates_base
@@ -51,7 +57,6 @@ RETURN
 
             r.low_jpy_target,
             r.high_jpy_target,
-            r.category_priority,
 
             v.item_condition_id,
 
@@ -70,8 +75,17 @@ RETURN
             AND r.category_group = pl.category_group
             AND r.vendor_code = vd.vendor_code
             AND r.delete_flag = 0
-        INNER JOIN mst.presets_categories pc
+        -- 2026-11-16 presets_categories は (category_id, brand_id, vendor_group) ごとの行で、ペンのボールペン・万年筆は
+        -- ブランド別に複数行ある。category_id だけで結合すると候補がその行数だけ重複していた（メルカリのペン72 preset で
+        -- 1,260行）。使うのは is_collectibles だけ（同じ category_id・vendor_group の行で値は同じ）なので、
+        -- 仕入先の vendor_group の (category_id) ごとに1行にしてから結合する（Yahoo!フリマの追加でも重複しない）。
+        INNER JOIN (
+            SELECT category_id, vendor_group, CAST(MAX(CAST(is_collectibles AS int)) AS bit) AS is_collectibles
+            FROM mst.presets_categories
+            GROUP BY category_id, vendor_group
+        ) pc
             ON pc.category_id = pl.category_id
+            AND pc.vendor_group = vd.vendor_group
         LEFT JOIN mst.seller s
             ON s.seller_id = v.seller_id
         LEFT JOIN mst.category_groups cg
@@ -222,7 +236,7 @@ AND NOT (
     AND s.last_checked_at >= DATEADD(DAY, -30, SYSDATETIME())
 )    )
 
-    -- ★ 本番fn_take_one_candidatesと異なり、ここでは最終的なpriority絞り込みを行わない。
+    -- ★ 本番fn_take_one_candidatesと異なり、ここでは最終的なpriority絞り込み（publish_priority）を行わない。
     --   全vendor・全categoryの出品可能候補をそのまま返す（集計・分析用途向け）。
     SELECT * FROM Candidate
 );

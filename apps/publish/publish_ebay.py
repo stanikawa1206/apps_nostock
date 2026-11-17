@@ -3194,7 +3194,7 @@ SELECT
     t.vendor_name, t.vendor_item_id, t.preset, t.mode, t.default_brand_en, t.category_id_ebay,
     t.department, t.type_ebay, t.category_group, t.low_jpy_target, t.high_jpy_target,
     t.is_ok_logic, t.is_collectibles,
-    t.publish_priority * 1000 + t.category_priority
+    t.publish_priority
 FROM dbo.fn_take_one_candidates_base(?) t
 OPTION (MAXDOP 1);
 
@@ -3211,7 +3211,9 @@ END
 -- 出品日時は vendor_created_at。ラクマ・Yahoo!フリマは検索結果に出品日時が無く NULL なので、
 -- この仕組みで最初に取り込んだ日時（created_at）で代える。同じ日時は仕入先・商品IDの順。
 -- 2026-11-15 までは商品IDの順で、古い（仕入先で削除済みの多い）商品から確認していた。
--- 優先度（仕入先×カテゴリー）は仕入先ごとに異なるので、同じ優先度に別の仕入先の商品が混ざることはない。
+-- 優先度は仕入先の mst.vendors.publish_priority（R → Y → MS → M）だけで、同じ優先度に別の仕入先の商品が混ざることはない。
+-- 同じ仕入先の中はカテゴリーを区別せず新しい順（2026-11-17 までは presets_price_ranges.category_priority も
+-- 加えていて、谷川② はペン・製図用品=1、カメラ系=2 のため、ペン系の候補が残る間はカメラ系が選ばれなかった。列は削除済み）。
 DECLARE @min_prio INT = (SELECT MIN(prio) FROM @all);
 
 INSERT INTO @cand
@@ -3282,7 +3284,7 @@ def take_one_vendor_item(conn, preset_group, processing_by, account_name):
     """
     【TVF委譲版】
     候補抽出は dbo.fn_take_one_candidates_for_account(@preset_group, @account) と同じ条件を
-    TAKE_ONE_SQL 内で1回だけ評価する（base関数の候補のうち最小優先度のみ）。
+    TAKE_ONE_SQL 内で1回だけ評価する（base関数の候補のうち、仕入先の優先度 publish_priority が最小のものだけ）。
     （新規出品しない仕入先は mst.presets_price_ranges の delete_flag=1。base関数が除くので候補にならない）
     この関数は TVF が返した候補の中から1件だけをロック・確保して返す（詳細は TAKE_ONE_SQL のコメント）。
 

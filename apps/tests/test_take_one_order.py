@@ -4,6 +4,7 @@ publish_ebay.take_one_vendor_item（TAKE_ONE_SQL）の処理順のテスト。
 
 2026-11-15: 同じ優先度の中は「仕入先での出品日時（vendor_created_at）が新しい順」にする（それまでは商品ID順）。
 ラクマ・Yahoo!フリマは出品日時が NULL なので、最初に取り込んだ日時（created_at）で代える。同じ日時は商品ID順。
+2026-11-17: 優先度は仕入先の publish_priority だけ（presets_price_ranges.category_priority を削除）。
 
 テスト専用DB（test_account_listing_block と同じ nostock_test_blocked。最後に削除）に、
 本物の dbo.fn_take_one_candidates_base の代わりの関数（候補表 test_cand の行を返すだけ）と、
@@ -34,14 +35,14 @@ OBJECTS = [
         CONSTRAINT PK_vendor_item PRIMARY KEY CLUSTERED (vendor_name, vendor_item_id))""",
     """IF OBJECT_ID('trx.test_cand') IS NULL
     CREATE TABLE trx.test_cand (preset_group NVARCHAR(100), vendor_name NVARCHAR(100), vendor_item_id NVARCHAR(200),
-        publish_priority INT, category_priority INT)""",
+        publish_priority INT)""",
     # 本物の base 関数と同じ列・同じく processing_at IS NULL の行だけを返す（重複行も返せる）
     """IF OBJECT_ID('dbo.fn_take_one_candidates_base') IS NULL EXEC('
     CREATE FUNCTION dbo.fn_take_one_candidates_base(@preset_group NVARCHAR(100)) RETURNS TABLE AS RETURN (
         SELECT v.vendor_item_id, v.vendor_name, v.price, v.shipping_region, v.shipping_days,
                N''p'' AS preset, CAST(NULL AS NVARCHAR(50)) AS mode, N''b'' AS default_brand_en, N''1'' AS category_id_ebay,
                N''d'' AS department, N''t'' AS type_ebay, N''cg'' AS category_group, CAST(NULL AS BIT) AS is_collectibles,
-               1 AS low_jpy_target, 2 AS high_jpy_target, c.category_priority, v.item_condition_id,
+               1 AS low_jpy_target, 2 AS high_jpy_target, v.item_condition_id,
                CAST(1 AS BIT) AS is_ok_logic, c.publish_priority
         FROM trx.vendor_item v
         INNER JOIN trx.test_cand c ON c.vendor_name = v.vendor_name AND c.vendor_item_id = v.vendor_item_id
@@ -76,11 +77,11 @@ class TakeOneOrderTest(DbTestBase):
         p.start()
         self.addCleanup(p.stop)
 
-    def add(self, vendor, iid, created, first_seen=T0, prio=(3, 1), group="g", dup=False):
+    def add(self, vendor, iid, created, first_seen=T0, prio=3, group="g", dup=False):
         self.sql("INSERT INTO trx.vendor_item (vendor_name, vendor_item_id, price, vendor_created_at, created_at) "
                  "VALUES (?, ?, 1000, ?, ?)", vendor, iid, created, first_seen)
         for _ in range(2 if dup else 1):
-            self.sql("INSERT INTO trx.test_cand VALUES (?, ?, ?, ?, ?)", group, vendor, iid, prio[0], prio[1])
+            self.sql("INSERT INTO trx.test_cand VALUES (?, ?, ?, ?)", group, vendor, iid, prio)
         self.conn.commit()
 
     def take_all(self, group="g", worker="w1"):
@@ -102,19 +103,20 @@ class TakeOneOrderTest(DbTestBase):
         self.add("メルカリshops", "D_same", T0 - timedelta(days=3))           # 同じ日時は商品ID順
         self.assertEqual(self.take_all(), ["B_new", "C_mid", "D_same", "A_old"])
 
-    def test_priority_still_first(self):
-        # 優先度（仕入先×カテゴリー）は従来どおり先。新しさはその中だけ
-        self.add("ラクマ", "R_old", None, first_seen=T0 - timedelta(days=60), prio=(1, 1))
-        self.add("メルカリ", "M_new", T0, prio=(4, 1))
-        self.add("メルカリshops", "S_new", T0, prio=(3, 1))
-        self.add("メルカリshops", "S_old", T0 - timedelta(days=9), prio=(3, 2))
-        self.assertEqual(self.take_all(), ["R_old", "S_new", "S_old", "M_new"])
+    def test_vendor_priority_first(self):
+        # 仕入先の優先度（R → Y → MS → M）は従来どおり先。新しさはその中だけ
+        self.add("ラクマ", "R_old", None, first_seen=T0 - timedelta(days=60), prio=1)
+        self.add("ＰａｙＰａｙフリマ", "Y_old", None, first_seen=T0 - timedelta(days=30), prio=2)
+        self.add("メルカリ", "M_new", T0, prio=4)
+        self.add("メルカリshops", "S_new", T0, prio=3)
+        self.add("メルカリshops", "S_old", T0 - timedelta(days=9), prio=3)
+        self.assertEqual(self.take_all(), ["R_old", "Y_old", "S_new", "S_old", "M_new"])
 
     def test_null_created_uses_first_seen(self):
         # ラクマ・Yahoo!フリマ（出品日時なし）は、最初に取り込んだ日時の新しい順
-        self.add("ラクマ", "r1", None, first_seen=T0 - timedelta(days=5), prio=(1, 1))
-        self.add("ラクマ", "r2", None, first_seen=T0 - timedelta(hours=2), prio=(1, 1))
-        self.add("ラクマ", "r3", None, first_seen=T0 - timedelta(days=1), prio=(1, 1))
+        self.add("ラクマ", "r1", None, first_seen=T0 - timedelta(days=5), prio=1)
+        self.add("ラクマ", "r2", None, first_seen=T0 - timedelta(hours=2), prio=1)
+        self.add("ラクマ", "r3", None, first_seen=T0 - timedelta(days=1), prio=1)
         self.assertEqual(self.take_all(), ["r2", "r3", "r1"])
 
     def test_more_than_limit(self):
@@ -147,8 +149,8 @@ class TakeOneOrderTest(DbTestBase):
     def test_rakuma_paused_keeps_newest_first(self):
         # ラクマの障害中（mst.control の全台の停止期限）はラクマの候補を外し、次の優先度を新しい順に取る。期限後はラクマを新しい順に
         self.sql("DELETE FROM mst.control")
-        self.add("ラクマ", "r_old", None, first_seen=T0 - timedelta(days=2), prio=(1, 1))
-        self.add("ラクマ", "r_new", None, first_seen=T0 - timedelta(hours=1), prio=(1, 1))
+        self.add("ラクマ", "r_old", None, first_seen=T0 - timedelta(days=2), prio=1)
+        self.add("ラクマ", "r_new", None, first_seen=T0 - timedelta(hours=1), prio=1)
         self.add("メルカリshops", "s_old", T0 - timedelta(days=5))
         self.add("メルカリshops", "s_new", T0 - timedelta(hours=3))
         # 全台の停止（ラクマ障害_停止期限 = 今から10分後）
