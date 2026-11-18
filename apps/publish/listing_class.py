@@ -28,12 +28,38 @@ LEFT_COL = {NON_COLLECTIBLES: "listing_left", COLLECTIBLES: "listing_left_collec
 TARGET_COL = {NON_COLLECTIBLES: "post_target", COLLECTIBLES: "post_target_collectibles"}
 CLOSE_COL = {NON_COLLECTIBLES: "close_reason", COLLECTIBLES: "close_reason_collectibles"}
 
-# 当日の終了理由のうち、その日はもう出品しないもの（LIMIT は出品枠を確保すれば再開する一時停止）
-FINISHED_REASONS = ("DONE", "EMPTY", "BLOCKED")
+# 当日の終了理由のうち、その日はもう出品しないもの（LIMIT は出品枠を確保すれば再開する一時停止）。
+# NO_SPACE（2026-11-18）: eBay の出品金額の上限に達し、LIMIT 対応で終了できる既存の出品（出品から20日以上・
+# watchers=0）も無いため、当日はこれ以上出品できない。翌日の開始時に他の終了理由と同じくクリアする。
+NO_SPACE = "NO_SPACE"
+FINISHED_REASONS = ("DONE", "EMPTY", "BLOCKED", NO_SPACE)
+
+# Collectibles 優先（2026-11-18）。両区分とも出品中の間、各 worker は Collectibles と非Collectibles の候補を
+# この比（Collectibles : 非Collectibles = COLLECTIBLES_PRIORITY_WEIGHT : 1）で取る。
+# 出品の成功件数ではなく候補を取った回数で数えるので、Collectibles の候補が売り切れ等で出品できず
+# 成功件数が伸びない日でも、非Collectibles は候補3回に1回は必ず取る（止まらない）。
+# 片方の区分が DONE・EMPTY 等で終われば、もう一方だけを取る。
+COLLECTIBLES_PRIORITY_WEIGHT = 2
+# LIMIT 対応で「いま優先して出品している区分」を決める順（publish_manager.calculate_remaining_count）
+PRIORITY_ORDER = (COLLECTIBLES, NON_COLLECTIBLES)
 
 
 def class_of(is_collectibles) -> int:
     return COLLECTIBLES if is_collectibles else NON_COLLECTIBLES
+
+
+def class_pick_order(classes, picks) -> list:
+    """
+    候補を取りに行く区分の順番。classes は取りに行ける区分、picks はこの worker がこのアカウントで
+    区分ごとに候補を取った回数 {区分: 回数}。
+    両区分とも取れるなら、Collectibles を COLLECTIBLES_PRIORITY_WEIGHT 回取るごとに非Collectibles を1回先にする
+    （C, C, 非C, C, C, 非C, …）。先の区分が取れなければ（処理枠が空いていない等）、呼び出し側がもう一方を試す。
+    """
+    if COLLECTIBLES in classes and NON_COLLECTIBLES in classes:
+        if picks.get(COLLECTIBLES, 0) < COLLECTIBLES_PRIORITY_WEIGHT * (picks.get(NON_COLLECTIBLES, 0) + 1):
+            return [COLLECTIBLES, NON_COLLECTIBLES]
+        return [NON_COLLECTIBLES, COLLECTIBLES]
+    return list(classes)
 
 
 def today_count_sql(account_expr: str, cls: int) -> str:

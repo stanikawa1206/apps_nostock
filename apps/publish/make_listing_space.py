@@ -11,6 +11,7 @@
 import logging
 import time
 from contextlib import contextmanager
+from typing import NamedTuple, Optional
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -82,14 +83,29 @@ BATCH_SIZE  = 10
 
 
 # ===== 出品枠確保候補取得 =====
+# LIMIT 対応で終了する出品は、eBay 上の出品開始（ext.ebay_active_download.start_time。UTC）から
+# この日数以上経ったものだけ（2026-11-18 方針。それより新しい出品は watchers=0 でも終了しない）
+LIMIT_MIN_AGE_DAYS = 20
+
+# 候補は出品処理の開始時に取得した eBay の出品中一覧（ext.ebay_active_download）から、
+# 出品から LIMIT_MIN_AGE_DAYS 日以上・watchers=0 の出品を、出品開始の古い順に選ぶ。
+# Collectibles／非Collectibles、有在庫（trx.listings に行が無い手動の出品。vendor_item_id が 'M-366' や空など）・
+# 無在庫は区別しない（2026-11-18 まで LEN(vendor_item_id) >= 6 で手動の出品を除いていた）。
+# 一覧の取得後に DB で終了済みにした出品（在庫管理の売り切れ・定期削除など。trx.listings.is_deleted=1）は除く。
+# 一覧に残っていても eBay では終了済みで、EndItems は 1047（終了済み）＝成功を返すため、
+# 枠が空かないのに確保した件数に数えてしまう（2026-11-18 03:08 の一覧で 貴文 1,963件・BUZZ 1,314件 などが該当）。
 SQL_SELECT_CANDIDATES = """
-SELECT TOP (?) listing_id
-FROM ext.ebay_active_download
+SELECT TOP (?) d.listing_id
+FROM ext.ebay_active_download d
 WHERE
-    account = ?
-    AND LEN(vendor_item_id) >= 6
-    AND watchers = 0
-ORDER BY start_time
+    d.account = ?
+    AND d.watchers = 0
+    AND d.start_time <= DATEADD(DAY, -?, SYSUTCDATETIME())
+    AND NOT EXISTS (
+        SELECT 1 FROM trx.listings l
+        WHERE l.account = d.account AND l.listing_id = d.listing_id AND l.is_deleted = 1
+    )
+ORDER BY d.start_time, d.listing_id
 """
 
 
@@ -98,7 +114,7 @@ def get_listing_space_candidates(account, limit):
     conn = get_sql_server_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute(SQL_SELECT_CANDIDATES, limit, account)
+            cur.execute(SQL_SELECT_CANDIDATES, limit, account, LIMIT_MIN_AGE_DAYS)
             rows = cur.fetchall()
 
         item_ids = [str(row[0]) for row in rows]
@@ -220,13 +236,17 @@ def secure_listing_space_for_account(account, item_ids):
 
 
 def _secure_listing_space_locked(account, space_count):
-    """候補の取得から終了・DB更新までを、アカウント単位の排他ロックを持ったまま行う。"""
+    """
+    候補の取得から終了・DB更新までを、アカウント単位の排他ロックを持ったまま行う。
+    戻り値 (account, 終了できた件数, 候補の件数)。ロックを取れなかった場合の候補の件数は None（候補が無いとは言えない）。
+    """
     with account_listing_space_lock(account, LIMIT_LOCK_TIMEOUT_SEC) as rc:
         if rc < 0:
             _log_delete_debug(f"⚠️ {account}: 出品枠確保の排他ロックを{LIMIT_LOCK_TIMEOUT_SEC}秒で取得できず rc={rc}")
-            return account, 0
+            return account, 0, None
         item_ids = get_listing_space_candidates(account, space_count)
-        return secure_listing_space_for_account(account, item_ids)
+        _, secured = secure_listing_space_for_account(account, item_ids)
+        return account, secured, len(item_ids)
 
 
 # ===== メイン =====
@@ -242,6 +262,7 @@ def make_listing_space(config=None):
     target_config = config if config is not None else LISTING_SPACE_CONFIG
 
     results = []
+    candidate_counts = {}
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
 
@@ -256,12 +277,14 @@ def make_listing_space(config=None):
             )
 
         for f in as_completed(futures):
-            results.append(f.result())
+            account, cnt, n_candidates = f.result()
+            results.append((account, cnt))
+            candidate_counts[account] = n_candidates
 
     print("\n=== 出品枠確保結果 ===")
     total = 0
     for account, cnt in results:
-        print(f"{account}: {cnt}件分の出品枠を確保")
+        print(f"{account}: {cnt}件分の出品枠を確保（候補 {candidate_counts[account]}件）")
         total += cnt
 
     print(f"合計確保: {total}")
@@ -269,25 +292,33 @@ def make_listing_space(config=None):
     return dict(results)
 
 
-def run_make_listing_space(account, count):
+class ListingSpaceResult(NamedTuple):
+    secured: int                  # eBay で終了できた（枠が空いた）件数
+    candidates: Optional[int]     # 終了の候補にした件数。0 = 条件を満たす出品が無い。None = 排他ロックを取れず不明
+
+
+def run_make_listing_space(account, count) -> ListingSpaceResult:
     """
     他モジュール（publish_manager.py 等）から呼び出すための、
     「1アカウント分だけ出品枠を確保する」シンプルな公開関数。
 
-    内部的には既存の make_listing_space() にそのまま委譲するだけで、
-    削除ロジック自体（候補の選び方・削除の実行方法）は一切変更しない。
-
     account: 出品枠を確保したいアカウント名
     count:   確保したい件数（呼び出し側で計算したremaining等）
-    戻り値:  実際に確保できた件数（0件の場合や、countに届かない場合もある）
+    戻り値:  ListingSpaceResult（終了できた件数と候補の件数）。
+             候補が0件なら、出品から LIMIT_MIN_AGE_DAYS 日以上・watchers=0 の出品が無い（これ以上枠を空けられない）。
+             候補があるのに終了できた件数が0件なら、eBay の終了 API が失敗した（候補は残るので、次の対応でまた試す）。
     """
 
-    results = make_listing_space(config={account: count})
-    return results.get(account, 0)
+    print(f"\n▶ {account}: {count}件分の出品枠確保対象取得")
+    _, secured, n_candidates = _secure_listing_space_locked(account, count)
+    print(f"=== 出品枠確保結果 === {account}: {secured}件分の出品枠を確保（候補 {n_candidates}件）")
+    return ListingSpaceResult(secured, n_candidates)
 
 
 # ===== 値上げ時の販売上限（25002 "amount you can list"）対応 =====
-# 値上げが月間の販売上限で失敗した時、LIMIT 対応と同じ基準（watchers=0 の古い順）で出品を1件終了し、
+# 値上げが月間の販売上限で失敗した時、watchers=0 の古い順で出品を1件終了し、
+# （2026-11-18 に LIMIT 対応の候補へ「出品から20日以上」を加え、手動の出品の除外をやめたが、
+#   こちらは変えていない: 日数の条件なし・LEN(vendor_item_id) >= 6・受注済みを除く）
 # 値上げを再試行する。上限のままなら次の1件を終了して再試行する。
 # 上限まで試しても通らなければ、呼び出し元は従来どおり値上げ対象の出品を終了する。
 # （2026-11-08 谷川④は出品総額が上限に張り付き、値上げのたびに値上げ対象が終了していた。

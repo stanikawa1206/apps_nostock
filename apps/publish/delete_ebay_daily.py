@@ -151,20 +151,36 @@ def is_deferred(iid) -> bool:
 
 
 # ===== SQL 操作 =====
+# 対象は2つ（有在庫・無在庫を区別しない。2026-11-18）:
+#   1. trx.listings の出品中（この仕組みで出品したもの）: 出品日（start_time。日本時間）から DAYS_THRESHOLD 日以上
+#   2. eBay の出品中一覧（ext.ebay_active_download。出品処理の開始時に取得）にあって trx.listings に行が無い出品
+#      （有在庫などの手動の出品。vendor_item_id が 'M-366' や空など）: eBay の出品開始（UTC）を日本時間の日付にして同じ日数
+#      2026-11-18 までは 1. だけを対象にしていたため、手動の出品は何日経っても定期削除されなかった。
+#      trx.listings に行がある出品（終了済み is_deleted=1 を含む）は 2. に含めない（1. で扱う／もう終了している）。
 SQL_SELECT_CANDIDATES_30D_ALL = f"""
-SELECT
-    [account],
-    [listing_id]
-FROM [trx].[listings]
-WHERE
-    ISNULL([is_deleted], 0) = 0
-    AND DATEDIFF(day, CONVERT(date, [start_time]), CONVERT(date, GETDATE())) >= {DAYS_THRESHOLD}
-ORDER BY [account], [start_time] ASC;
+SELECT account, listing_id
+FROM (
+    SELECT [account], [listing_id], [start_time]
+    FROM [trx].[listings]
+    WHERE
+        ISNULL([is_deleted], 0) = 0
+        AND DATEDIFF(day, CONVERT(date, [start_time]), CONVERT(date, GETDATE())) >= {DAYS_THRESHOLD}
+    UNION ALL
+    SELECT d.account, d.listing_id, DATEADD(HOUR, 9, d.start_time)
+    FROM ext.ebay_active_download d
+    WHERE
+        DATEDIFF(day, CONVERT(date, DATEADD(HOUR, 9, d.start_time)), CONVERT(date, GETDATE())) >= {DAYS_THRESHOLD}
+        AND NOT EXISTS (
+            SELECT 1 FROM trx.listings l WHERE l.account = d.account AND l.listing_id = d.listing_id
+        )
+) t
+ORDER BY account, start_time ASC;
 """
 
 def fetch_delete_candidates_30d_all():
     """
-    trx.listings から「DAYS_THRESHOLD日以上」の (account, listing_id) を全部取る。
+    「DAYS_THRESHOLD日以上」の (account, listing_id) を全部取る（trx.listings の出品中と、
+    trx.listings に行が無い eBay の出品中。SQL_SELECT_CANDIDATES_30D_ALL のコメント参照）。
     defer中の listing_id は除外する。
     """
     with get_sql_server_connection() as conn:
@@ -295,9 +311,16 @@ def delete_items_from_ebay_and_sql(account: str, item_ids):
                                AND ISNULL(is_deleted, 0) = 0
                         """, (delete_reason, account, iid)) # ★引数に "定期削除" を追加
                         row = cur.fetchone()
-                        log_listings_change(
-                            "DELETE", account, iid, row[0] if row else None, delete_reason
-                        )
+                        # eBay の出品中一覧からも外す（同じ日の LIMIT 対応・次のサイクルの定期削除が、終了済みの出品を
+                        # 候補にしないため。trx.listings に行が無い手動の出品は、ここで終了を記録する）
+                        cur.execute("""
+                            DELETE FROM ext.ebay_active_download
+                            OUTPUT deleted.vendor_item_id
+                            WHERE account = ? AND listing_id = ?
+                        """, (account, iid))
+                        ext_rows = cur.fetchall()
+                        sku = row[0] if row else (ext_rows[0][0] if ext_rows else None)
+                        log_listings_change("DELETE", account, iid, sku, delete_reason)
                 conn.commit()
 
                 deleted_total += len(res["ok_ids"])

@@ -3362,9 +3362,10 @@ def take_one_vendor_item(conn, preset_group, processing_by, account_name, is_col
 CLASS_SLOT_WAIT_SEC = 2
 
 
-def pick_next_item(conn, acct, processing_by, paused_until, now=None):
+def pick_next_item(conn, acct, processing_by, paused_until, now=None, picks=None):
     """
     アカウントの区分（Collectibles／非Collectibles）のうち、まだ終わっていない区分から出品候補を1件取る（2026-11-17）。
+    picks は、この worker がこのアカウントで区分ごとに候補を取った回数（呼び出し側がアカウントごとに持ち、ここで増やす）。
 
     戻り値 (kind, row, x):
       ("ROW", 候補, 処理枠の名前) … 処理が終わったら listing_class.release_class_slot(conn, 処理枠) で返す
@@ -3373,8 +3374,10 @@ def pick_next_item(conn, acct, processing_by, paused_until, now=None):
       ("WAIT", None, 秒数)        … 他workerの処理中で枠が空いていない／ラクマの障害中。待って取り直す
 
     当日の出品数が目標に達した（目標0件を含む）区分は DONE、候補が無い区分は EMPTY を、その場で書く。
-    どちらの区分から取るかは、目標に対する進み具合（当日の出品数 ÷ 目標）が低い方を先にする
-    （同じなら非Collectibles）。取れない区分があれば、もう一方の区分を試す。
+    どちらの区分から取るかは Collectibles 優先（2026-11-18。listing_class.class_pick_order）:
+    両区分とも出品中なら、候補を取る回数で Collectibles 2 : 非Collectibles 1（C, C, 非C, …）。
+    取れない区分（処理枠が空いていない・ラクマの障害中・候補なし）があれば、もう一方の区分を試す。
+    （2026-11-17 は進み具合（当日の出品数 ÷ 目標）の低い方を先にしていた）
     """
     st = listing_class.read_class_state(conn, acct.account)
     if any(st[c]["close"] == "BLOCKED" for c in listing_class.CLASSES):
@@ -3395,8 +3398,8 @@ def pick_next_item(conn, acct, processing_by, paused_until, now=None):
         return "FINISHED", None, None
 
     now = time.time() if now is None else now
-    ready = [c for c in open_classes if paused_until.get(c, 0) <= now]
-    ready.sort(key=lambda c: (st[c]["posted"] / st[c]["target"], c))
+    picks = {} if picks is None else picks
+    ready = listing_class.class_pick_order([c for c in open_classes if paused_until.get(c, 0) <= now], picks)
     closed_now = False
     for c in ready:
         slot, _info = listing_class.reserve_class_slot(conn, acct.account, c, MAX_PARALLEL_PC)
@@ -3420,6 +3423,7 @@ def pick_next_item(conn, acct, processing_by, paused_until, now=None):
                 print(f"[INFO] {acct.account} {listing_class.LABEL[c]}の在庫枯渇")
             closed_now = True
             continue
+        picks[c] = picks.get(c, 0) + 1
         return "ROW", row, slot
 
     if closed_now:
@@ -3588,9 +3592,12 @@ def main():
                 #   "EMPTY" : 出品候補が無い（今日は終了）
                 #   "LIMIT" : eBay側の出品制限（一時停止。publish_managerが解除すれば再開）
                 #   "BLOCKED": eBayのポリシー違反による新規出品制限（25019 Tutorial_Block_7D_NR。今日は終了）
+                #   （"NO_SPACE" は publish_manager が LIMIT 対応で終了できる出品が無かった時に書く。今日は終了）
                 close_detail = None
                 # 区分ごとの、ラクマの障害中で取り直しを待つ時刻（time.time()）
                 paused_until = {}
+                # 区分ごとの、このアカウントで候補を取った回数（Collectibles 優先の比を数える）
+                class_picks = {}
                 while not stop_all:
                     # UNPUBLISHED再公開待ち（保留）の再処理。当日の目標達成（DONE）の判定より前に行う
                     retry_pending_orphan_republishes(conn, acct.account)
@@ -3602,7 +3609,7 @@ def main():
                         cdn_mode_until = None
 
                     # Collectibles／非Collectibles のうち、まだ終わっていない区分から1件を取る（区分の DONE・EMPTY は中で書く）
-                    kind, row, slot = pick_next_item(conn, acct, processing_by, paused_until)
+                    kind, row, slot = pick_next_item(conn, acct, processing_by, paused_until, picks=class_picks)
 
                     # [アカウント終了⓪: BLOCKED] 同じアカウントを処理中の別workerが新規出品制限を検知済み。
                     # 制限中は出品が全件失敗するため、このworkerも次の商品へ進まずに終える

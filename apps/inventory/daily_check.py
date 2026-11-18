@@ -479,6 +479,15 @@ def build_publish_manager_account_summary(conn) -> str:
             lines.append("  → My eBay のメッセージで違反内容を確認してください。翌日の出品で自動的に再判定します。")
             lines.append("")
 
+        # NO_SPACE = 出品金額の上限に達し、LIMIT 対応で終了できる出品（出品から20日以上・watchers=0）も無かった（2026-11-18）
+        no_space = [r[0] for r in rows if listing_class.NO_SPACE in (r[1], r[4])]
+        if no_space:
+            lines.append("【⚠ 出品枠不足（NO_SPACE）で当日の出品を終了したアカウント】")
+            lines.append("- " + "、".join(no_space))
+            lines.append("  → eBay の出品金額の上限に達し、終了できる出品（出品から20日以上・ウォッチャー0）がありませんでした。"
+                         "翌日の出品で通常どおり再開します。")
+            lines.append("")
+
         lines.append("【アカウント別状況】")
         for r in rows:
             account = r[0]

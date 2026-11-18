@@ -219,6 +219,38 @@ def mark_account_done(account):
         conn.close()
 
 
+# LIMIT 対応で終了できる出品が無かった時に、まだ終わっていない区分（LIMIT・NULL）を終える（2026-11-18）。
+# 出品金額の上限はアカウント共通なので両区分とも対象。目標に達している区分は DONE、それ以外は NO_SPACE。
+# DONE・EMPTY・BLOCKED の区分はそのまま。
+def _no_space_case(cls):
+    col = listing_class.CLOSE_COL[cls]
+    return f"""{col} = CASE
+        WHEN {col} IS NULL OR {col} = 'LIMIT' THEN
+            CASE WHEN {listing_class.today_count_sql('A.account', cls)} >= ISNULL(A.{listing_class.TARGET_COL[cls]}, 0)
+                 THEN 'DONE' ELSE '{listing_class.NO_SPACE}' END
+        ELSE {col} END"""
+
+
+SQL_MARK_ACCOUNT_NO_SPACE = f"""
+UPDATE A
+SET {_no_space_case(listing_class.NON_COLLECTIBLES)},
+    {_no_space_case(listing_class.COLLECTIBLES)}
+FROM mst.ebay_accounts A
+WHERE A.account = ?
+"""
+
+
+def mark_account_no_space(account):
+    """指定アカウントのまだ終わっていない区分を NO_SPACE（目標に達していれば DONE）にする。"""
+    conn = get_sql_server_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(SQL_MARK_ACCOUNT_NO_SPACE, account)
+        conn.commit()
+    finally:
+        conn.close()
+
+
 # ======================
 # post_target自動計算
 # ======================
@@ -838,8 +870,17 @@ def get_limit_accounts():
 
 def calculate_remaining_count(account_info):
     """
-    LIMIT の区分の、目標と本日の出品実績から、不足件数(remaining)を計算する（LIMIT の区分の不足件数の合計）。
+    LIMIT 対応で確保する件数(remaining)を、いま優先して出品している区分の不足件数（目標 − 本日の出品数）にする（2026-11-18）。
+
     eBay の出品上限（金額・件数）はアカウント全体の制限なので、LIMIT は未終了の両区分に同時に書かれる。
+    出品は Collectibles 優先（listing_class.class_pick_order）なので、Collectibles が LIMIT（＝まだ出品中）で
+    不足があればその不足件数、Collectibles が終わっていれば（DONE・EMPTY 等）非Collectibles の不足件数を使う
+    （listing_class.PRIORITY_ORDER の順で、LIMIT かつ不足のある最初の区分）。
+    Collectibles の分だけ確保して再開した後、非Collectibles の出品でまた LIMIT になれば、その時に改めて確保する。
+    （2026-11-17 は LIMIT の両区分の不足件数の合計だった。11/18 川島は Collectibles の候補が尽きて、合計で空けた枠が余った）
+
+    LIMIT 対応は、そのアカウントを処理中の worker が0台になってから行う（handle_limit_account）。
+    処理中（処理枠を持った出品の途中）の worker がいないので、本日の出品数は確定しており、出品中の件数を見込む必要は無い。
     """
 
     account = account_info["account"]
@@ -849,7 +890,15 @@ def calculate_remaining_count(account_info):
     finally:
         conn.close()
 
-    return sum(max(0, (st["target"] or 0) - st["posted"]) for st in state.values() if st["close"] == "LIMIT")
+    for c in listing_class.PRIORITY_ORDER:
+        st = state.get(c)
+        if st and st["close"] == "LIMIT":
+            remaining = max(0, (st["target"] or 0) - st["posted"])
+            if remaining > 0:
+                _pm_log(f"[calculate_remaining_count] account={account} class={listing_class.LABEL[c]} "
+                        f"target={st['target']} posted={st['posted']} remaining={remaining}")
+                return remaining
+    return 0
 
 
 # ======================
@@ -869,14 +918,14 @@ def request_listing_space(account, remaining):
 
     print(f"🟡 {account} {remaining}件分の出品枠を確保します")
 
-    actual_count = run_make_listing_space(account, remaining)
+    result = run_make_listing_space(account, remaining)
 
-    if actual_count > 0:
-        print(f"🟢 {account} {actual_count}件分の出品枠を確保しました")
+    if result.secured > 0:
+        print(f"🟢 {account} {result.secured}件分の出品枠を確保しました")
 
-    _pm_log(f"[request_listing_space] end account={account} actual_count={actual_count}")
+    _pm_log(f"[request_listing_space] end account={account} actual_count={result.secured} candidates={result.candidates}")
 
-    return actual_count
+    return result
 
 
 def handle_limit_account(account_info):
@@ -898,17 +947,26 @@ def handle_limit_account(account_info):
 
         print(f"🟡 {account} LIMITを検知しました")
         print(f"   post_target(両区分の合計)={account_info['post_target']}")
-        print(f"   remaining(LIMIT の区分の不足件数)={remaining}")
+        print(f"   remaining(優先して出品している区分の不足件数)={remaining}")
 
         if remaining <= 0:
             mark_account_done(account)
             print(f"🟢 {account} 目標達成済みのためDONEにしました")
             return
 
-        actual_count = request_listing_space(account, remaining)
+        result = request_listing_space(account, remaining)
 
-        if actual_count <= 0:
-            print(f"⚠️ {account} 出品枠を確保できませんでした。LIMIT状態を維持します。")
+        if result.secured <= 0:
+            if result.candidates == 0:
+                # 終了できる出品（出品から20日以上・watchers=0）が無い。これ以上枠を空けられないので、
+                # LIMIT のまま5秒ごとに繰り返さず、当日の出品を NO_SPACE で終える（翌日の開始時にクリア）
+                mark_account_no_space(account)
+                _pm_log(f"[handle_limit_account] no_space account={account}")
+                print(f"⛔ {account} 終了できる出品が無いため出品枠を確保できません。当日の出品を NO_SPACE で終了します。")
+                return
+            # 候補はあるが eBay の終了 API が失敗した（または排他ロックを取れなかった）。
+            # 従来どおり LIMIT のまま残し、次の監視サイクルでまた確保を試みる
+            print(f"⚠️ {account} 出品枠を確保できませんでした（候補 {result.candidates}件）。LIMIT状態を維持します。")
             return
 
         clear_close_status(account)
@@ -1022,13 +1080,15 @@ def log_blocked_accounts():
     return blocked
 
 
-SQL_SELECT_UNFINISHED_ACCOUNT = """
+# 終了扱いの理由は listing_class.FINISHED_REASONS（DONE・EMPTY・BLOCKED・NO_SPACE）
+_FINISHED_SQL = ", ".join(f"'{r}'" for r in listing_class.FINISHED_REASONS)
+SQL_SELECT_UNFINISHED_ACCOUNT = f"""
 SELECT TOP 1 account
 FROM mst.ebay_accounts
 WHERE ISNULL(is_excluded, 0) = 0
   AND (
-        close_reason IS NULL OR close_reason NOT IN ('DONE', 'EMPTY', 'BLOCKED')
-     OR close_reason_collectibles IS NULL OR close_reason_collectibles NOT IN ('DONE', 'EMPTY', 'BLOCKED')
+        close_reason IS NULL OR close_reason NOT IN ({_FINISHED_SQL})
+     OR close_reason_collectibles IS NULL OR close_reason_collectibles NOT IN ({_FINISHED_SQL})
   )
 """
 
@@ -1036,9 +1096,10 @@ WHERE ISNULL(is_excluded, 0) = 0
 def is_all_accounts_finished():
     """
     is_excluded=0 の全アカウントについて、両区分の終了理由（close_reason / close_reason_collectibles）が
-    DONE か EMPTY か BLOCKED だけになっているかどうかを判定する。
+    DONE か EMPTY か BLOCKED か NO_SPACE だけになっているかどうかを判定する。
     BLOCKED は eBay のポリシー違反による新規出品制限（25019 Tutorial_Block_7D_NR）で当日の出品を
     終えたアカウント。LIMIT と違って出品枠を確保しても解除されないため、終了扱いにする。
+    NO_SPACE は LIMIT 対応で終了できる出品が無く、当日はこれ以上出品できないアカウント（終了扱い）。
 
     close_reason が NULL（未処理）または LIMIT のアカウントが1件でも残っていれば
     False。auto_fix_done_accounts() による補正の後に呼び出すことで、

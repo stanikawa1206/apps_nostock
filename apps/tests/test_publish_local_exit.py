@@ -28,6 +28,7 @@ from unittest import mock
 import psutil
 
 from apps.publish import publish_manager as pm
+from apps.publish.make_listing_space import ListingSpaceResult
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -131,7 +132,7 @@ class MonitorLoopTest(unittest.TestCase):
 
         def request_listing_space(account, remaining):
             self.space_requests.append((account, remaining))
-            return remaining
+            return ListingSpaceResult(secured=remaining, candidates=remaining)
 
         with mock.patch.object(pm, "_pm_log", lambda m: None), \
              mock.patch.object(pm, "get_limit_accounts", db.get_limit_accounts), \

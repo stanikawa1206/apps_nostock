@@ -4,7 +4,7 @@ eBay 出品の Collectibles／非Collectibles の区分ごとの管理（2026-11
 
   - 当日の目標の自動計算（非Collectibles: 月 10,000件・1日 500件まで / Collectibles: 月 50,000件・1日 333件まで）
   - 出品ループ: 区分ごとに DONE・EMPTY。片方が終わってももう片方は続ける。両方終わったらアカウントを終える
-  - 進み具合（当日の出品数 ÷ 目標）が低い区分から取る（偏らない）
+  - Collectibles 優先（2026-11-18）: 候補を取る回数で Collectibles 2 : 非Collectibles 1（それまでは進み具合の低い区分から）
   - 途中から再開しても、当日の出品済みの件数（trx.listings から区分ごとに数える）を引き継ぐ
   - 月間無料出品残数は商品の区分の列から減らし、区分の目標に達したらその区分を DONE
   - LIMIT は未終了の両区分、BLOCKED は両区分。publish_manager の LIMIT 対応・DONE補正・終了判定・翌日のリセット
@@ -25,6 +25,7 @@ from apps.common.utils import get_sql_server_connection
 from apps.publish import listing_class as lc
 from apps.publish import publish_ebay as pe
 from apps.publish import publish_manager as pm
+from apps.publish.make_listing_space import ListingSpaceResult
 from apps.tests.test_account_listing_block import DbTestBase, _fake_sync_playwright
 
 NC, C = lc.NON_COLLECTIBLES, lc.COLLECTIBLES
@@ -186,14 +187,14 @@ class MainLoopTest(SplitDbBase):
                 "department": "d", "type_ebay": "t", "category_group": "g", "low_jpy_target": 1,
                 "high_jpy_target": 2, "item_condition_id": 1, "is_collectibles": cls == C}
 
-    def test_both_classes_to_done_alternating(self):
+    def test_both_classes_to_done_collectibles_first(self):
         self.add_account("谷川②", post_target=3, post_target_collectibles=3)
         self.add_pc(self.PC)
         calls = self.run_main(self.row)
         self.assertEqual(self.posted("谷川②"), (3, 3))
         self.assertEqual(self.cls_state("谷川②"), ("DONE", "DONE"))
-        # 進み具合の低い区分から取る（同じなら非Collectibles）→ 交互になる
-        self.assertEqual([c for _, c in calls["post"]], [NC, C, NC, C, NC, C])
+        # Collectibles 2 : 非Collectibles 1 で取る。Collectibles が DONE の後は非Collectibles だけ
+        self.assertEqual([c for _, c in calls["post"]], [C, C, NC, C, NC, NC])
 
     def test_uneven_targets_stay_proportional(self):
         self.add_account("谷川②", post_target=2, post_target_collectibles=4)
@@ -201,7 +202,7 @@ class MainLoopTest(SplitDbBase):
         calls = self.run_main(self.row)
         self.assertEqual(self.posted("谷川②"), (2, 4))
         order = [c for _, c in calls["post"]]
-        self.assertEqual(order, [NC, C, C, NC, C, C])  # 目標の比率（1:2）どおりに混ざる
+        self.assertEqual(order, [C, C, NC, C, C, NC])  # 目標の比率ではなく Collectibles 2 : 非Collectibles 1
 
     def test_collectibles_empty_other_continues(self):
         # BUZZ② のように Collectibles の候補が無いアカウント: Collectibles だけ EMPTY、非Collectibles は目標まで
@@ -295,6 +296,24 @@ class MainLoopTest(SplitDbBase):
         self.run_main(self.row)
         self.assertEqual(self.posted("BUZZ②"), (1, 1))
 
+    def test_non_collectibles_progresses_when_collectibles_fail(self):
+        # Collectibles 優先でも、Collectibles の候補が出品できず（売り切れ等）成功件数が伸びない日に非Collectibles を止めない
+        self.add_account("川島", post_target=3, post_target_collectibles=3)
+        self.add_pc(self.PC)
+        left = {"n": 12}
+
+        def take(a, c):
+            if c == C:
+                if left["n"] == 0:
+                    return None  # Collectibles の候補が尽きる → EMPTY
+                left["n"] -= 1
+            return self.row(a, c)
+
+        calls = self.run_main(take, post=lambda a, s, c: "NG" if c == C else "OK")
+        self.assertEqual([c for _, c in calls["post"]][:9], [C, C, NC] * 3)  # 候補3回に1回は非Collectibles
+        self.assertEqual(self.posted("川島"), (3, 0))
+        self.assertEqual(self.cls_state("川島"), ("DONE", "EMPTY"))
+
 
 # ============================================================
 # 出品成功の記録（月間無料出品残数・区分の DONE）
@@ -367,11 +386,12 @@ class LimitBlockedTest(SplitDbBase):
         self.add_class_listing("谷川②", C)
         accts = pm.get_limit_accounts()
         self.assertEqual([(a["account"], a["post_target"]) for a in accts], [("谷川②", 10)])
-        self.assertEqual(pm.calculate_remaining_count(accts[0]), 3 + 5)
+        # 2026-11-18 から: 両区分の合計（3 + 5）ではなく、優先して出品している Collectibles の不足だけ
+        self.assertEqual(pm.calculate_remaining_count(accts[0]), 5)
         self.assertFalse(pm.is_all_accounts_finished())
-        with mock.patch.object(pm, "run_make_listing_space", return_value=8) as space:
+        with mock.patch.object(pm, "run_make_listing_space", return_value=ListingSpaceResult(5, 5)) as space:
             pm.handle_limit_account(accts[0])
-        space.assert_called_once_with("谷川②", 8)
+        space.assert_called_once_with("谷川②", 5)
         self.assertEqual(self.cls_state("谷川②"), (None, None))  # 両区分とも再開（片方だけ取り残さない）
 
     def test_manager_limit_only_one_class(self):
@@ -379,7 +399,7 @@ class LimitBlockedTest(SplitDbBase):
                          close_reason_collectibles="LIMIT")
         accts = pm.get_limit_accounts()
         self.assertEqual(pm.calculate_remaining_count(accts[0]), 6)  # DONE の区分の不足は数えない
-        with mock.patch.object(pm, "run_make_listing_space", return_value=6):
+        with mock.patch.object(pm, "run_make_listing_space", return_value=ListingSpaceResult(6, 6)):
             pm.handle_limit_account(accts[0])
         self.assertEqual(self.cls_state("谷川②"), ("DONE", None))
 

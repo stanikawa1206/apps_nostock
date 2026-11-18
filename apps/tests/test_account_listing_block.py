@@ -203,6 +203,10 @@ SCHEMA_SQL = [
         brand_id INT NOT NULL DEFAULT 0, is_collectibles BIT, PRIMARY KEY (category_id, vendor_group, brand_id))""",
     # main() が起動時に読み込む（2026-11-03 にタイトル置換ルールの読み込みを復活）
     "CREATE TABLE mst.title_replace_rules (rule_id INT NOT NULL PRIMARY KEY, pattern NVARCHAR(200), replacement NVARCHAR(200))",
+    # LIMIT 対応（make_listing_space）・定期削除（delete_ebay_daily）が読む eBay の出品中一覧（2026-11-18。本番と同じ列）
+    "CREATE SCHEMA ext",
+    """CREATE TABLE ext.ebay_active_download (account NVARCHAR(100), vendor_item_id NVARCHAR(200), title_en NVARCHAR(510),
+        watchers INT, listing_id NVARCHAR(100), [Start price] DECIMAL(9, 2), start_time DATETIME, fetched_at DATETIME)""",
 ]
 
 
@@ -245,7 +249,7 @@ class DbTestBase(unittest.TestCase):
         self.assertEqual(self.cur.fetchone()[0], TEST_DB)
         self.sql("DELETE FROM mst.ebay_accounts; DELETE FROM mst.execute_pcs; DELETE FROM trx.listings; "
                  "DELETE FROM trx.vendor_item; DELETE FROM mst.presets_lookup; DELETE FROM mst.vendors; "
-                 "DELETE FROM mst.presets_categories;")
+                 "DELETE FROM mst.presets_categories; DELETE FROM ext.ebay_active_download;")
         self.conn.commit()
 
     def sql(self, q, *params):
