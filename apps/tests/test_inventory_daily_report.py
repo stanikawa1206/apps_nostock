@@ -162,6 +162,9 @@ class MainTest(unittest.TestCase):
             mock.patch.object(rep, "read_status", return_value=None),
             mock.patch.object(rep, "get_sql_server_connection"),
             mock.patch.object(rep, "fetch_publish_windows", return_value={}),
+            # 追加の実績（daily_ops）は DB を見ないで「集計不可」の表示にする（2026-11-19）
+            mock.patch.object(rep.daily_ops, "fetch_ops", side_effect=RuntimeError("テスト")),
+            mock.patch.object(rep.daily_ops, "save_job_day"),
             mock.patch.object(rep, "log"),
         ]
         for p in self.patches:

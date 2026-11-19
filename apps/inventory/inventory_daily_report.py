@@ -36,6 +36,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from apps.common.utils import get_sql_server_connection, send_mail
+from apps.inventory import daily_ops
 from apps.inventory.inventory_loop import LOG_PATH as LOOP_LOG_PATH
 from apps.inventory.inventory_loop import read_status
 
@@ -296,6 +297,14 @@ def render(report, sample: bool):
 
     tgt = pr["target"]
 
+    # 0. 全体の状態（2026-11-19 追加。重大な未解決問題を先に。集計は apps/inventory/daily_ops.py）
+    ops = report.get("ops")
+    section("0. 全体の状態")
+    if ops is None:
+        add_table(["項目", "内容"], [["在庫チェック・価格更新・出品終了の実績", f"{daily_ops.NA}（{report.get('ops_error')}）"]])
+    else:
+        add_table(["状態"], [[line] for line in daily_ops.summary_lines(ops)])
+
     # 1. 完全在庫チェックの完了回数・3. 平均所要時間
     section(
         f"1. {t:%m/%d} の完全在庫チェック",
@@ -396,10 +405,17 @@ def render(report, sample: bool):
         ])
     add_table(["工程", "出品と並行あり", "並行なし", "並行ありの速度（並行なし比）"], rows)
 
+    # 6. 以降: 在庫チェック・検索ジョブ・価格更新・出品終了の実績と異常（2026-11-19 追加）
+    if ops is not None:
+        for i, (title_, note, headers, rows_) in enumerate(daily_ops.sections(ops), start=6):
+            section(f"{i}. {title_}", note)
+            add_table(headers, rows_)
+
     title = f"在庫管理 日次実績 {t:%Y/%m/%d}（{'月火水木金土日'[t.weekday()]}）"
     if sample:
         title = "【サンプル】" + title
-    footer = "集計元: logs/inventory_loop.log・logs/inventory_loop_status.json・trx.scrape_job・trx.listings"
+    footer = ("集計元: logs/inventory_loop.log・logs/inventory_loop_status.json・trx.scrape_job・trx.listings・"
+              "trx.inventory_ops_stats・trx.inventory_ops_issue・logs/ops_alerts_state.json")
     if sample:
         footer += "\nこのメールは確認用のサンプルです（定時送信の記録には含めていません）。"
     body_html = (
@@ -485,10 +501,21 @@ def main(argv=None) -> int:
     try:
         windows = fetch_publish_windows(conn, target - timedelta(days=COMPARE_DAYS), target + timedelta(days=1))
         progress = fetch_progress(conn, status, open_phase)
+        # 追加の実績（2026-11-19）。取れなくても既存の内容は送る（その部分は「集計不可」と表示）
+        ops, ops_error = None, None
+        try:
+            if not args.sample:
+                daily_ops.save_job_day(conn, target)
+            ops = daily_ops.fetch_ops(conn, target, COMPARE_DAYS, PROJECT_ROOT, now)
+        except Exception as e:
+            conn.rollback()
+            ops_error = f"{type(e).__name__}: {e}"[:200]
+            log(f"在庫チェック等の実績を集計できませんでした: {ops_error}")
     finally:
         conn.close()
 
     report = build_report(target, phases, cycles, open_phase, log_days_of(lines), windows, status, progress, now)
+    report["ops"], report["ops_error"] = ops, ops_error
     subject, body_text, body_html = render(report, args.sample)
 
     if not send_mail(subject, body_text, html=body_html):
