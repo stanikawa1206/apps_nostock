@@ -217,13 +217,33 @@ def check_unpublished_recovery() -> None:
         conn.close()
 
 
+# この監視が動いた印。EbayWatchdog（2分ごと）が古さを見て、監視自体の停止を通知する（2026-11-19）
+HEARTBEAT_PATH = PROJECT_ROOT / "logs" / "inventory_monitor_heartbeat.json"
+
+
+def check_ops_alerts() -> None:
+    """重大障害の即時通知（apps/inventory/ops_alerts.py）。"""
+    from apps.inventory import ops_alerts
+    ops_alerts.STATE_PATH = PROJECT_ROOT / "logs" / "ops_alerts_state.json"
+    conn = get_sql_server_connection()
+    try:
+        ops_alerts.run(conn)
+    finally:
+        conn.close()
+
+
 def main() -> int:
+    HEARTBEAT_PATH.write_text(json.dumps({"at": datetime.now().isoformat(timespec="seconds")}), encoding="utf-8")
     check_inventory_loop()
     # 在庫管理の監視（上）とは別の処理のため、こちらの失敗で上の監視を止めない（次回10分後に再実行）
     try:
         check_unpublished_recovery()
     except Exception:
         _logger.exception("UNPUBLISHED再公開待ちの確認でエラー")
+    try:
+        check_ops_alerts()
+    except Exception:
+        _logger.exception("重大障害の確認でエラー")
     return 0
 
 

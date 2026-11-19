@@ -75,7 +75,42 @@ def start_task() -> None:
     )
 
 
+# ===== 在庫管理の監視（inventory_monitor、10分ごと）自体の生存確認（2026-11-19） =====
+# inventory_monitor は動くたびに logs/inventory_monitor_heartbeat.json を書く。これが古ければ監視が止まっている
+# （タスクの停止・PC のスリープ等）。同じ監視では自分の停止を検知できないため、別タスクのここで見る。
+MONITOR_HEARTBEAT = LOG_DIR / "inventory_monitor_heartbeat.json"
+MONITOR_STALE_MIN = 35
+MONITOR_ALERT_STATE = LOG_DIR / "inventory_monitor_heartbeat_alert.json"
+
+
+def check_inventory_monitor_alive():
+    import json
+    from datetime import datetime
+    if not MONITOR_HEARTBEAT.exists():
+        return
+    at = datetime.fromisoformat(json.loads(MONITOR_HEARTBEAT.read_text(encoding="utf-8"))["at"])
+    stale = (datetime.now() - at).total_seconds() / 60 >= MONITOR_STALE_MIN
+    alerted = MONITOR_ALERT_STATE.exists()
+    if stale and not alerted:
+        root = str(Path(__file__).resolve().parents[2])
+        if root not in sys.path:
+            sys.path.insert(0, root)
+        from apps.common.utils import send_mail
+        if send_mail("【要確認】在庫管理の監視（inventory_monitor）が動いていません",
+                     f"在庫管理の監視（タスク nostock_inventory_monitor、10分ごと）が {at:%m/%d %H:%M} から動いていません。\n"
+                     "この間、在庫管理の停止・重大障害の通知が送られません。タスクスケジューラを確認してください。\n"):
+            MONITOR_ALERT_STATE.write_text(json.dumps({"heartbeat": at.isoformat()}), encoding="utf-8")
+            log.warning(f"inventory_monitor の停止を通知しました（最終 {at}）")
+    elif not stale and alerted:
+        MONITOR_ALERT_STATE.unlink()
+        log.info("inventory_monitor が再開しました")
+
+
 def main():
+    try:
+        check_inventory_monitor_alive()
+    except Exception as e:
+        log.warning(f"inventory_monitor の生存確認でエラー: {type(e).__name__}: {e}")
     state = get_task_state()
     if state == "Running":
         return  # 正常稼働中。2分毎に毎回記録するとログが肥大化するため何も残さない
