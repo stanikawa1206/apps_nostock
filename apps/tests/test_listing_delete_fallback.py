@@ -11,6 +11,20 @@ import requests
 
 from apps.adapters import ebay_api as ea
 from apps.adapters import mercari_item_status as mi
+from apps.inventory import ops_stats
+
+
+def setUpModule():
+    # 集計・異常明細の記録（本番DBへの書き込み）はすべて止める
+    global _patches
+    _patches = [mock.patch.object(ops_stats, name) for name in ("count", "issue", "flush")]
+    for p in _patches:
+        p.start()
+
+
+def tearDownModule():
+    for p in _patches:
+        p.stop()
 
 ACC, LID, SKU = "谷川④", "137892055692", "2JT6buMgYDpQhiooQqHamj"
 NO_OFFER = {"success": False, "error_code": 404,
@@ -171,7 +185,7 @@ class PriceFailureDeleteTest(unittest.TestCase):
 
     def test_no_offer_uses_end_by_id(self):
         fake = mock.MagicMock()
-        fake.cursor.return_value.fetchall.return_value = [(LID,)]
+        fake.cursor.return_value.fetchall.return_value = [(LID, "メルカリshops")]
         with mock.patch.object(ea, "delete_item_from_ebay", return_value=NO_OFFER), \
              mock.patch.object(ea, "get_sql_server_connection", return_value=fake), \
              mock.patch.object(ea, "end_listing_by_id_verified", return_value={"ended": True, "how": "ended_by_id"}) as fb, \
@@ -182,7 +196,7 @@ class PriceFailureDeleteTest(unittest.TestCase):
 
     def test_offer_deleted_does_not_use_end_by_id(self):
         fake = mock.MagicMock()
-        fake.cursor.return_value.fetchall.return_value = [(LID,)]
+        fake.cursor.return_value.fetchall.return_value = [(LID, "メルカリshops")]
         with mock.patch.object(ea, "delete_item_from_ebay", return_value={"success": True, "offer_id": "1"}), \
              mock.patch.object(ea, "get_sql_server_connection", return_value=fake), \
              mock.patch.object(ea, "end_listing_by_id_verified") as fb, \

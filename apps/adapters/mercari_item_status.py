@@ -28,6 +28,7 @@ from apps.adapters.ebay_api import (
     update_ebay_price_rest,
 )
 from apps.common.utils import log_listings_change, send_mail
+from apps.inventory import ops_stats
 
 # ================================
 # 例外定義  
@@ -362,6 +363,7 @@ def detect_status_from_mercari(page, url: str) -> Tuple[str, Optional[int]]:
         # --- リトライ ---
         if attempt < max_retries - 1:
             print(f"[RETRY] item_id={item_id} attempt={attempt} → 再試行")
+            ops_stats.note_retry()
             time.sleep(1)
             page.close()
             page = page.context.new_page()
@@ -371,6 +373,7 @@ def detect_status_from_mercari(page, url: str) -> Tuple[str, Optional[int]]:
         break
 
     print(f"[RESULT] item_id={item_id} status=判定不可 (最終)")
+    ops_stats.note_cause("items/get 応答なし" if res is None else f"items/get 状態不明 http={http_status}")
     return "判定不可", None
 
 
@@ -654,8 +657,16 @@ def handle_listing_delete(
         print(f"[SIMULATE DELETE] {listing_id=}")
         return
 
-    res = delete_item_from_ebay(account, vendor_item_id)
-    
+    try:
+        res = delete_item_from_ebay(account, vendor_item_id)
+    except Exception as e:
+        # 通信エラー等は従来どおり例外のまま（DB は変えず次回に再試行）。集計と未解決の記録だけ残す
+        ops_stats.count("出品終了", vendor_name, "失敗", cause=type(e).__name__, account=account)
+        ops_stats.issue("出品終了失敗", vendor_name, vendor_item_id, f"{reason}: {type(e).__name__}: {e}",
+                        account=account, listing_id=listing_id)
+        raise
+    fail_cause = None
+
     ok = bool(res.get("success")) or res.get("note") in {
         "already_deleted",
         "already_ended",
@@ -671,6 +682,8 @@ def handle_listing_delete(
         end_res = delete_items_from_ebay_batch(account, [listing_id])
         status = get_listing_status(account, listing_id)
         ok = bool(status.get("ended"))
+        if not ok:
+            fail_cause = f"offer削除後に終了未確認 status={status.get('listing_status') or status.get('error')}"
         print(
             f"[DELETE_{'VERIFIED' if ok else 'NG'}] listing_id={listing_id} account={account} sku={vendor_item_id} "
             f"reason={reason} offer_status={res.get('offer_status')} offer_listing_id={res.get('offer_listing_id')} "
@@ -687,6 +700,8 @@ def handle_listing_delete(
         # 出品番号を指定して終了する（2026-11-19 以前は確認だけで終了せず、137892055692 が72回 残った）。
         fb = end_listing_by_id_verified(account, listing_id, vendor_item_id)
         ok = fb["ended"]
+        if not ok:
+            fail_cause = f"offerなし・出品番号での終了 {fb['how']} offer={res.get('error_code')}"
         print(
             f"[DELETE_{'VERIFIED' if ok else 'NG'}] listing_id={listing_id} account={account} sku={vendor_item_id} "
             f"reason={reason} delete_result={res!r} how={fb['how']} end_result={fb.get('end_result')!r} "
@@ -706,6 +721,12 @@ def handle_listing_delete(
             """, (datetime.now(),reason, listing_id, account))
         conn.commit()
         log_listings_change("DELETE", account, listing_id, vendor_item_id, reason)
+        ops_stats.count("出品終了", vendor_name, "成功", cause=reason, account=account)
+    else:
+        # 仕入先で終了系なのに eBay で出品中のまま。次回の終了処理で再試行される。2時間以上続けば inventory_monitor が通知する
+        ops_stats.count("出品終了", vendor_name, "失敗", cause=(fail_cause or "不明")[:100], account=account)
+        ops_stats.issue("出品終了失敗", vendor_name, vendor_item_id, f"{reason}: {fail_cause}",
+                        account=account, listing_id=listing_id)
 
 
 
@@ -855,11 +876,13 @@ def handle_listing_price_update(
     resp: Optional[Dict[str, Any]] = None
 
     retry_after = 0
+    tries = 0
     for wait in [0, 2, 6, 15]:
         # 429 の場合は Retry-After を尊重する（ワーカーを長時間止めないよう上限あり）
         wait = max(wait, retry_after)
         if wait:
             time.sleep(wait)
+        tries += 1
 
         try:
             resp = update_ebay_price_rest(
@@ -905,10 +928,16 @@ def handle_listing_price_update(
 
     if did_update:
         _clear_price_update_pending(conn, account, listing_id)
+        ops_stats.count("価格更新", vendor_name, "成功", account=account, attempts=tries, retried=int(tries > 1))
         return
 
     resp = resp or {}
     error = resp.get("error") or "exception"
+    # 集計の原因: eBay のエラー番号（あれば）と一時的な障害かどうか。個別商品のエラーと eBay 全体の障害を分けて数える
+    _code = re.search(r"\b(2\d{4}|10007|518|5\d\d)\b", str(error))
+    ops_stats.count("価格更新", vendor_name, "失敗",
+                    cause=f"{'一時的' if resp.get('transient') or not resp else '個別'}:{_code.group(1) if _code else str(error)[:40]}",
+                    account=account, attempts=tries, retried=int(tries > 1))
 
     # 値上げか値下げか: getOffer で取れたeBayの現在価格、取れなければDBの start_price と比べる。
     # どちらも無ければ値上げ扱い（赤字の恐れがある側）にする。

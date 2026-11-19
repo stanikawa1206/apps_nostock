@@ -84,6 +84,7 @@ from apps.adapters.mercari_item_status import (
     handle_listing_price_update,
 )
 from apps.adapters.mercari_scraper import build_driver
+from apps.inventory import ops_stats
 from apps.common.utils import get_sql_server_connection, compute_start_price_usd
 from apps.common.process_watchdog import kill_own_descendants, playwright_driver_monitor, start_watchdog
 from apps.adapters.rakuma_item_status import check_rakuma_item_status, RakumaItemUnavailableError, RakumaHttpError
@@ -200,6 +201,7 @@ def get_status(page, driver: Optional[webdriver.Chrome], url: str) -> tuple[Stat
             if not e.transient:
                 raise
             print(f"[RAKUMA FETCH ERROR] {url} {str(e)[:200]} → 判定不可（出品維持）", flush=True)
+            ops_stats.note_cause(f"{type(e).__name__} {getattr(e, 'status_code', '') or ''}".strip())
             return "判定不可", None
 
     # --- 0'. Yahoo!フリマの場合：商品詳細APIをHTTP GETのみ ---
@@ -212,6 +214,7 @@ def get_status(page, driver: Optional[webdriver.Chrome], url: str) -> tuple[Stat
             return "削除", None
         except (yahoo.YahooHttpError, requests.RequestException, ValueError) as e:
             print(f"[YAHOO FETCH ERROR] {url} {type(e).__name__}: {str(e)[:200]} → 判定不可（出品維持）", flush=True)
+            ops_stats.note_cause(f"{type(e).__name__} {getattr(e, 'status_code', '') or ''}".strip())
             return "判定不可", None
 
     # --- 1. メルカリ（通常）の場合：Playwrightのpageを使って高速APIキャプチャ ---
@@ -233,6 +236,7 @@ def get_status(page, driver: Optional[webdriver.Chrome], url: str) -> tuple[Stat
             print(f"[SHOPS_API_STOCK] {product_id} 在庫切れ={out_of_stock}", flush=True)
             if out_of_stock is True:
                 return "売り切れ", None
+            ops_stats.note_cause(f"ページで判定不可・API在庫切れ={out_of_stock}")
         return status, price
     
     return "判定不可", None
@@ -521,8 +525,22 @@ def process_status_and_sync(
         # =====================
         # 1. Mercari 状態取得
         # =====================
-        status, price_jpy = get_status(page, driver, url)
+        # 実績の集計（ops_stats）: 判定結果ごとに数える。判定不可の原因・retry は判定の途中で note される
+        ops_stats.take_pending()
+        try:
+            status, price_jpy = get_status(page, driver, url)
+        except Exception as e:
+            _, retries = ops_stats.take_pending()
+            ops_stats.count("在庫チェック", vendor_name, "例外", cause=type(e).__name__, account=row.get("account"),
+                            attempts=1 + retries, retried=int(retries > 0))
+            raise
         print(f"[STATUS] {url} -> {status} (price_jpy={price_jpy})")
+        cause, retries = ops_stats.take_pending()
+        if status == "判定不可":
+            cause = cause or "原因不明"
+            ops_stats.issue("判定不可", vendor_name, sku, cause, account=row.get("account"), listing_id=row.get("listing_id"))
+        ops_stats.count("在庫チェック", vendor_name, status, cause=cause if status == "判定不可" else None,
+                        account=row.get("account"), attempts=1 + retries, retried=int(retries > 0))
 
         # =====================
         # ★ 判定不可: 出品は維持し、status='判定不可' と remaining_check_at を記録してこの回は完了とする

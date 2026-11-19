@@ -264,10 +264,26 @@ class CheckRemainingCallerTest(unittest.TestCase):
     def test_get_status_routes_shops_url_to_detect(self):
         cr = self.cr
         driver = mock.MagicMock()
-        with mock.patch.object(cr, "detect_status_from_mercari_shops", return_value=("判定不可", None)) as d:
+        # ページで判定不可の時は商品詳細APIを見る（2026-11-19 4d6902d）。API が取れなければ判定不可のまま
+        with mock.patch.object(cr, "detect_status_from_mercari_shops", return_value=("判定不可", None)) as d,                 mock.patch.object(cr, "fetch_shops_product_json", return_value=None) as api:
             self.assertEqual(cr.get_status(None, driver, "https://jp.mercari.com/shops/product/x"), ("判定不可", None))
         driver.get.assert_called_once_with("https://jp.mercari.com/shops/product/x")
         d.assert_called_once()
+        api.assert_called_once_with(None, "x")
+
+    def test_get_status_shops_api_out_of_stock_is_sold(self):
+        cr = self.cr
+        js = {"name": "x", "productDetail": {"variants": [{"quantity": "0", "soldOut": True}]}}
+        with mock.patch.object(cr, "detect_status_from_mercari_shops", return_value=("判定不可", None)),                 mock.patch.object(cr, "fetch_shops_product_json", return_value=js):
+            self.assertEqual(cr.get_status(None, mock.MagicMock(), "https://jp.mercari.com/shops/product/x"),
+                             ("売り切れ", None))
+
+    def test_get_status_shops_page_on_sale_does_not_use_api(self):
+        cr = self.cr
+        with mock.patch.object(cr, "detect_status_from_mercari_shops", return_value=("販売中", 1000)),                 mock.patch.object(cr, "fetch_shops_product_json") as api:
+            self.assertEqual(cr.get_status(None, mock.MagicMock(), "https://jp.mercari.com/shops/product/x"),
+                             ("販売中", 1000))
+        api.assert_not_called()
 
 
 if __name__ == "__main__":

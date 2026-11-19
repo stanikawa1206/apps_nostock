@@ -276,6 +276,20 @@ def next_deadline(hhmm: str) -> datetime:
     return d if d > now else d + timedelta(days=1)
 
 
+OPS_KEEP_DAYS = 60
+
+
+def purge_ops_tables(conn) -> dict:
+    """在庫管理の実績集計（trx.inventory_ops_stats）と解決済みの異常明細（trx.inventory_ops_issue）の60日より古い行を消す。"""
+    cur = conn.cursor()
+    cur.execute(f"DELETE FROM trx.inventory_ops_stats WHERE bucket_at < DATEADD(DAY, -{OPS_KEEP_DAYS}, SYSDATETIME())")
+    stats = max(cur.rowcount, 0)
+    cur.execute(f"DELETE FROM trx.inventory_ops_issue WHERE resolved_at < DATEADD(DAY, -{OPS_KEEP_DAYS}, SYSDATETIME())")
+    issues = max(cur.rowcount, 0)
+    log(f"[OPS] 実績集計 {stats:,} 行・解決済みの異常明細 {issues:,} 行を削除（{OPS_KEEP_DAYS}日より前）")
+    return {"stats": stats, "issues": issues}
+
+
 def main() -> int:
     global _log_file
     ap = argparse.ArgumentParser()
@@ -314,6 +328,7 @@ def main() -> int:
     try:
         if not a.skip_scrape_job:
             sj = purge_scrape_job(conn, deadline)
+        purge_ops_tables(conn)
         if not a.skip_vendor_item:
             vi = archive_vendor_item(conn, a.archive_db, deadline, a.max_rows, a.batch)
             if vi["errors"]:

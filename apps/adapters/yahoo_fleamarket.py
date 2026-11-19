@@ -39,6 +39,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 from PIL import Image
 
+from apps.inventory import ops_stats
+
 VENDOR_NAME = "ＰａｙＰａｙフリマ"
 
 BASE = "https://paypayfleamarket.yahoo.co.jp"
@@ -352,6 +354,7 @@ def _get(url: str, params: Optional[dict] = None) -> requests.Response:
                 return resp
             reason = f"status={resp.status_code}"
         print(f"[YAHOO RETRY {attempt}/{len(RETRY_WAITS_SEC)}] {wait}秒後に再試行 url={url} {reason}"[:500], flush=True)
+        ops_stats.note_retry()
         time.sleep(wait)
     raise AssertionError("unreachable")
 
@@ -561,6 +564,7 @@ def check_yahoo_item_status(item_id: str) -> Tuple[str, Optional[int]]:
         return "売り切れ", None
     if status == "OPEN" and js.get("price") is not None:
         return "販売中", int(js["price"])
+    ops_stats.note_cause(f"状態不明:{status}")
     return "判定不可", None
 
 

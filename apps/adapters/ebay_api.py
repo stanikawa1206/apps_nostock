@@ -1555,7 +1555,7 @@ def _delete_listing_after_price_failure(
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT listing_id
+            SELECT listing_id, vendor_name
             FROM trx.listings
             WHERE vendor_item_id = ?
               AND account = ?
@@ -1563,7 +1563,9 @@ def _delete_listing_after_price_failure(
             """,
             sku, account,
         )
-        listing_ids = [str(row[0]) for row in cursor.fetchall()]
+        rows = cursor.fetchall()
+        listing_ids = [str(row[0]) for row in rows]
+        vendor_name = rows[0][1] if rows else None
     finally:
         conn.close()
 
@@ -1578,6 +1580,10 @@ def _delete_listing_after_price_failure(
         mark_listing_deleted_if_ended(account, listing_id, sku, delete_reason, error_message)
         for listing_id in listing_ids
     ]
+    from apps.inventory import ops_stats
+    for ok in deleted:
+        ops_stats.count("出品終了", vendor_name, "成功" if ok else "失敗",
+                        cause=delete_reason if ok else f"{delete_reason}:終了未確認", account=account)
     if res.get("success") and not all(deleted):
         print(
             f"[PRICE_DELETE_UNCONFIRMED] account={account} sku={sku} reason={delete_reason} "
