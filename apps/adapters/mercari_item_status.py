@@ -537,6 +537,37 @@ def judge_shops_product_html(html: str, url: Optional[str] = None) -> tuple[Stat
     )
     return "判定不可", None
 
+
+def shops_api_out_of_stock(js: Optional[dict], product_id: str) -> Optional[bool]:
+    """
+    メルカリShops の商品詳細API（/v1/marketplaces/shops/products/{id}）の応答から在庫切れかを返す。
+      True  … この商品のすべての種類(variants)が quantity=0 か soldOut=true（在庫切れと明確に分かる）
+      False … quantity>0 かつ soldOut=false の種類が1つ以上ある（在庫あり）
+      None  … 応答が無い・別の商品の応答・種類が無いなど、判断できない
+    2026-11-19 確認: 在庫ありは quantity '1'〜'3'・soldOut false、ページの購入ボタンが押せず売り切れ表示も
+    無い商品は quantity '0'（soldOut は true のことも false のこともある）。
+    """
+    if not js or js.get("name") != product_id:
+        return None
+    variants = (js.get("productDetail") or {}).get("variants") or []
+    if not variants:
+        return None
+    if all(v.get("soldOut") is True or str(v.get("quantity")) == "0" for v in variants):
+        return True
+    if any(v.get("soldOut") is False and int(v.get("quantity") or 0) > 0 for v in variants):
+        return False
+    return None
+
+
+def fetch_shops_product_json(page, product_id: str) -> Optional[dict]:
+    """Playwright でShopsの商品ページを開き、その商品自身の商品詳細APIの応答だけを拾う（他の商品のAPIは拾わない）。"""
+    return fetch_json_core(
+        page,
+        f"https://jp.mercari.com/shops/product/{product_id}",
+        lambda r: f"/v1/marketplaces/shops/products/{product_id}?" in r.url
+                  and "application/json" in r.headers.get("content-type", ""),
+    )
+
 # ================================
 # vendor_item 更新
 # ================================

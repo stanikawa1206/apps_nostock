@@ -78,6 +78,8 @@ from apps.adapters.mercari_item_status import (
     apply_default_route_filter,
     detect_status_from_mercari,
     detect_status_from_mercari_shops,
+    fetch_shops_product_json,
+    shops_api_out_of_stock,
     handle_listing_delete,
     handle_listing_price_update,
 )
@@ -220,7 +222,18 @@ def get_status(page, driver: Optional[webdriver.Chrome], url: str) -> tuple[Stat
     # --- 2. メルカリShopsの場合：従来通り Selenium を使用する ---
     driver.get(url)
     if "/shops/product/" in host_path:
-        return detect_status_from_mercari_shops(driver)
+        status, price = detect_status_from_mercari_shops(driver)
+        # ページだけでは判断できない時（購入ボタンが押せず売り切れ表示も無い等）だけ、商品詳細APIの在庫を見る。
+        # API で在庫切れ（全種類が quantity=0 か soldOut=true）と分かった時だけ売り切れにする。
+        # 在庫あり・API が取れない時は判定不可のまま（出品維持・次回再確認）。ページの判定が 販売中/売り切れ/削除 の
+        # 時は API を見ない（2026-11-15 の購入ボタン誤判定のように、ページの判定を API で覆さない）。
+        if status == "判定不可":
+            product_id = host_path.rstrip("/").rsplit("/", 1)[-1]
+            out_of_stock = shops_api_out_of_stock(fetch_shops_product_json(page, product_id), product_id)
+            print(f"[SHOPS_API_STOCK] {product_id} 在庫切れ={out_of_stock}", flush=True)
+            if out_of_stock is True:
+                return "売り切れ", None
+        return status, price
     
     return "判定不可", None
 
