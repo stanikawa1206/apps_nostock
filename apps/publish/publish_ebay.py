@@ -441,7 +441,7 @@ def _none_if_blank(s: Any) -> Optional[str]:
 UPSERT_VENDOR_ITEM_SQL = """
 MERGE INTO [trx].[vendor_item] WITH (HOLDLOCK) AS tgt
 USING (
-    VALUES (?,?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?,?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ) AS src (
     vendor_name, vendor_item_id,
     title_jp, title_en,
@@ -457,7 +457,8 @@ USING (
     image_url6, image_url7, image_url8, image_url9, image_url10,
     image_url11, image_url12, image_url13, image_url14, image_url15,
     image_url16, image_url17, image_url18, image_url19, image_url20,
-    listing_head, listing_detail
+    listing_head, listing_detail,
+    item_condition_id
 )
 ON (tgt.vendor_name = src.vendor_name AND tgt.vendor_item_id = src.vendor_item_id)
 WHEN MATCHED THEN
@@ -503,6 +504,8 @@ WHEN MATCHED THEN
         preset           = COALESCE(src.preset, tgt.preset),
         vendor_page      = COALESCE(src.vendor_page, tgt.vendor_page),
         last_checked_at  = SYSDATETIME(),
+        -- 詳細解析で取れた有効な状態だけ書く（NULL では既存の値を消さない。upsert_vendor_item 参照）
+        item_condition_id = COALESCE(src.item_condition_id, tgt.item_condition_id),
 
         [出品状況]       = COALESCE(src.listing_head, tgt.[出品状況]),
         [出品状況詳細] = CASE
@@ -528,7 +531,8 @@ WHEN NOT MATCHED THEN
         image_url11, image_url12, image_url13, image_url14, image_url15,
         image_url16, image_url17, image_url18, image_url19, image_url20,
         [出品状況], [出品状況詳細],
-        last_ng_at
+        last_ng_at,
+        item_condition_id
     )
 
     VALUES (
@@ -588,7 +592,8 @@ WHEN NOT MATCHED THEN
             WHEN src.listing_head IN (N'古い更新', N'計算価格が範囲外', N'NG(セラー評価)')
             THEN SYSDATETIME()
             ELSE NULL
-        END
+        END,
+        src.item_condition_id
     )
     
 OUTPUT
@@ -636,6 +641,13 @@ def upsert_vendor_item(conn, rec: Dict[str, Any]):
     listing_head   = _none_if_blank(rec.get("listing_head"))
     listing_detail = _none_if_blank(rec.get("listing_detail"))
 
+    # 商品状態はラクマだけ保存する（2026-11-19）。ラクマは検索一覧で状態が取れず、詳細解析
+    # (parse_detail_rakuma)の値を保存しないと vendor_item が全件 NULL のままで、候補関数⑧で
+    # 新品かどうかを判断できない。parse_detail_rakuma の値は 1〜6 か None（状態欄なし・未知の表記）で、
+    # None では既存の値を残す（SQL 側は COALESCE）。他の仕入先は従来どおり None（検索で保存した値を変えない）。
+    # 出品直前の判定は保存値ではなく、その時の詳細解析の値を使う（4.6）。
+    item_condition_id = rec.get("item_condition_id") if rec["vendor_name"] == "ラクマ" else None
+
     params = (
         rec["vendor_name"],
         rec["vendor_item_id"],
@@ -662,6 +674,7 @@ def upsert_vendor_item(conn, rec: Dict[str, Any]):
 
         listing_head,
         listing_detail,
+        item_condition_id,
     )
 
     with conn.cursor() as cur:

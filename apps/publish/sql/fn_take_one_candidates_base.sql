@@ -25,6 +25,9 @@
 --
 -- 追記 2026-11-17: mst.presets_price_ranges.category_priority を削除したので返さない
 -- （drop_category_priority_20261117.sql）。優先度は仕入先の publish_priority だけ。
+--
+-- 追記 2026-11-19: ⑧の商品状態 NULL を中古扱いにした（ラクマの候補が意図せず約6割減っていた）。
+-- 変更前の定義: E:\backup\sqlserver\rakuma_condition_null_20261119\fn_take_one_candidates_base_before.sql
 -- ============================================================================
 
 CREATE OR ALTER FUNCTION dbo.fn_take_one_candidates_base
@@ -211,14 +214,19 @@ AND NOT (
 -- High Riskカテゴリー・ブランドの判定基準および閾値は
 -- mst.category_groups.is_high_risk / mst.presets_brand.is_high_risk_brand /
 -- mst.vendors.high_risk_rating_threshold を参照する。
+-- 2026-11-19 商品状態が NULL の商品は中古として扱う（ISNULL(..., 0)）。以前は NULL で
+-- NOT(...) が UNKNOWN になり、評価が閾値未満のセラーの商品が中古でも全部除外されていた
+-- （ラクマは一覧で状態が取れず全件 NULL）。新品かどうかは出品直前の詳細確認
+-- （publish_ebay.py 4.6: 状態未取得は NG、新品×評価不足は NG(高リスク商品制限)）で必ず判定する。
+-- 高リスクブランドは NULL でも中古の分岐で除外、高リスクカテゴリーは状態に関係なく除外のまま。
 -- ============================================================
 AND NOT (
     s.seller_id IS NOT NULL
     AND (
         (
-            (v.item_condition_id = 1 AND pl.category_group NOT IN (N'ペン', N'製図用品'))
+            (ISNULL(v.item_condition_id, 0) = 1 AND pl.category_group NOT IN (N'ペン', N'製図用品'))
             OR (
-                v.item_condition_id <> 1
+                ISNULL(v.item_condition_id, 0) <> 1
                 AND ISNULL(pb.is_high_risk_brand, 0) = 1
             )
         )
