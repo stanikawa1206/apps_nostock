@@ -569,6 +569,13 @@ class InventoryMonitorTest(TempStatusMixin, unittest.TestCase):
         p = mock.patch.object(im, "check_unpublished_recovery")
         p.start()
         self.addCleanup(p.stop)
+        # 監視が動いた印（EbayWatchdog が見る本番ファイル）と重大障害の確認（本番DB・通知）も動かさない
+        p = mock.patch.object(im, "HEARTBEAT_PATH", Path(self._tmp.name) / "heartbeat.json")
+        p.start()
+        self.addCleanup(p.stop)
+        p = mock.patch.object(im, "check_ops_alerts")
+        p.start()
+        self.addCleanup(p.stop)
         for target in (im._logger, ):
             p = mock.patch.object(target, "info")
             p.start()

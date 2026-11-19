@@ -129,7 +129,8 @@ class _Tee:
                 pass
 
 try:
-    LOG_DIR = os.path.join(str(PROJECT_ROOT), "logs")
+    # テストでは apps/tests/__init__.py が一時ディレクトリを NOSTOCK_LOG_DIR に入れる（本番ログに書かない）
+    LOG_DIR = os.environ.get("NOSTOCK_LOG_DIR") or os.path.join(str(PROJECT_ROOT), "logs")
     os.makedirs(LOG_DIR, exist_ok=True)
 
     _CHECK_REMAINING_PID = os.getpid()
