@@ -405,8 +405,9 @@ class TakeOneRakumaPausedTest(unittest.TestCase):
                           pe.TAKE_RAKUMA_PAUSED)
             self.assertIsNone(pe.take_one_vendor_item(conn, "貴文③", "mouse", "貴文③", is_collectibles=True))
         sleep.assert_not_called()
-        self.assertEqual(cur.execute.call_args.args[1], ("貴文③", 1, "mouse", pe.TAKE_ONE_CANDIDATE_LIMIT, "mouse"))
-        self.assertEqual(pe.TAKE_ONE_SQL.count("?"), 5)
+        # 先頭はアカウント（2026-11-19 初回出品・再出品の判定用）
+        self.assertEqual(cur.execute.call_args.args[1], ("貴文③", "貴文③", 1, "mouse", pe.TAKE_ONE_CANDIDATE_LIMIT, "mouse"))
+        self.assertEqual(pe.TAKE_ONE_SQL.count("?"), 6)
         self.assertNotIn("{PAUSED_EXISTS}", pe.TAKE_ONE_SQL)
         self.assertIn("mst.control", pe.TAKE_ONE_SQL)
         self.assertNotIn("rakuma_outage", pe.TAKE_ONE_SQL.replace("rakuma_outage.py", ""))

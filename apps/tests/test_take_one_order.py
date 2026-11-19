@@ -5,6 +5,7 @@ publish_ebay.take_one_vendor_item（TAKE_ONE_SQL）の処理順のテスト。
 2026-11-15: 同じ優先度の中は「仕入先での出品日時（vendor_created_at）が新しい順」にする（それまでは商品ID順）。
 ラクマ・Yahoo!フリマは出品日時が NULL なので、最初に取り込んだ日時（created_at）で代える。同じ日時は商品ID順。
 2026-11-17: 優先度は仕入先の publish_priority だけ（presets_price_ranges.category_priority を削除）。
+2026-11-19: 同じ優先度の中は初回出品（そのアカウントの trx.listings に行が無い）を先に新しい順、再出品はいいね数の多い順。
 
 テスト専用DB（test_account_listing_block と同じ nostock_test_blocked。最後に削除）に、
 本物の dbo.fn_take_one_candidates_base の代わりの関数（候補表 test_cand の行を返すだけ）と、
@@ -31,7 +32,7 @@ OBJECTS = [
         vendor_name NVARCHAR(100) NOT NULL, vendor_item_id NVARCHAR(200) NOT NULL,
         price INT NULL, shipping_region NVARCHAR(100) NULL, shipping_days NVARCHAR(100) NULL,
         item_condition_id INT NULL, processing_by NVARCHAR(100) NULL, processing_at DATETIME2 NULL,
-        vendor_created_at DATETIME2 NULL, created_at DATETIME2 NULL,
+        vendor_created_at DATETIME2 NULL, created_at DATETIME2 NULL, num_likes INT NULL,
         CONSTRAINT PK_vendor_item PRIMARY KEY CLUSTERED (vendor_name, vendor_item_id))""",
     """IF OBJECT_ID('trx.test_cand') IS NULL
     CREATE TABLE trx.test_cand (preset_group NVARCHAR(100), vendor_name NVARCHAR(100), vendor_item_id NVARCHAR(200),
@@ -71,15 +72,15 @@ class TakeOneOrderTest(DbTestBase):
 
     def setUp(self):
         super().setUp()
-        self.sql("DELETE FROM trx.vendor_item; DELETE FROM trx.test_cand;")
+        self.sql("DELETE FROM trx.vendor_item; DELETE FROM trx.test_cand; DELETE FROM trx.listings;")
         self.conn.commit()
         p = mock.patch("builtins.print")
         p.start()
         self.addCleanup(p.stop)
 
-    def add(self, vendor, iid, created, first_seen=T0, prio=3, group="g", dup=False, collectibles=None):
-        self.sql("INSERT INTO trx.vendor_item (vendor_name, vendor_item_id, price, vendor_created_at, created_at) "
-                 "VALUES (?, ?, 1000, ?, ?)", vendor, iid, created, first_seen)
+    def add(self, vendor, iid, created, first_seen=T0, prio=3, group="g", dup=False, collectibles=None, likes=None):
+        self.sql("INSERT INTO trx.vendor_item (vendor_name, vendor_item_id, price, vendor_created_at, created_at, num_likes) "
+                 "VALUES (?, ?, 1000, ?, ?, ?)", vendor, iid, created, first_seen, likes)
         for _ in range(2 if dup else 1):
             self.sql("INSERT INTO trx.test_cand VALUES (?, ?, ?, ?, ?)", group, vendor, iid, prio, collectibles)
         self.conn.commit()
@@ -181,6 +182,48 @@ class TakeOneOrderTest(DbTestBase):
         self.add("メルカリ", "M_null", T0, prio=4)
         self.assertEqual(self.take_all(collectibles=True), ["R_pen", "Y_pen_new", "Y_pen_old", "M_pen"])
         self.assertEqual(self.take_all(collectibles=False), ["R_cam", "S_cam", "M_null"])
+
+    def listed(self, vendor, iid, account="acct", deleted=True):
+        # eBay に出品した履歴（出品番号が返った出品だけが trx.listings に入る）
+        self.sql("INSERT INTO trx.listings (listing_id, account, start_time, vendor_name, vendor_item_id, is_deleted) "
+                 "VALUES (N'1', ?, GETDATE(), ?, ?, ?)", account, vendor, iid, 1 if deleted else 0)
+        self.conn.commit()
+
+    def test_first_listing_before_relist(self):
+        # 2026-11-19 初回出品が先（新しい順）、再出品はいいね数の多い順（同数は新しい順・NULL は0）。比率の調整はしない
+        self.add("ラクマ", "re_old_many", None, first_seen=T0 - timedelta(days=40), prio=1, likes=30)
+        self.add("ラクマ", "re_new_few", None, first_seen=T0, prio=1, likes=1)
+        self.add("ラクマ", "re_null", None, first_seen=T0 - timedelta(days=1), prio=1, likes=None)
+        self.add("ラクマ", "re_tie_new", None, first_seen=T0 - timedelta(days=2), prio=1, likes=5)
+        self.add("ラクマ", "re_tie_old", None, first_seen=T0 - timedelta(days=9), prio=1, likes=5)
+        self.add("ラクマ", "first_old", None, first_seen=T0 - timedelta(days=50), prio=1, likes=99)
+        self.add("ラクマ", "first_new", None, first_seen=T0 - timedelta(hours=1), prio=1, likes=0)
+        for iid in ["re_old_many", "re_new_few", "re_null", "re_tie_new", "re_tie_old"]:
+            self.listed("ラクマ", iid)
+        self.assertEqual(self.take_all(), ["first_new", "first_old", "re_old_many", "re_tie_new", "re_tie_old",
+                                           "re_new_few", "re_null"])
+
+    def test_relist_key_is_account_vendor_item(self):
+        # 別アカウントの出品・別仕入先の同じ商品IDは再出品にしない。出品失敗だけ（trx.listings に行が無い）の商品も初回出品
+        self.add("メルカリshops", "other_acct", T0 - timedelta(days=3), likes=50)
+        self.add("メルカリshops", "same_id", T0 - timedelta(days=4), likes=50)
+        self.add("メルカリshops", "failed_only", T0 - timedelta(days=5), likes=50)
+        self.add("メルカリshops", "relisted", T0, likes=50)
+        self.listed("メルカリshops", "other_acct", account="other")
+        self.listed("メルカリ", "same_id")
+        self.listed("メルカリshops", "relisted", deleted=False)   # 出品中の行も履歴に数える（候補には base 関数が出さない）
+        self.assertEqual(self.take_all(), ["other_acct", "same_id", "failed_only", "relisted"])
+
+    def test_vendor_priority_before_first_listing(self):
+        # 仕入先の優先度（R → Y → MS → M）が先。ラクマの再出品は Yahoo!フリマの初回出品より先
+        self.add("ラクマ", "R_re", None, prio=1, likes=0)
+        self.add("ＰａｙＰａｙフリマ", "Y_first", None, prio=2)
+        self.add("メルカリshops", "S_re", T0, prio=3, likes=9)
+        self.add("メルカリshops", "S_first", T0 - timedelta(days=30), prio=3)
+        self.add("メルカリ", "M_first", T0, prio=4)
+        self.listed("ラクマ", "R_re")
+        self.listed("メルカリshops", "S_re")
+        self.assertEqual(self.take_all(), ["R_re", "Y_first", "S_first", "S_re", "M_first"])
 
     def test_empty(self):
         self.assertEqual(self.take_all(group="none"), [])

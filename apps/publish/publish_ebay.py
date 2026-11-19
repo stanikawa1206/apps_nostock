@@ -3147,6 +3147,9 @@ RAKUMA_PAUSED_WAIT_SEC = 60
 TAKE_ONE_SQL = r"""
 SET NOCOUNT ON;
 
+-- 出品するアカウント（trx.listings.account）。初回出品・再出品の判定に使う（2026-11-19）
+DECLARE @account NVARCHAR(100) = ?;
+
 DECLARE @cand TABLE (
     -- 処理する順番（1 = 最初）。② はこの主キーの順に読むので、並べ替えを挟まずに先頭から確保できる。
     ord              INT           NOT NULL PRIMARY KEY,
@@ -3212,26 +3215,41 @@ END
 -- 優先度は仕入先の mst.vendors.publish_priority（R → Y → MS → M）だけで、同じ優先度に別の仕入先の商品が混ざることはない。
 -- 同じ仕入先の中はカテゴリーを区別せず新しい順（2026-11-17 までは presets_price_ranges.category_priority も
 -- 加えていて、谷川② はペン・製図用品=1、カメラ系=2 のため、ペン系の候補が残る間はカメラ系が選ばれなかった。列は削除済み）。
+-- 2026-11-19 同じ優先度の中は、初回出品（このアカウントで trx.listings に行が無い商品）を先にし、初回出品は新しい順、
+-- 再出品（行がある商品。終了済みを含む。trx.listings は eBay の出品番号が返った出品だけを記録するので、出品失敗だけの商品は初回扱い）は
+-- フリマ側のいいね数（vendor_item.num_likes。NULL は0）の多い順。同じいいね数は新しい順。初回と再出品の比率の調整はしない。
+-- 判定は最小優先度の候補だけに IX_listings_vendor_item（vendor_name, vendor_item_id。account を含む）の Seek で行う。
 DECLARE @min_prio INT = (SELECT MIN(prio) FROM @all);
 
 INSERT INTO @cand
 SELECT TOP (?)
-    ROW_NUMBER() OVER (ORDER BY t.sort_at DESC, t.vendor_name, t.vendor_item_id),
+    ROW_NUMBER() OVER (ORDER BY t.is_relist, t.relist_likes DESC, t.sort_at DESC, t.vendor_name, t.vendor_item_id),
     t.vendor_name, t.vendor_item_id, t.preset, t.mode, t.default_brand_en, t.category_id_ebay,
     t.department, t.type_ebay, t.category_group, t.low_jpy_target, t.high_jpy_target,
     t.is_ok_logic, t.is_collectibles
 FROM (
-    SELECT a.*,
-           COALESCE(v.vendor_created_at, v.created_at) AS sort_at,
-           ROW_NUMBER() OVER (PARTITION BY a.vendor_name, a.vendor_item_id ORDER BY (SELECT NULL)) AS rn
-    FROM @all a
-    INNER JOIN trx.vendor_item v
-        ON  v.vendor_name    = a.vendor_name
-        AND v.vendor_item_id = a.vendor_item_id
-    WHERE a.prio = @min_prio
+    SELECT u.*,
+           CASE WHEN u.is_relist = 1 THEN u.num_likes ELSE 0 END AS relist_likes
+    FROM (
+        SELECT a.*,
+               COALESCE(v.vendor_created_at, v.created_at) AS sort_at,
+               ISNULL(v.num_likes, 0) AS num_likes,
+               CASE WHEN EXISTS (
+                   SELECT 1 FROM trx.listings l
+                   WHERE l.vendor_name    = a.vendor_name
+                     AND l.vendor_item_id = a.vendor_item_id
+                     AND l.account        = @account
+               ) THEN 1 ELSE 0 END AS is_relist,
+               ROW_NUMBER() OVER (PARTITION BY a.vendor_name, a.vendor_item_id ORDER BY (SELECT NULL)) AS rn
+        FROM @all a
+        INNER JOIN trx.vendor_item v
+            ON  v.vendor_name    = a.vendor_name
+            AND v.vendor_item_id = a.vendor_item_id
+        WHERE a.prio = @min_prio
+    ) u
+    WHERE u.rn = 1
 ) t
-WHERE t.rn = 1
-ORDER BY t.sort_at DESC, t.vendor_name, t.vendor_item_id
+ORDER BY t.is_relist, t.relist_likes DESC, t.sort_at DESC, t.vendor_name, t.vendor_item_id
 OPTION (MAXDOP 1);
 
 DECLARE @cand_count INT = @@ROWCOUNT;
@@ -3304,7 +3322,7 @@ def take_one_vendor_item(conn, preset_group, processing_by, account_name, is_col
         t_start = time.time()
         try:
             with conn.cursor() as cur:
-                cur.execute(TAKE_ONE_SQL, (preset_group, 1 if is_collectibles else 0, processing_by,
+                cur.execute(TAKE_ONE_SQL, (account_name, preset_group, 1 if is_collectibles else 0, processing_by,
                                            TAKE_ONE_CANDIDATE_LIMIT, processing_by))
                 row = cur.fetchone()
                 columns = [col[0] for col in cur.description]

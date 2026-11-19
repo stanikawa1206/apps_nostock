@@ -195,7 +195,7 @@ SCHEMA_SQL = [
         vendor_name NVARCHAR(100) NOT NULL, vendor_item_id NVARCHAR(200) NOT NULL, preset NVARCHAR(200) NULL,
         price INT NULL, shipping_region NVARCHAR(100) NULL, shipping_days NVARCHAR(100) NULL,
         item_condition_id INT NULL, processing_by NVARCHAR(100) NULL, processing_at DATETIME2 NULL,
-        vendor_created_at DATETIME2 NULL, created_at DATETIME2 NULL,
+        vendor_created_at DATETIME2 NULL, created_at DATETIME2 NULL, num_likes INT NULL,
         CONSTRAINT PK_vendor_item PRIMARY KEY CLUSTERED (vendor_name, vendor_item_id))""",
     "CREATE TABLE mst.presets_lookup (preset NVARCHAR(200) NOT NULL PRIMARY KEY, category_id INT)",
     "CREATE TABLE mst.vendors (vendor_code VARCHAR(10) NOT NULL PRIMARY KEY, vendor_name NVARCHAR(100), vendor_group NVARCHAR(50))",
