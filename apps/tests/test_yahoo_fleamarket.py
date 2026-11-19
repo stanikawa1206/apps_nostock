@@ -212,6 +212,22 @@ class DetailTest(unittest.TestCase):
                 yf.check_yahoo_item_status("x")
         self.assertEqual(cm.exception.state, "削除")
 
+    def test_check_status_hold(self):
+        """HOLD（まとめ買いで押さえられた状態）はまとめ買いの成立に関係なく売り切れ（2026-11-19）。"""
+        base = _fixture("yahoo_item_auction.json")
+        for bulk in ({"source": {"purchaseItemId": "zB", "isBulkPurchaseItemSold": True}},
+                     {"source": {"purchaseItemId": "zB", "isBulkPurchaseItemSold": False}},
+                     None):
+            js = dict(base, status="HOLD", bulk=bulk)
+            with mock.patch.object(yf, "fetch_item_json", return_value=js):
+                self.assertEqual(yf.check_yahoo_item_status("x"), ("売り切れ", None))
+
+    def test_check_status_fetch_error_is_undetermined(self):
+        """取得失敗（5xx・通信エラー）は例外のまま → check_remaining で判定不可。"""
+        with mock.patch.object(yf, "fetch_item_json", side_effect=yf.YahooHttpError("u", 500, "err")):
+            with self.assertRaises(yf.YahooHttpError):
+                yf.check_yahoo_item_status("x")
+
 
 class SearchParamsTest(unittest.TestCase):
     def test_params(self):

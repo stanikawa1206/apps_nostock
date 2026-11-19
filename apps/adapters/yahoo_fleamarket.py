@@ -549,12 +549,15 @@ def fetch_item_json(item_id: str) -> dict:
 def check_yahoo_item_status(item_id: str) -> Tuple[str, Optional[int]]:
     """
     check_remaining_ebay.py 用。戻り値は (status, price_jpy)。
-    OPEN → 販売中、SOLD → 売り切れ、404 → YahooItemUnavailableError（呼び出し側で「削除」）。
-    それ以外の状態（実物を確認できていない CLOSE・HOLD 等）は 判定不可（出品維持・次回再確認）。
+    OPEN → 販売中、SOLD・HOLD → 売り切れ、404 → YahooItemUnavailableError（呼び出し側で「削除」）。
+    HOLD はまとめ買いで押さえられた状態で、まとめ買いが成立していなくても通常の購入はできない
+    （2026-11-19 確認: 商品ページに購入ボタンが無い）。仕入れられない商品を出品し続けないよう売り切れにする。
+    HOLD から OPEN に戻った商品は、通常の在庫取得・候補選択で再出品される。
+    それ以外の状態（実物を確認できていない CLOSE 等）は 判定不可（出品維持・次回再確認）。
     """
     js = fetch_item_json(item_id)
     status = js.get("status")
-    if status == "SOLD":
+    if status in ("SOLD", "HOLD"):
         return "売り切れ", None
     if status == "OPEN" and js.get("price") is not None:
         return "販売中", int(js["price"])
