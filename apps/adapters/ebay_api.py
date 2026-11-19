@@ -1349,6 +1349,7 @@ def get_listing_status(account: str, item_id: str) -> Dict[str, Any]:
   <ItemID>{item_id}</ItemID>
   <OutputSelector>Item.ListingDetails</OutputSelector>
   <OutputSelector>Item.SellingStatus</OutputSelector>
+  <OutputSelector>Item.SKU</OutputSelector>
 </GetItemRequest>""".encode("utf-8")
 
     try:
@@ -1397,6 +1398,40 @@ def get_listing_status(account: str, item_id: str) -> Dict[str, Any]:
         "ending_reason": root.findtext(".//e:ListingDetails/e:EndingReason", default="", namespaces=ns),
         "quantity_sold": root.findtext(".//e:SellingStatus/e:QuantitySold", default="", namespaces=ns),
         "current_price": root.findtext(".//e:SellingStatus/e:CurrentPrice", default="", namespaces=ns),
+        # 出品の SKU（= vendor_item_id）。出品者本人にだけ返る。終了前に、DB の行と同じ商品の出品かを確かめる
+        "sku": root.findtext(".//e:Item/e:SKU", default="", namespaces=ns),
+    }
+
+
+def end_listing_by_id_verified(account: str, listing_id: str, sku: str) -> Dict[str, Any]:
+    """
+    出品番号を指定して eBay の出品を終了し、GetItem で終了を確認する（offer が無い出品の終了に使う）。
+    offer の削除では終了できない出品がある: eBay でキャンセル後に出品し直された出品など、
+    Inventory API の offer に紐づかない出品（2026-11-19 谷川④ 137892055692。offer 取得が 25713 のまま
+    72回 終了されず、eBay で出品中のまま残った）。
+      1. GetItem で状態を確認。既に終了済みなら終了しない（二重終了しない）
+      2. 出品中で、GetItem の SKU が sku と同じ時だけ EndItems（違う・取れない時は終了しない）
+      3. 終了後に GetItem で確認
+    戻り値: {"ended": eBay で終了を確認できたか, "how": 結果の区分, "status": 最後の GetItem, "end_result": EndItems の結果}
+    ended=False の時は DB を変えないこと（次回の終了処理で再試行される）。
+    """
+    status = get_listing_status(account, listing_id)
+    if status.get("ended"):
+        return {"ended": True, "how": "already_ended", "status": status}
+    if not status.get("ok"):
+        return {"ended": False, "how": "getitem_failed", "status": status}
+    if status.get("sku") != sku:
+        return {"ended": False, "how": f"sku_mismatch(eBay={status.get('sku')!r})", "status": status}
+    try:
+        end_result = delete_items_from_ebay_batch(account, [listing_id])
+    except requests.exceptions.RequestException as e:
+        return {"ended": False, "how": f"enditems_request_error:{e}", "status": status}
+    after = get_listing_status(account, listing_id)
+    return {
+        "ended": bool(after.get("ended")),
+        "how": "ended_by_id" if after.get("ended") else "end_unconfirmed",
+        "status": after,
+        "end_result": end_result.get("results") or end_result.get("error_code"),
     }
 
 
@@ -1532,6 +1567,13 @@ def _delete_listing_after_price_failure(
     finally:
         conn.close()
 
+    if not res.get("success"):
+        # offer が無い・削除できない出品は、出品番号を指定して終了する（end_listing_by_id_verified）。
+        # 結果は下の mark_listing_deleted_if_ended の GetItem で確かめて DB に反映する。
+        for listing_id in listing_ids:
+            fb = end_listing_by_id_verified(account, listing_id, sku)
+            print(f"[PRICE_DELETE_BY_ID] account={account} sku={sku} listing_id={listing_id} "
+                  f"reason={delete_reason} how={fb['how']} ended={fb['ended']}", flush=True)
     deleted = [
         mark_listing_deleted_if_ended(account, listing_id, sku, delete_reason, error_message)
         for listing_id in listing_ids

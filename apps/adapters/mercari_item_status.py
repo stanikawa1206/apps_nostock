@@ -22,6 +22,7 @@ from apps.adapters.ebay_api import delete_item_from_ebay
 from apps.adapters.ebay_api import (
     _delete_listing_after_price_failure,
     delete_items_from_ebay_batch,
+    end_listing_by_id_verified,
     get_listing_status,
     mark_listing_deleted_if_ended,
     update_ebay_price_rest,
@@ -682,20 +683,16 @@ def handle_listing_delete(
         # REST版の削除は offer が既に無い(=eBay側で終了済みの可能性がある)場合も失敗を返し、
         # note(already_deleted)も返さないため、DBが出品中のまま残り再試行でも直らなかった
         # （2026-10-19調査）。GetItem で終了を確認できた時だけ削除済みにする。
-        status = get_listing_status(account, listing_id)
-        if status.get("ended"):
-            print(
-                f"[DELETE_VERIFIED] listing_id={listing_id} account={account} sku={vendor_item_id} "
-                f"reason={reason} delete_result={res!r} status={status!r}",
-                flush=True,
-            )
-            ok = True
-        else:
-            print(
-                f"[DELETE_NG] listing_id={listing_id} account={account} sku={vendor_item_id} "
-                f"reason={reason} delete_result={res!r} status={status!r} → DB変更なし",
-                flush=True,
-            )
+        # offer が無いまま eBay で出品中の出品（キャンセル後に eBay で出品し直された等）は、
+        # 出品番号を指定して終了する（2026-11-19 以前は確認だけで終了せず、137892055692 が72回 残った）。
+        fb = end_listing_by_id_verified(account, listing_id, vendor_item_id)
+        ok = fb["ended"]
+        print(
+            f"[DELETE_{'VERIFIED' if ok else 'NG'}] listing_id={listing_id} account={account} sku={vendor_item_id} "
+            f"reason={reason} delete_result={res!r} how={fb['how']} end_result={fb.get('end_result')!r} "
+            f"status={fb['status']!r}{'' if ok else ' → DB変更なし'}",
+            flush=True,
+        )
 
     if ok:
         with conn.cursor() as cur:
