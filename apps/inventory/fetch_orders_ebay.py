@@ -1007,7 +1007,8 @@ def send_new_order_mail(
 # LINE通知
 # --------------------------------------------------
 def _get_line_token(account: str) -> str:
-    if account == "貴文②":
+    # 貴文③も貴文②と同じ「eBay通知：貴文さん用」へ送る（2026-11-20。メールは従来どおりメイン宛）
+    if account in ("貴文②", "貴文③"):
         return _LINE_TOKEN_TAKAFUMI
     elif account == "BUZZ②":
         return _LINE_TOKEN_BUZZ
