@@ -11,6 +11,7 @@ from datetime import time as clock_time
 from zoneinfo import ZoneInfo
 import os
 import re
+import html as html_lib
 
 if os.name == "nt":
     try:
@@ -444,69 +445,217 @@ def build_publish_manager_account_summary(conn) -> str:
     （1アカウントが同日中に複数回LIMITになった場合も1件として数える点に注意）。
     """
     try:
-        cur = conn.cursor()
-
-        # 区分（非Collectibles / Collectibles）ごとの終了理由・目標・当日の出品数（2026-11-17）
-        cur.execute(f"""
-            SELECT A.account, A.close_reason, A.post_target, A.close_detail,
-                   A.close_reason_collectibles, A.post_target_collectibles,
-                   {listing_class.today_count_sql('A.account', listing_class.NON_COLLECTIBLES)} AS posted,
-                   {listing_class.today_count_sql('A.account', listing_class.COLLECTIBLES)} AS posted_collectibles
-            FROM mst.ebay_accounts A
-            WHERE ISNULL(A.is_excluded, 0) = 0
-            ORDER BY A.account
-        """)
-        rows = cur.fetchall()
-        # BLOCKED = eBayの新規出品制限（25019 Tutorial_Block_7D_NR）で当日の出品を終えたアカウント（両区分に書かれる）
-        blocked = [(r[0], r[3]) for r in rows if "BLOCKED" in (r[1], r[4])]
-
-        cur.execute("""
-            SELECT COUNT(DISTINCT account)
-            FROM trx.listings
-            WHERE is_deleted = 1
-              AND delete_reason = N'定期削除(watch0)'
-              AND CAST(deleted_at AS DATE) = CAST(GETDATE() AS DATE)
-        """)
-        limit_handled_accounts = cur.fetchone()[0]
-
-        limit_now_count = sum(1 for r in rows if "LIMIT" in (r[1], r[4]))
-
-        lines = []
-        if blocked:
-            lines.append("【⛔ eBayの新規出品制限で当日の出品を終了したアカウント】")
-            for account, close_detail in blocked:
-                lines.append(f"- {account}: {close_detail or '(エラー内容の記録なし)'}")
-            lines.append("  → My eBay のメッセージで違反内容を確認してください。翌日の出品で自動的に再判定します。")
-            lines.append("")
-
-        # NO_SPACE = 出品金額の上限に達し、LIMIT 対応で終了できる出品（出品から20日以上・watchers=0）も無かった（2026-11-18）
-        no_space = [r[0] for r in rows if listing_class.NO_SPACE in (r[1], r[4])]
-        if no_space:
-            lines.append("【⚠ 出品枠不足（NO_SPACE）で当日の出品を終了したアカウント】")
-            lines.append("- " + "、".join(no_space))
-            lines.append("  → eBay の出品金額の上限に達し、終了できる出品（出品から20日以上・ウォッチャー0）がありませんでした。"
-                         "翌日の出品で通常どおり再開します。")
-            lines.append("")
-
-        lines.append("【アカウント別状況】")
-        for r in rows:
-            account = r[0]
-            lines.append(
-                f"- {account}: close_reason={r[1] or 'NULL'} "
-                f"/ 本日出品={r[6]}件 / post_target={r[2]}"
-                f"  ｜ Collectibles: close_reason={r[4] or 'NULL'} / 本日出品={r[7]}件 / post_target={r[5]}"
-            )
-
-        lines.append("")
-        lines.append(
-            f"本日LIMIT対応(出品枠確保)が発生したアカウント数: {limit_handled_accounts}"
-            "（同日に複数回LIMITになったアカウントも1件として数える簡易指標）"
-        )
-        lines.append(f"現在LIMIT中のアカウント数（正常終了なら0のはず）: {limit_now_count}")
-
-        return "\n".join(lines) + "\n"
+        return format_publish_manager_account_text(collect_publish_manager_account_status(conn))
     except Exception as e:
         return f"【アカウント別状況】取得失敗: {e}\n"
+
+
+def collect_publish_manager_account_status(conn) -> dict:
+    """
+    完了メール（テキスト版・HTML版）に載せるアカウント別の状況を DB から読む（例外はそのまま投げる）。
+
+    rows: [{"account", "close", "target", "posted", "close_c", "target_c", "posted_c", "close_detail"}]
+    """
+    cur = conn.cursor()
+
+    # 区分（非Collectibles / Collectibles）ごとの終了理由・目標・当日の出品数（2026-11-17）
+    cur.execute(f"""
+        SELECT A.account, A.close_reason, A.post_target, A.close_detail,
+               A.close_reason_collectibles, A.post_target_collectibles,
+               {listing_class.today_count_sql('A.account', listing_class.NON_COLLECTIBLES)} AS posted,
+               {listing_class.today_count_sql('A.account', listing_class.COLLECTIBLES)} AS posted_collectibles
+        FROM mst.ebay_accounts A
+        WHERE ISNULL(A.is_excluded, 0) = 0
+        ORDER BY A.account
+    """)
+    rows = [
+        {"account": r[0], "close": r[1], "target": r[2], "close_detail": r[3],
+         "close_c": r[4], "target_c": r[5], "posted": r[6], "posted_c": r[7]}
+        for r in cur.fetchall()
+    ]
+
+    cur.execute("""
+        SELECT COUNT(DISTINCT account)
+        FROM trx.listings
+        WHERE is_deleted = 1
+          AND delete_reason = N'定期削除(watch0)'
+          AND CAST(deleted_at AS DATE) = CAST(GETDATE() AS DATE)
+    """)
+    limit_handled_accounts = cur.fetchone()[0]
+
+    return {"rows": rows, "limit_handled_accounts": limit_handled_accounts}
+
+
+def _status_lists(st: dict):
+    rows = st["rows"]
+    # BLOCKED = eBayの新規出品制限（25019 Tutorial_Block_7D_NR）で当日の出品を終えたアカウント（両区分に書かれる）
+    blocked = [(r["account"], r["close_detail"]) for r in rows if "BLOCKED" in (r["close"], r["close_c"])]
+    # NO_SPACE = 出品金額の上限に達し、LIMIT 対応で終了できる出品（出品から20日以上・watchers=0）も無かった（2026-11-18）
+    no_space = [r["account"] for r in rows if listing_class.NO_SPACE in (r["close"], r["close_c"])]
+    limit_now_count = sum(1 for r in rows if "LIMIT" in (r["close"], r["close_c"]))
+    return blocked, no_space, limit_now_count
+
+
+def _posted_totals(rows) -> tuple[int, int]:
+    """(通常の出品合計, Collectibles の出品合計)"""
+    return sum(r["posted"] or 0 for r in rows), sum(r["posted_c"] or 0 for r in rows)
+
+
+LIMIT_HANDLED_LABEL = "本日LIMIT対応(出品枠確保)が発生したアカウント数"
+LIMIT_HANDLED_NOTE = "（同日に複数回LIMITになったアカウントも1件として数える簡易指標）"
+LIMIT_NOW_LABEL = "現在LIMIT中のアカウント数（正常終了なら0のはず）"
+NO_SPACE_NOTE = ("eBay の出品金額の上限に達し、終了できる出品（出品から20日以上・ウォッチャー0）がありませんでした。"
+                 "翌日の出品で通常どおり再開します。")
+BLOCKED_NOTE = "My eBay のメッセージで違反内容を確認してください。翌日の出品で自動的に再判定します。"
+
+
+def format_publish_manager_account_text(st: dict) -> str:
+    """完了メールのテキスト版（従来の1行形式。末尾の LIMIT 件数の前に全アカウントの出品合計を加えた）。"""
+    rows = st["rows"]
+    blocked, no_space, limit_now_count = _status_lists(st)
+
+    lines = []
+    if blocked:
+        lines.append("【⛔ eBayの新規出品制限で当日の出品を終了したアカウント】")
+        for account, close_detail in blocked:
+            lines.append(f"- {account}: {close_detail or '(エラー内容の記録なし)'}")
+        lines.append(f"  → {BLOCKED_NOTE}")
+        lines.append("")
+
+    if no_space:
+        lines.append("【⚠ 出品枠不足（NO_SPACE）で当日の出品を終了したアカウント】")
+        lines.append("- " + "、".join(no_space))
+        lines.append(f"  → {NO_SPACE_NOTE}")
+        lines.append("")
+
+    lines.append("【アカウント別状況】")
+    for r in rows:
+        lines.append(
+            f"- {r['account']}: close_reason={r['close'] or 'NULL'} "
+            f"/ 本日出品={r['posted']}件 / post_target={r['target']}"
+            f"  ｜ Collectibles: close_reason={r['close_c'] or 'NULL'} / 本日出品={r['posted_c']}件 / post_target={r['target_c']}"
+        )
+
+    total_n, total_c = _posted_totals(rows)
+    lines.append("")
+    lines.append(f"全アカウントの出品合計: {total_n + total_c}件（通常 {total_n}件 / Collectibles {total_c}件）")
+    lines.append("")
+    lines.append(f"{LIMIT_HANDLED_LABEL}: {st['limit_handled_accounts']}{LIMIT_HANDLED_NOTE}")
+    lines.append(f"{LIMIT_NOW_LABEL}: {limit_now_count}")
+
+    return "\n".join(lines) + "\n"
+
+
+# HTML 版の表（Gmail 等で崩れにくいよう、table の属性とインライン style だけで組む）
+_TD = "border:1px solid #999999;padding:4px 8px;"
+_TH = _TD + "background:#eeeeee;font-weight:bold;text-align:center;white-space:nowrap;"
+_NUM = _TD + "text-align:right;white-space:nowrap;"
+_ATTENTION_REASONS = ("LIMIT", "BLOCKED", listing_class.NO_SPACE)
+
+
+def _html_reason(reason) -> str:
+    """出品数の下に小さく出す終了理由（未終了は「未終了」、LIMIT・BLOCKED・NO_SPACE は赤）。"""
+    if not reason:
+        return '<br><span style="font-size:11px;color:#888888;">未終了</span>'
+    color = "#cc0000" if reason in _ATTENTION_REASONS else "#555555"
+    return f'<br><span style="font-size:11px;color:{color};">{html_lib.escape(str(reason))}</span>'
+
+
+def _html_num(value) -> str:
+    return "-" if value is None else html_lib.escape(str(value))
+
+
+def format_publish_manager_account_html(st: dict) -> str:
+    """完了メールの HTML 版のアカウント別状況（アカウント×6列の表と合計）。"""
+    rows = st["rows"]
+    blocked, no_space, limit_now_count = _status_lists(st)
+    esc = html_lib.escape
+    parts = []
+
+    if blocked:
+        parts.append('<p style="margin:12px 0 4px;font-weight:bold;color:#cc0000;">'
+                     '⛔ eBayの新規出品制限で当日の出品を終了したアカウント</p><ul style="margin:0;">')
+        for account, close_detail in blocked:
+            parts.append(f"<li>{esc(str(account))}: {esc(str(close_detail or '(エラー内容の記録なし)'))}</li>")
+        parts.append(f'</ul><p style="margin:4px 0;">→ {esc(BLOCKED_NOTE)}</p>')
+
+    if no_space:
+        parts.append('<p style="margin:12px 0 4px;font-weight:bold;color:#cc0000;">'
+                     '⚠ 出品枠不足（NO_SPACE）で当日の出品を終了したアカウント</p>')
+        parts.append(f'<p style="margin:0;">{esc("、".join(no_space))}</p>')
+        parts.append(f'<p style="margin:4px 0;">→ {esc(NO_SPACE_NOTE)}</p>')
+
+    parts.append('<p style="margin:12px 0 4px;font-weight:bold;">【アカウント別状況】</p>')
+    parts.append('<table border="1" cellpadding="4" cellspacing="0" '
+                 'style="border-collapse:collapse;border:1px solid #999999;font-size:13px;">')
+    parts.append("<tr>" + "".join(
+        f'<th style="{_TH}">{h}</th>'
+        for h in ("アカウント", "通常出品数", "通常目標", "Collectibles出品数", "Collectibles目標", "合計出品数")
+    ) + "</tr>")
+    for r in rows:
+        total = (r["posted"] or 0) + (r["posted_c"] or 0)
+        parts.append(
+            "<tr>"
+            f'<td style="{_TD}white-space:nowrap;">{esc(str(r["account"]))}</td>'
+            f'<td style="{_NUM}">{_html_num(r["posted"])}{_html_reason(r["close"])}</td>'
+            f'<td style="{_NUM}">{_html_num(r["target"])}</td>'
+            f'<td style="{_NUM}">{_html_num(r["posted_c"])}{_html_reason(r["close_c"])}</td>'
+            f'<td style="{_NUM}">{_html_num(r["target_c"])}</td>'
+            f'<td style="{_NUM}font-weight:bold;">{total}</td>'
+            "</tr>"
+        )
+    total_n, total_c = _posted_totals(rows)
+    target_n = sum(r["target"] or 0 for r in rows)
+    target_c = sum(r["target_c"] or 0 for r in rows)
+    sum_style = _NUM + "background:#eeeeee;"
+    parts.append(
+        "<tr>"
+        f'<td style="{_TH}">合計</td>'
+        f'<td style="{sum_style}font-weight:bold;">{total_n}</td>'
+        f'<td style="{sum_style}">{target_n}</td>'
+        f'<td style="{sum_style}font-weight:bold;">{total_c}</td>'
+        f'<td style="{sum_style}">{target_c}</td>'
+        f'<td style="{sum_style}font-weight:bold;">{total_n + total_c}</td>'
+        "</tr>"
+    )
+    parts.append("</table>")
+    parts.append(f'<p style="margin:8px 0;font-weight:bold;">全アカウントの出品合計: {total_n + total_c}件'
+                 f"（通常 {total_n}件 / Collectibles {total_c}件）</p>")
+    parts.append(f'<p style="margin:12px 0 2px;">{esc(LIMIT_HANDLED_LABEL)}: {st["limit_handled_accounts"]}'
+                 f'<span style="font-size:11px;color:#555555;">{esc(LIMIT_HANDLED_NOTE)}</span></p>')
+    parts.append(f'<p style="margin:2px 0;">{esc(LIMIT_NOW_LABEL)}: {limit_now_count}</p>')
+    return "\n".join(parts)
+
+
+def build_publish_manager_mail(conn, header: list[tuple[str, str]]) -> tuple[str, str]:
+    """
+    publish_manager 完了メールの (テキスト本文, HTML本文) を作る（2026-11-21）。
+    header は冒頭に並べる (項目名, 値)（結果・開始時刻・終了時刻・処理時間・returncode）。
+    アカウント別状況が読めなかった場合も、冒頭とエラー内容だけのメールにする（従来どおり）。
+    """
+    esc = html_lib.escape
+    text_head = "publish_manager.py 完了通知\n\n" + "".join(f"{k}: {v}\n" for k, v in header) + "\n"
+    html_head = (
+        '<p style="margin:0 0 8px;font-weight:bold;">publish_manager.py 完了通知</p>'
+        '<table cellpadding="2" cellspacing="0" style="border-collapse:collapse;font-size:13px;">'
+        + "".join(f'<tr><td style="padding:2px 12px 2px 0;">{esc(str(k))}</td>'
+                  f'<td style="padding:2px 0;">{esc(str(v))}</td></tr>'
+                  for k, v in header)
+        + "</table>"
+    )
+    try:
+        st = collect_publish_manager_account_status(conn)
+        text_body = format_publish_manager_account_text(st)
+        html_body = format_publish_manager_account_html(st)
+    except Exception as e:
+        text_body = f"【アカウント別状況】取得失敗: {e}\n"
+        html_body = f'<p style="color:#cc0000;">【アカウント別状況】取得失敗: {esc(str(e))}</p>'
+    html_doc = (
+        '<!DOCTYPE html><html><head><meta charset="utf-8"></head>'
+        '<body style="font-family:Arial,Meiryo,sans-serif;font-size:13px;color:#222222;">'
+        f"{html_head}\n{html_body}</body></html>"
+    )
+    return text_head + text_body, html_doc
 
 
 def send_script_mail(
@@ -1693,20 +1842,20 @@ def run_publish_manager(conn):
         else "❌ publish_manager完了通知（異常終了）"
     )
 
-    body = (
-        f"publish_manager.py 完了通知\n\n"
-        f"結果: {'正常終了' if is_success else '異常終了'}\n"
-        f"開始時刻: {pub_start}\n"
-        f"終了時刻: {pub_end}\n"
-        f"処理時間: {format_duration_mmss(pub_end - pub_start)}\n"
-        f"returncode: {pub_code}\n\n"
-        + build_publish_manager_account_summary(conn)
-    )
+    header = [
+        ("結果", "正常終了" if is_success else "異常終了"),
+        ("開始時刻", str(pub_start)),
+        ("終了時刻", str(pub_end)),
+        ("処理時間", format_duration_mmss(pub_end - pub_start)),
+        ("returncode", str(pub_code)),
+    ]
+    # テキスト版（従来の形式）と HTML版（アカウント別状況を表にしたもの）の両方を送る（2026-11-21）
+    body, html_body = build_publish_manager_mail(conn, header)
 
     print("=" * 40)
     print("📧 メール送信開始")
     print("=" * 40)
-    if send_mail(subject, body):
+    if send_mail(subject, body, html=html_body):
         print("📧 publish_manager完了メール送信成功")
     else:
         print("❌ publish_manager完了メール送信失敗")
