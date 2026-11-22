@@ -179,6 +179,19 @@ def count_remaining_targets(conn) -> int:
     return count_total_remaining(conn)
 
 
+def search_api_block_note() -> str:
+    """
+    進捗停止メールの末尾に足す、メルカリ検索APIの停止（401・403・429。apps/adapters/search_api_block.py）の状況。
+    停止中でなければ空文字（原因を書かない）。読めなかったときもメール自体は送る。
+    """
+    from apps.adapters import search_api_block
+    try:
+        note = search_api_block.describe_state(search_api_block.read_state())
+    except Exception as e:
+        return f"\n（メルカリ検索APIの停止状況を読めませんでした: {e}）\n"
+    return "\n" + note if note else ""
+
+
 def wait_until_zero(conn, phase: str, count_fn) -> int:
     """
     count_fn(conn) が0になるまで待つ。戻り値は待ち始めの件数。
@@ -224,7 +237,7 @@ def wait_until_zero(conn, phase: str, count_fn) -> int:
                 f"残り: {count} 件（{last_change:%m/%d %H:%M} から変化なし）\n"
                 "scrape_worker / watchdog / check_remaining の各ワーカーが動いているか確認してください。\n"
                 "在庫管理は待機を続けます（打ち切りません）。進捗が再開したら回復メールを送ります。\n"
-            )
+            ) + search_api_block_note()
             log(f"[{phase}] 進捗停止の疑い: 残り {count} 件が {last_change:%H:%M} から変化なし → メール")
             send_mail(f"【要確認】在庫管理の進捗が停止しています（{phase}）", msg)
             stall_notified = True

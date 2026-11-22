@@ -26,6 +26,7 @@ from apps.common.utils import (
     compute_start_price_usd,
 )
 from apps.adapters.mercari_search import make_search_url
+from apps.adapters import search_api_block
 from apps.common.utils import compute_cost_range_jpy_from_usd_range
 from apps.adapters import yahoo_fleamarket as yahoo
 from apps.adapters.rakuma_search import (
@@ -730,6 +731,13 @@ def fetch_page_json_api(url, job_id):
     except SearchApiBlocked as e:
         _write_flag_file(SEARCH_API_BLOCKED_FILE, f"job={job_id} {e}")
         print(f"[SEARCH_API][BLOCKED] {e} → {SEARCH_API_BLOCKED_FILE} を置き、このホストはジョブを取らない", flush=True)
+        # 全台で停止を共有し、15分後から1台が自動確認する（apps/adapters/search_api_block.py。2026-11-22）。
+        # 記録に失敗しても、待機中の on_blocked_wait が記録し直す
+        try:
+            print(f"[SEARCH_API][BLOCKED] 停止の記録: {search_api_block.register_block(search_api_block.status_from_message(str(e)))}",
+                  flush=True)
+        except Exception as db_e:
+            print(f"[SEARCH_API][BLOCKED] 停止の記録に失敗（待機中に記録し直す）: {db_e}", flush=True)
         raise RuntimeError(f"FETCH_TIMEOUT: SEARCH_API_BLOCKED {e}")
     except SearchApiError as e:
         _search_api_fail_streak += 1
@@ -743,6 +751,17 @@ def fetch_page_json_api(url, job_id):
 
     _search_api_fail_streak = 0
     return json_data
+
+
+def _probe_search_api() -> bool:
+    """停止の自動確認: 検索APIを1回だけ呼ぶ（ファイルは置かない）。200 で items のある応答なら True。"""
+    from apps.adapters.mercari_search_api import fetch_search_json
+    try:
+        fetch_search_json(search_api_block.PROBE_URL)
+        return True
+    except Exception as e:
+        print(f"[SEARCH_API][PROBE] 応答NG: {type(e).__name__}: {str(e)[:200]}", flush=True)
+        return False
 
 
 def _search_api_probe_due() -> bool:
@@ -1688,11 +1707,18 @@ def main():
         last_blocked_log = 0.0
 
         while True:
-            # api 方式でアクセス制限の可能性（401・403・429）を受けた後は、人が確認するまでジョブを取らない
+            # api 方式でアクセス制限の可能性（401・403・429）を受けた後は、停止が解除されるまでジョブを取らない。
+            # 解除は、全台で1ワーカーだけが間隔を空けて検索APIを1回試し、200 だったとき（または手動。
+            # apps/adapters/search_api_block.py。2026-11-22 は全8台が約2.5時間、人が消すまで止まっていた）
             if os.path.exists(SEARCH_API_BLOCKED_FILE):
                 if time.time() - last_blocked_log >= 600:
                     print(f"[SEARCH_API][BLOCKED] {SEARCH_API_BLOCKED_FILE} があるためジョブを取らずに待機", flush=True)
                     last_blocked_log = time.time()
+                try:
+                    if search_api_block.on_blocked_wait(SEARCH_API_BLOCKED_FILE, _probe_search_api) == "removed":
+                        continue
+                except Exception as e:
+                    print(f"[SEARCH_API][BLOCKED] 自動復旧の確認に失敗（1分後に再試行）: {type(e).__name__}: {e}", flush=True)
                 time.sleep(60)
                 continue
 
