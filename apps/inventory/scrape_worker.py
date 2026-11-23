@@ -106,6 +106,22 @@ def write_status(job_id, page):
         f.write(f"updated_at={datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
 
+def remove_status_file():
+    """statusファイルを消す。mouse では watchdog が読んでいる瞬間に消すと WinError 32 になるため、少し待って再試行する。
+    消せなくてもジョブの結果（done 等）は確定済みなので例外にしない（2026-11-23 job 6371410 が done→error に上書きされた）。"""
+    for i in range(5):
+        try:
+            os.remove(STATUS_FILE)
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError as e:
+            if i == 4:
+                print(f"[STATUS FILE] 削除できず: {e}", flush=True)
+                return
+            time.sleep(0.2)
+
+
 def begin_browser_wait(job_id):
     with open(BROWSER_WAIT_FILE, "w", encoding="utf-8") as f:
         f.write(f"pid={WORKER_PID}\n")
@@ -657,8 +673,7 @@ def handle_rakuma_http_error(conn, job_id, payload: dict, e: RakumaHttpError):
             pass
 
     # DB更新に失敗した場合は statusファイルを残し、watchdog の再投入に任せる（release_job と同じ考え方）
-    if os.path.exists(STATUS_FILE):
-        os.remove(STATUS_FILE)
+    remove_status_file()
 
 def fetch_page_json_bk(page, url, conn, job_id):
     print("************* evaluate版2 *************", flush=True)
@@ -1784,8 +1799,7 @@ def main():
                     now = now_jst()
                     cur2.execute(SQL_MARK_DONE, now, fetched_pages, fetched_items, job_id)
                     conn.commit()
-                    if os.path.exists(STATUS_FILE):
-                        os.remove(STATUS_FILE)
+                    remove_status_file()
                     print(f"[JOB DONE] id={job_id}", flush=True)
 
                 except RakumaHttpError as e:
@@ -1815,8 +1829,7 @@ def main():
                         # watchdog の監視対象からも外れて取り残される（2026-10-06〜10-16 に5件発生）。
                         release_job(conn, job_id)
 
-                        if os.path.exists(STATUS_FILE):
-                            os.remove(STATUS_FILE)
+                        remove_status_file()
                         continue
 
                     raise
@@ -1829,8 +1842,7 @@ def main():
                         now = now_jst()
                         cur2.execute(SQL_MARK_ERROR, now, err[-4000:], job_id)
                         conn.commit()
-                        if os.path.exists(STATUS_FILE):
-                            os.remove(STATUS_FILE)
+                        remove_status_file()
                     except Exception:
                         conn.rollback()
                         traceback.print_exc()

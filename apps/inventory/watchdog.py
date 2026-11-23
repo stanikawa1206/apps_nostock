@@ -375,6 +375,21 @@ def _remove(path):
         pass
 
 
+def remove_if_broken(path):
+    """中身を読めないファイル（停電・強制終了で NUL だけになった等）を、古く、書き手のワーカーがいなければ消す。
+    放置すると parse に失敗して永久に監視対象に残る（2026-11-23 mouse で 10/26・11/20 の6個が残っていた）。"""
+    try:
+        if time.time() - os.path.getmtime(path) < TIMEOUT_SEC:
+            return
+        pid = int(os.path.splitext(os.path.basename(path))[0].rsplit("_", 1)[1])
+    except (OSError, ValueError, IndexError):
+        return
+    if get_live_worker_process(pid) is not None:
+        return
+    _remove(path)
+    rlog(f"[CLEAN][BROKEN] {path} 読めないファイル・書き手 pid={pid} 終了済み")
+
+
 # =========================
 # 停止workerの検知と回収
 # =========================
@@ -397,6 +412,7 @@ def process_file(path):
     try:
         info = parse_status_file(path)
         if info is None:
+            remove_if_broken(path)
             return
 
         # まだ生きてると判断（更新されてる）
@@ -515,6 +531,7 @@ def check_browser_waits():
     for path in glob.glob(os.path.join(BASE_DIR, "worker_browserwait_*.txt")):
         info = parse_browser_wait_file(path)
         if info is None:
+            remove_if_broken(path)
             continue
         pid, started = info["pid"], info["started"]
         proc = get_live_worker_process(pid)
@@ -633,8 +650,35 @@ def check_orphan_jobs():
 # =========================
 # メインループ
 # =========================
+def disable_console_quick_edit():
+    """mouse の PowerShell 窓でクイック編集が有効だと、窓をクリックしただけで print が止まり watchdog 全体が止まる
+    （2026-11-22 に発生）。起動のたびにこのコンソールのクイック編集を外す。コンソールがなければ何もしない。"""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateFileW.restype = wintypes.HANDLE
+        h = k32.CreateFileW("CONIN$", 0xC0000000, 3, None, 3, 0, None)  # GENERIC_READ|WRITE, 共有READ|WRITE, OPEN_EXISTING
+        if h in (None, wintypes.HANDLE(-1).value):
+            return
+        try:
+            mode = wintypes.DWORD()
+            if not k32.GetConsoleMode(h, ctypes.byref(mode)):
+                return
+            new_mode = (mode.value & ~0x0040) | 0x0080  # ENABLE_QUICK_EDIT_MODE を外し ENABLE_EXTENDED_FLAGS を立てる
+            if k32.SetConsoleMode(h, new_mode):
+                print(f"[CONSOLE] クイック編集を無効化 mode=0x{mode.value:X}→0x{new_mode:X}", flush=True)
+        finally:
+            k32.CloseHandle(h)
+    except Exception as e:
+        print(f"[CONSOLE] クイック編集の無効化に失敗: {e}", flush=True)
+
+
 def main():
     print("[WATCHDOG START]")
+    disable_console_quick_edit()
 
     # watchdog だけを再起動した場合、動いているワーカーはそのまま引き継ぐ（足りない分だけ起動する）
     for _ in range(TARGET_WORKERS - count_process()):

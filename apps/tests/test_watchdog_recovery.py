@@ -368,5 +368,79 @@ def tearDownModule():
         wd._recovery_logger.removeHandler(h)
 
 
+class TestStatusFileRemoveAndBrokenFiles(unittest.TestCase):
+    """2026-11-23: statusファイル削除の WinError 32・NUL だけのファイルの放置・クイック編集"""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+
+    def _file(self, name, data=b"\0" * 67, age=0):
+        path = os.path.join(self.dir.name, name)
+        with open(path, "wb") as f:
+            f.write(data)
+        if age:
+            t = time.time() - age
+            os.utime(path, (t, t))
+        return path
+
+    def test_remove_status_file_retries_on_winerror32(self):
+        path = self._file("worker_status_1.txt", b"pid=1\n")
+        real_remove = os.remove
+        calls = []
+
+        def flaky(p):
+            calls.append(p)
+            if len(calls) < 3:
+                raise PermissionError(32, "used by another process")
+            real_remove(p)
+
+        with mock.patch.object(sw, "STATUS_FILE", path), mock.patch.object(sw.os, "remove", side_effect=flaky), \
+                mock.patch.object(sw.time, "sleep"):
+            sw.remove_status_file()
+        self.assertEqual(len(calls), 3)
+        self.assertFalse(os.path.exists(path))
+
+    def test_remove_status_file_never_raises(self):
+        path = self._file("worker_status_1.txt", b"pid=1\n")
+        with mock.patch.object(sw, "STATUS_FILE", path), \
+                mock.patch.object(sw.os, "remove", side_effect=PermissionError(32, "busy")), \
+                mock.patch.object(sw.time, "sleep"):
+            sw.remove_status_file()  # 例外にしない（ジョブの done を error に上書きしない）
+        missing = os.path.join(self.dir.name, "worker_status_2.txt")
+        with mock.patch.object(sw, "STATUS_FILE", missing):
+            sw.remove_status_file()
+
+    def test_old_broken_file_of_dead_worker_removed(self):
+        st = self._file("worker_status_14316.txt", age=wd.TIMEOUT_SEC + 60)
+        bw = self._file("worker_browserwait_14316.txt", age=wd.TIMEOUT_SEC + 60)
+        with mock.patch.object(wd, "get_live_worker_process", return_value=None), \
+                mock.patch.object(wd, "rlog"):
+            wd.process_file(st)
+            with mock.patch.object(wd, "BASE_DIR", self.dir.name):
+                wd.check_browser_waits()
+        self.assertFalse(os.path.exists(st))
+        self.assertFalse(os.path.exists(bw))
+
+    def test_broken_file_kept_if_new_or_writer_alive(self):
+        fresh = self._file("worker_status_100.txt")
+        old = self._file("worker_status_200.txt", age=wd.TIMEOUT_SEC + 60)
+        with mock.patch.object(wd, "get_live_worker_process", return_value=object()), \
+                mock.patch.object(wd, "rlog"):
+            wd.process_file(fresh)
+            wd.process_file(old)
+        self.assertTrue(os.path.exists(fresh))
+        self.assertTrue(os.path.exists(old))
+
+    def test_valid_status_file_not_treated_as_broken(self):
+        path = self._file("worker_status_300.txt", b"pid=300\njob_id=1\npage=1\n")
+        with mock.patch.object(wd, "remove_if_broken") as rb:
+            wd.process_file(path)
+        rb.assert_not_called()
+
+    def test_disable_quick_edit_without_console_does_not_raise(self):
+        wd.disable_console_quick_edit()
+
+
 if __name__ == "__main__":
     unittest.main()
