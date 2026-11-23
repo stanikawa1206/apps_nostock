@@ -742,6 +742,24 @@ RETRY_AFTER_MAX_SEC = 60
 # 値下げの失敗は赤字にならないため初回は通知せず、最初の失敗からこの時間を過ぎても失敗した時に1回だけ通知する
 # （2026-10-24 eBay障害の約7分間に、値下げ失敗15件で警告メールが15通送られていた）。
 PRICE_DOWN_NOTIFY_AFTER_SEC = 6 * 3600
+# 値上げの失敗のうち eBay 側のシステム障害と明確に判断できるものは、単発なら次の在庫管理の再試行で直るため初回は通知せず、
+# 最初の失敗からこの時間を過ぎても失敗した時（次のサイクルの再試行でも失敗した時）に1回だけ通知する
+# （2026-11-23 BUZZ② getOffers HTTP 500/25001 は4台・24秒だけの障害で、値上げの要確認メールが1通送られていた）。
+PRICE_UP_OUTAGE_CATEGORY = "値上げ・eBay障害"
+PRICE_UP_OUTAGE_NOTIFY_AFTER_SEC = 3 * 3600
+# getOffers の HTTP 5xx・通信エラー、PUT/publish の 25001、本文の無い失敗。25002 は本文が "System error" の時だけ。
+_EBAY_SYSTEM_ERROR_RE = re.compile(
+    r"^(getoffers_http_5\d\d:|getoffers_request_error:|(inventory_put|publish)_error_25001:|(inventory_put|publish)_failed$)"
+)
+_EBAY_SYSTEM_ERROR_25002_RE = re.compile(r"^(inventory_put|publish)_error_25002:")
+
+
+def _is_ebay_system_error(error) -> bool:
+    """update_ebay_price_rest のエラーが eBay 側のシステム障害と明確に判断できるか（商品ごとの原因でないもの）。"""
+    s = str(error or "")
+    if _EBAY_SYSTEM_ERROR_RE.match(s):
+        return True
+    return bool(_EBAY_SYSTEM_ERROR_25002_RE.match(s)) and "system error" in s.lower()
 
 
 def _pending_notify_tag(error_message) -> Optional[str]:
@@ -772,6 +790,7 @@ def _record_price_update_pending(
     価格更新できなかった出品中の行に失敗内容を記録する（is_deleted は変えず管理対象に残す）。
     error_at は最初に失敗した時刻のまま保持する。
     通知: 値上げ等は初回から、値下げは最初の失敗から PRICE_DOWN_NOTIFY_AFTER_SEC 経過後の失敗時に通知する。
+    値上げの eBay 障害(PRICE_UP_OUTAGE_CATEGORY)は最初の失敗から PRICE_UP_OUTAGE_NOTIFY_AFTER_SEC 経過後の失敗時に通知する。
     同じ分類(category)で通知済みなら再通知しない。
     """
     with conn.cursor() as cur:
@@ -795,6 +814,14 @@ def _record_price_update_pending(
             prev_tag is not None
             and not notified
             and (datetime.now() - first_at).total_seconds() >= PRICE_DOWN_NOTIFY_AFTER_SEC
+        )
+    elif category == PRICE_UP_OUTAGE_CATEGORY:
+        # 値上げの失敗として通知済み（旧形式・「値上げ・一時的な障害」等を含む）なら、同じ失敗の続きなので送らない
+        notify = (
+            prev_tag is not None
+            and not prev_tag.startswith("通知済:値上げ")
+            and prev_tag != "通知済:旧形式"
+            and (datetime.now() - first_at).total_seconds() >= PRICE_UP_OUTAGE_NOTIFY_AFTER_SEC
         )
     else:
         notify = prev_tag != f"通知済:{category}"
@@ -1011,6 +1038,10 @@ def handle_listing_price_update(
     elif not is_up:
         category = "値下げ"
         mail_info += "出品終了: 未実施（出品維持・再試行待ち）\n"
+    elif resp.get("transient") and _is_ebay_system_error(error):
+        category = PRICE_UP_OUTAGE_CATEGORY
+        mail_info += ("出品終了: 未実施（eBay側のシステム障害のため出品維持・再試行待ち。"
+                      f"最初の失敗から{PRICE_UP_OUTAGE_NOTIFY_AFTER_SEC // 3600}時間以上 失敗が続いたため通知）\n")
     elif resp.get("transient"):
         category = "値上げ・一時的な障害"
         mail_info += "出品終了: 未実施（一時的な障害のため出品維持・再試行待ち）\n"
