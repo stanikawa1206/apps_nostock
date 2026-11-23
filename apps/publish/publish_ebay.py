@@ -3001,9 +3001,12 @@ def fetch_next_account_and_lock(conn, current_pc):
             A.account, A.preset_group, A.post_target, A.post_target_collectibles
         FROM mst.ebay_accounts A
         LEFT JOIN (
+            -- この PC 自身の行は数えない（このUPDATEで上書きする行。異常終了〔os._exit〕で前回のアカウントが
+            -- 残っていると、自分を1台として数えて MAX_PARALLEL_PC に達し「割当なし」で終了していた。2026-11-21 39.209）
             SELECT account, COUNT(*) as active_workers
             FROM mst.execute_pcs
             WHERE account IS NOT NULL
+              AND execute_pc <> ?
             GROUP BY account
         ) W ON A.account = W.account
         WHERE A.is_excluded = 0
@@ -3021,7 +3024,7 @@ def fetch_next_account_and_lock(conn, current_pc):
     WHERE P.execute_pc = ? AND P.is_active = 1;
     """
     with conn.cursor() as cur:
-        cur.execute(sql, (MAX_PARALLEL_PC, current_pc))
+        cur.execute(sql, (current_pc, MAX_PARALLEL_PC, current_pc))
         row = cur.fetchone()
         conn.commit()
         # OUTER APPLY化により、候補が無い場合も1行返るが account 等は NULL になる
