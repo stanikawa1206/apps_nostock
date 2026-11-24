@@ -637,6 +637,94 @@ def get_active_listing_for_action(
     finally:
         cur.close()
 
+# 価格更新・出品終了の、その場での再試行の待ち秒（4回・約23秒）。
+# 出品終了は 2026-11-24 から同じ間隔で再試行する。以前は再試行がなく、トークン更新が1回タイムアウトしただけで
+# 次のサイクルの残り在庫チェック（約3.6時間後）まで在庫のない出品が残っていた（BUZZ② 800909223838）。
+EBAY_RETRY_WAITS = (0, 2, 6, 15)
+
+
+def _is_transient_getitem_error(status: Dict[str, Any]) -> bool:
+    """GetItem の失敗が一時的なもの（通信エラー・HTTP 5xx・eBay の 10007 System error）か。518（利用上限）は含めない。"""
+    err = str(status.get("error") or "")
+    return err.startswith("http_error:") or bool(re.match(r"http_status:5\d\d$", err)) or " 10007 " in f" {err} "
+
+
+def _is_enditems_system_error(end_result) -> bool:
+    """EndItems の結果が eBay のシステム障害（10007、または XML の応答が無い）か。"""
+    if isinstance(end_result, list):
+        return any(r.get("error_code") == 10007 for r in end_result)
+    return end_result in (10007, "parse_error")
+
+
+def _end_listing_once(account: str, listing_id: str, vendor_item_id: str, reason: str) -> Tuple[bool, Optional[str], bool]:
+    """
+    eBay の出品終了を1回試す。戻り値は (終了を確認できたか, 失敗の原因, 一時的な失敗か)。
+    通信エラー（requests.exceptions.RequestException）は例外のまま返す（呼び出し元が再試行する）。
+    どの経路も、終了を確認できた時だけ ok=True。再試行すると offer の有無・GetItem から状態を確かめ直すため、
+    前回の終了要求が eBay 側で通っていても二重に終了しない。
+    """
+    res = delete_item_from_ebay(account, vendor_item_id)
+
+    ok = bool(res.get("success")) or res.get("note") in {
+        "already_deleted",
+        "already_ended",
+    }
+
+    if res.get("success") and not (
+        res.get("offer_status") == "PUBLISHED" and str(res.get("offer_listing_id") or "") == listing_id
+    ):
+        # offer削除で出品が終了するのは、その出品に公開済み(PUBLISHED)の offer だけ。
+        # publishOffer が一時エラーを返しても出品が作成されたケースは offer が UNPUBLISHED のままで、
+        # offer削除だけでは eBay の出品が残り、DBだけ削除済みになっていた（2026-10-22 BUZZ② 800719496487）。
+        # listing_id 指定で終了し、GetItem で終了を確認できた時だけ削除済みにする（確認できなければ管理対象に残す）。
+        try:
+            end_res = delete_items_from_ebay_batch(account, [listing_id])
+            end_result = end_res.get("results") or end_res.get("error_code")
+        except requests.exceptions.RequestException as e:
+            # 終了要求を送った後のタイムアウトでも、下の GetItem で終了したかを確かめる
+            end_result = f"request_error:{type(e).__name__}: {e}"
+        status = get_listing_status(account, listing_id)
+        ok = bool(status.get("ended"))
+        print(
+            f"[DELETE_{'VERIFIED' if ok else 'NG'}] listing_id={listing_id} account={account} sku={vendor_item_id} "
+            f"reason={reason} offer_status={res.get('offer_status')} offer_listing_id={res.get('offer_listing_id')} "
+            f"end_result={end_result!r} status={status!r}"
+            f"{'' if ok else ' → DB変更なし'}",
+            flush=True,
+        )
+        if ok:
+            return True, None, False
+        transient = (_is_transient_getitem_error(status) or _is_enditems_system_error(end_result)
+                     or str(end_result).startswith("request_error:"))
+        return False, f"offer削除後に終了未確認 status={status.get('listing_status') or status.get('error')}", transient
+
+    if ok:
+        return True, None, False
+
+    # REST版の削除は offer が既に無い(=eBay側で終了済みの可能性がある)場合も失敗を返し、
+    # note(already_deleted)も返さないため、DBが出品中のまま残り再試行でも直らなかった
+    # （2026-10-19調査）。GetItem で終了を確認できた時だけ削除済みにする。
+    # offer が無いまま eBay で出品中の出品（キャンセル後に eBay で出品し直された等）は、
+    # 出品番号を指定して終了する（2026-11-19 以前は確認だけで終了せず、137892055692 が72回 残った）。
+    fb = end_listing_by_id_verified(account, listing_id, vendor_item_id)
+    ok = fb["ended"]
+    print(
+        f"[DELETE_{'VERIFIED' if ok else 'NG'}] listing_id={listing_id} account={account} sku={vendor_item_id} "
+        f"reason={reason} delete_result={res!r} how={fb['how']} end_result={fb.get('end_result')!r} "
+        f"status={fb['status']!r}{'' if ok else ' → DB変更なし'}",
+        flush=True,
+    )
+    if ok:
+        return True, None, False
+    how = fb["how"]
+    transient = (
+        (how in ("getitem_failed", "end_unconfirmed") and _is_transient_getitem_error(fb["status"]))
+        or (how == "end_unconfirmed" and _is_enditems_system_error(fb.get("end_result")))
+        or how.startswith("enditems_request_error")
+    )
+    return False, f"offerなし・出品番号での終了 {how} offer={res.get('error_code')}", transient
+
+
 def handle_listing_delete(
     conn,
     vendor_item_id: str,
@@ -657,57 +745,41 @@ def handle_listing_delete(
         print(f"[SIMULATE DELETE] {listing_id=}")
         return
 
-    try:
-        res = delete_item_from_ebay(account, vendor_item_id)
-    except Exception as e:
-        # 通信エラー等は従来どおり例外のまま（DB は変えず次回に再試行）。集計と未解決の記録だけ残す
-        ops_stats.count("出品終了", vendor_name, "失敗", cause=type(e).__name__, account=account)
-        ops_stats.issue("出品終了失敗", vendor_name, vendor_item_id, f"{reason}: {type(e).__name__}: {e}",
-                        account=account, listing_id=listing_id)
-        raise
-    fail_cause = None
+    # トークン更新のタイムアウト・通信エラー・eBay の一時的なシステムエラーは、その場で EBAY_RETRY_WAITS の間隔で再試行する
+    # （2026-11-24）。SKU 不一致・GetItem の利用上限など一時的でない失敗は再試行しない（従来どおり）。
+    ok, fail_cause, exc = False, None, None
+    tries = 0
+    for wait in EBAY_RETRY_WAITS:
+        if wait:
+            time.sleep(wait)
+        tries += 1
+        try:
+            ok, fail_cause, transient = _end_listing_once(account, listing_id, vendor_item_id, reason)
+            exc = None
+        except requests.exceptions.RequestException as e:
+            ok, fail_cause, transient, exc = False, f"{type(e).__name__}: {e}", True, e
+        except Exception as e:
+            # 想定外の例外は従来どおり再試行せず例外のまま（DB は変えず次回に再試行）。集計と未解決の記録だけ残す
+            ops_stats.count("出品終了", vendor_name, "失敗", cause=type(e).__name__, account=account,
+                            attempts=tries, retried=int(tries > 1))
+            ops_stats.issue("出品終了失敗", vendor_name, vendor_item_id, f"{reason}: {type(e).__name__}: {e}",
+                            account=account, listing_id=listing_id)
+            raise
+        if ok or not transient:
+            break
+        print(f"[DELETE_RETRY] listing_id={listing_id} account={account} sku={vendor_item_id} "
+              f"try={tries}/{len(EBAY_RETRY_WAITS)} cause={fail_cause}", flush=True)
 
-    ok = bool(res.get("success")) or res.get("note") in {
-        "already_deleted",
-        "already_ended",
-    }
-
-    if res.get("success") and not (
-        res.get("offer_status") == "PUBLISHED" and str(res.get("offer_listing_id") or "") == listing_id
-    ):
-        # offer削除で出品が終了するのは、その出品に公開済み(PUBLISHED)の offer だけ。
-        # publishOffer が一時エラーを返しても出品が作成されたケースは offer が UNPUBLISHED のままで、
-        # offer削除だけでは eBay の出品が残り、DBだけ削除済みになっていた（2026-10-22 BUZZ② 800719496487）。
-        # listing_id 指定で終了し、GetItem で終了を確認できた時だけ削除済みにする（確認できなければ管理対象に残す）。
-        end_res = delete_items_from_ebay_batch(account, [listing_id])
-        status = get_listing_status(account, listing_id)
+    if exc is not None:
+        # 最後の試行も通信エラー。終了要求を送った後のタイムアウトなら eBay 側で終了していることがあるため確かめる
+        try:
+            status = get_listing_status(account, listing_id)
+        except requests.exceptions.RequestException as e:
+            status = {"ok": False, "ended": False, "error": f"http_error:{e}"}
         ok = bool(status.get("ended"))
-        if not ok:
-            fail_cause = f"offer削除後に終了未確認 status={status.get('listing_status') or status.get('error')}"
-        print(
-            f"[DELETE_{'VERIFIED' if ok else 'NG'}] listing_id={listing_id} account={account} sku={vendor_item_id} "
-            f"reason={reason} offer_status={res.get('offer_status')} offer_listing_id={res.get('offer_listing_id')} "
-            f"end_result={end_res.get('results') or end_res.get('error_code')!r} status={status!r}"
-            f"{'' if ok else ' → DB変更なし'}",
-            flush=True,
-        )
-
-    elif not ok:
-        # REST版の削除は offer が既に無い(=eBay側で終了済みの可能性がある)場合も失敗を返し、
-        # note(already_deleted)も返さないため、DBが出品中のまま残り再試行でも直らなかった
-        # （2026-10-19調査）。GetItem で終了を確認できた時だけ削除済みにする。
-        # offer が無いまま eBay で出品中の出品（キャンセル後に eBay で出品し直された等）は、
-        # 出品番号を指定して終了する（2026-11-19 以前は確認だけで終了せず、137892055692 が72回 残った）。
-        fb = end_listing_by_id_verified(account, listing_id, vendor_item_id)
-        ok = fb["ended"]
-        if not ok:
-            fail_cause = f"offerなし・出品番号での終了 {fb['how']} offer={res.get('error_code')}"
-        print(
-            f"[DELETE_{'VERIFIED' if ok else 'NG'}] listing_id={listing_id} account={account} sku={vendor_item_id} "
-            f"reason={reason} delete_result={res!r} how={fb['how']} end_result={fb.get('end_result')!r} "
-            f"status={fb['status']!r}{'' if ok else ' → DB変更なし'}",
-            flush=True,
-        )
+        print(f"[DELETE_{'VERIFIED' if ok else 'NG'}] listing_id={listing_id} account={account} sku={vendor_item_id} "
+              f"reason={reason} {tries}回すべて通信エラー後の確認 status={status!r}"
+              f"{'' if ok else ' → DB変更なし'}", flush=True)
 
     if ok:
         with conn.cursor() as cur:
@@ -721,13 +793,21 @@ def handle_listing_delete(
             """, (datetime.now(),reason, listing_id, account))
         conn.commit()
         log_listings_change("DELETE", account, listing_id, vendor_item_id, reason)
-        ops_stats.count("出品終了", vendor_name, "成功", cause=reason, account=account)
-    else:
-        # 仕入先で終了系なのに eBay で出品中のまま。次回の終了処理で再試行される。2時間以上続けば inventory_monitor が通知する
-        ops_stats.count("出品終了", vendor_name, "失敗", cause=(fail_cause or "不明")[:100], account=account)
+        ops_stats.count("出品終了", vendor_name, "成功", cause=reason, account=account,
+                        attempts=tries, retried=int(tries > 1))
+    elif exc is not None:
+        # 通信エラーで再試行もすべて失敗。従来どおり例外のまま（DB は変えず次回に再試行）。集計と未解決の記録を残す
+        ops_stats.count("出品終了", vendor_name, "失敗", cause=type(exc).__name__, account=account,
+                        attempts=tries, retried=int(tries > 1))
         ops_stats.issue("出品終了失敗", vendor_name, vendor_item_id, f"{reason}: {fail_cause}",
                         account=account, listing_id=listing_id)
-
+        raise exc
+    else:
+        # 仕入先で終了系なのに eBay で出品中のまま。次回の終了処理で再試行される。2時間以上続けば inventory_monitor が通知する
+        ops_stats.count("出品終了", vendor_name, "失敗", cause=(fail_cause or "不明")[:100], account=account,
+                        attempts=tries, retried=int(tries > 1))
+        ops_stats.issue("出品終了失敗", vendor_name, vendor_item_id, f"{reason}: {fail_cause}",
+                        account=account, listing_id=listing_id)
 
 
 
@@ -904,7 +984,7 @@ def handle_listing_price_update(
 
     retry_after = 0
     tries = 0
-    for wait in [0, 2, 6, 15]:
+    for wait in EBAY_RETRY_WAITS:
         # 429 の場合は Retry-After を尊重する（ワーカーを長時間止めないよう上限あり）
         wait = max(wait, retry_after)
         if wait:

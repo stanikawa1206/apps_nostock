@@ -101,9 +101,16 @@ class EndListingByIdTest(unittest.TestCase):
         ei.assert_not_called()
 
     def test_enditems_request_error(self):
-        r, gi, ei = self.run_case([ACTIVE], end_exc=requests.exceptions.ConnectionError("down"))
+        r, gi, ei = self.run_case([ACTIVE, ACTIVE], end_exc=requests.exceptions.ConnectionError("down"))
         self.assertFalse(r["ended"])
         self.assertTrue(r["how"].startswith("enditems_request_error"))
+        self.assertEqual(gi.call_count, 2)   # 終了要求の後のエラーでも GetItem で確かめる（2026-11-24）
+
+    def test_enditems_request_error_but_ended(self):
+        """終了要求を送った後にタイムアウトしたが、eBay では終了していた → 終了扱い（2026-11-24）"""
+        r, gi, ei = self.run_case([ACTIVE, ENDED], end_exc=requests.exceptions.ReadTimeout("t"))
+        self.assertTrue(r["ended"])
+        self.assertEqual(r["how"], "ended_after_request_error")
 
     def test_enditems_failed_and_still_active(self):
         r, gi, ei = self.run_case([ACTIVE, ACTIVE], end=END_NG)
@@ -156,8 +163,11 @@ class HandleListingDeleteTest(unittest.TestCase):
         self.assertEqual(conn.updates, [])
 
     def test_check_failed_keeps_db(self):
-        conn, ei_fb, _ = self.run_delete(NO_OFFER, [ACTIVE, FAILED])
+        """終了後の確認が通信エラー → その場で再試行（2026-11-24）。4回とも確認できなければ DB 変更なし"""
+        with mock.patch.object(mi.time, "sleep"):
+            conn, ei_fb, _ = self.run_delete(NO_OFFER, [ACTIVE, FAILED] * 4)
         self.assertEqual(conn.updates, [])
+        self.assertEqual(ei_fb.call_count, 4)
 
     def test_unknown_correspondence_keeps_db(self):
         conn, ei_fb, _ = self.run_delete(NO_OFFER, [dict(ACTIVE, sku="OTHER")])
@@ -165,10 +175,10 @@ class HandleListingDeleteTest(unittest.TestCase):
         self.assertEqual(conn.updates, [])
 
     def test_temporary_api_error_is_retried_next_time(self):
-        """offer 取得の通信エラーは従来どおり例外（DB 変更なし）→ 次回の終了処理で再試行"""
+        """offer 取得の通信エラーが4回続けば従来どおり例外（DB 変更なし）→ 次回の終了処理で再試行（2026-11-24 からその場で4回）"""
         conn = FakeConn()
-        with self.assertRaises(requests.exceptions.ConnectionError):
-            self.run_delete(None, [], conn=conn, offer_exc=requests.exceptions.ConnectionError("down"))
+        with mock.patch.object(mi.time, "sleep"), self.assertRaises(requests.exceptions.ConnectionError):
+            self.run_delete(None, [ACTIVE], conn=conn, offer_exc=requests.exceptions.ConnectionError("down"))
         self.assertEqual(conn.updates, [])
 
     def test_db_update_failure_recovers_next_time(self):

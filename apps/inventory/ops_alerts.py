@@ -7,7 +7,8 @@ A. 仕入先で終了系（売り切れ・削除・公開停止・オークシ�
      「出品終了失敗」の明細と、ここで DB を見て作る「仕入不可出品中」の明細（経路に関係なく拾う）の両方を見る。
    - 最初の発生から ISSUE_ALERT_AFTER_MIN 以上 未解決なら1件でも通知。SKU 不一致など構造的な失敗はすぐ通知。
    - 同じ明細は ISSUE_RENOTIFY_HOURS ごとにだけ再通知。何件あっても1通。通知後も各経路の終了処理は続く。
-   - eBay で終了（trx.listings.is_deleted=1）すれば解決にする。
+   - eBay で終了（trx.listings.is_deleted=1）すれば解決にする。「仕入不可出品中」は仕入先で販売中と確認できた時も解決にする
+     （status が空欄に戻っただけでは解決にしない）。
 B. 仕入先の広範囲な障害（M・MS・R・Y ごと）
    - 直近30分の在庫チェック（inventory_ops_stats）と検索ジョブ（trx.scrape_job、1ジョブ1件で数え retry は重ねない）で、
      失敗率 VENDOR_FAIL_RATE 以上かつ失敗 VENDOR_FAIL_MIN 件以上。
@@ -50,6 +51,7 @@ OUTAGE_RENOTIFY_HOURS = 6
 
 VENDORS = ("メルカリ", "メルカリshops", "ラクマ", "ＰａｙＰａｙフリマ")
 ENDED_VENDOR_STATUSES = ("売り切れ", "削除", "公開停止", "オークション")
+AVAILABLE_VENDOR_STATUS = "販売中"
 
 
 def _load_state() -> dict:
@@ -81,11 +83,12 @@ UPDATE i SET resolved_at = SYSDATETIME()
                      WHERE l.vendor_name = i.vendor_name AND l.vendor_item_id = i.vendor_item_id AND l.is_deleted = 0)
         OR (i.issue_kind = N'出品終了失敗' AND i.last_at < DATEADD(HOUR, -{ISSUE_STALE_HOURS}, SYSDATETIME()))
         OR (i.issue_kind = N'判定不可' AND i.last_at < DATEADD(HOUR, -{JUDGE_STALE_HOURS}, SYSDATETIME()))
-        -- 仕入先の状態が終了系でなくなった
-        OR (i.issue_kind = N'仕入不可出品中' AND NOT EXISTS (
+        -- 仕入先で購入できる（販売中）と確認できた。次のサイクルの開始で status が空欄に戻っただけでは解決にしない
+        -- （2026-11-24 BUZZ② 800909223838 は空欄に戻った 18:20 に解決扱いになり、eBay では 21:08 まで出品中だった）
+        OR (i.issue_kind = N'仕入不可出品中' AND EXISTS (
                SELECT 1 FROM trx.vendor_item v
                 WHERE v.vendor_name = i.vendor_name AND v.vendor_item_id = i.vendor_item_id
-                  AND v.status IN ({", ".join("N'" + s + "'" for s in ENDED_VENDOR_STATUSES)})))
+                  AND v.status = N'{AVAILABLE_VENDOR_STATUS}'))
    )
 """
 

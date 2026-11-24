@@ -1411,7 +1411,7 @@ def end_listing_by_id_verified(account: str, listing_id: str, sku: str) -> Dict[
     72回 終了されず、eBay で出品中のまま残った）。
       1. GetItem で状態を確認。既に終了済みなら終了しない（二重終了しない）
       2. 出品中で、GetItem の SKU が sku と同じ時だけ EndItems（違う・取れない時は終了しない）
-      3. 終了後に GetItem で確認
+      3. 終了後に GetItem で確認（EndItems が通信エラーになった時も確認する）
     戻り値: {"ended": eBay で終了を確認できたか, "how": 結果の区分, "status": 最後の GetItem, "end_result": EndItems の結果}
     ended=False の時は DB を変えないこと（次回の終了処理で再試行される）。
     """
@@ -1425,7 +1425,13 @@ def end_listing_by_id_verified(account: str, listing_id: str, sku: str) -> Dict[
     try:
         end_result = delete_items_from_ebay_batch(account, [listing_id])
     except requests.exceptions.RequestException as e:
-        return {"ended": False, "how": f"enditems_request_error:{e}", "status": status}
+        # 終了要求を送った後のタイムアウトでは、eBay 側で終了していることがあるため状態を確かめる（2026-11-24）
+        after = get_listing_status(account, listing_id)
+        return {
+            "ended": bool(after.get("ended")),
+            "how": "ended_after_request_error" if after.get("ended") else f"enditems_request_error:{e}",
+            "status": after,
+        }
     after = get_listing_status(account, listing_id)
     return {
         "ended": bool(after.get("ended")),
