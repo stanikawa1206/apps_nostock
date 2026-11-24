@@ -175,5 +175,61 @@ class HandleCategoryTest(unittest.TestCase):
         self.assertEqual(self.run_handle(resp)[0], "値下げ")
 
 
+class DuplicateEndedNoMailTest(unittest.TestCase):
+    """重複出品(25002 identical item)で終了・GetItem確認・DB反映まで成功したら通知しない（2026-11-24）。"""
+    DUP = {"success": False, "duplicate_listing": True, "old_price": "129.99",
+           "error": "inventory_put_error_25002:A user error has occurred. identical items from the same seller"}
+
+    def run_handle(self, resp, deleted, usd=139.99):
+        conn = mock.MagicMock()
+        out = io.StringIO()
+        with mock.patch.object(mis, "get_active_listing_for_action", return_value=("L1", "貴文")), \
+                mock.patch.object(mis, "update_ebay_price_rest", return_value=dict(resp)) as upd, \
+                mock.patch.object(mis, "_record_price_update_pending") as rec, \
+                mock.patch.object(mis, "_delete_listing_after_price_failure", return_value=deleted) as delete, \
+                mock.patch.object(mis.ops_stats, "count") as stats, \
+                mock.patch.object(mis, "send_mail") as mail, \
+                mock.patch.object(mis.time, "sleep"), \
+                contextlib.redirect_stdout(out):
+            raised = False
+            try:
+                mis.handle_listing_price_update(conn, "SKU1", "メルカリ", usd)
+            except RuntimeError:
+                raised = True
+        return dict(upd=upd, rec=rec, delete=delete, stats=stats, mail=mail, raised=raised, log=out.getvalue())
+
+    def test_duplicate_ended_ok_no_mail_but_log_and_stats(self):
+        for usd in (139.99, 119.99):   # 値上げ・値下げとも
+            r = self.run_handle(self.DUP, True, usd)
+            r["mail"].assert_not_called()
+            r["rec"].assert_not_called()
+            self.assertFalse(r["raised"])
+            r["delete"].assert_called_once_with("貴文", "SKU1", self.DUP["error"], "価格更新失敗")
+            self.assertEqual(r["upd"].call_count, 1)       # 個別エラーのため再試行しない（従来どおり）
+            self.assertIn("[PRICE_DUPLICATE_ENDED]", r["log"])
+            self.assertEqual(r["stats"].call_args.args[:3], ("価格更新", "メルカリ", "失敗"))
+
+    def test_duplicate_end_not_confirmed_still_notifies(self):
+        r = self.run_handle(self.DUP, False)
+        self.assertTrue(r["raised"])
+        r["mail"].assert_not_called()   # 通知は _record_price_update_pending（出品終了未確認）が送る
+        self.assertEqual(r["rec"].call_args.kwargs["category"], "出品終了未確認")
+        self.assertIn("重複出品", r["rec"].call_args.kwargs["mail_info"])
+
+    def test_other_end_reasons_still_mail(self):
+        limit = {"success": False, "selling_limit": True, "old_price": "129.99",
+                 "error": "inventory_put_error_25002:You've reached the amount you can list"}
+        space = {"resp": dict(limit), "ended": [], "attempts": 0, "waited_sec": 0, "note": "候補なし"}
+        with mock.patch("apps.publish.make_listing_space.free_listing_space_for_price_up", return_value=space):
+            r = self.run_handle(limit, True)
+        r["mail"].assert_called_once()
+        self.assertIn("販売上限", r["mail"].call_args.args[0])
+        ip = {"success": False, "db_deleted": True, "end_reason": "IP違反", "old_price": "129.99",
+              "error": "inventory_put_error_25097:x"}
+        r = self.run_handle(ip, True)
+        r["mail"].assert_called_once()
+        self.assertIn("IP違反", r["mail"].call_args.args[0])
+
+
 if __name__ == "__main__":
     unittest.main()

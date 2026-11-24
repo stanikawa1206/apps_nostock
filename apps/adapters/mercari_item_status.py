@@ -1017,8 +1017,13 @@ def handle_listing_price_update(
 
     if resp.get("db_deleted"):
         # 終了済みofferのため価格更新(再出品)を行わず、GetItem で終了を確認してDBも削除済みにした。
-        # こちらから終了した場合(販売上限・重複出品・IP違反)は結果を通知する。
-        if end_reason:
+        # こちらから終了した場合(販売上限・IP違反)は結果を通知する。
+        # 重複出品(25002 identical item)は想定済みの処理で人の対応が要らないため、終了・確認・DB反映まで成功したら
+        # 通知せずログだけ残す（2026-11-24。終了できなかった場合は下の「出品終了未確認」で従来どおり通知する）。
+        if end_reason == "重複出品":
+            print(f"[PRICE_DUPLICATE_ENDED] account={account} sku={vendor_item_id} listing_id={listing_id} "
+                  f"error={error} → 出品終了・GetItem終了確認・DB削除済み（通知なし）", flush=True)
+        elif end_reason:
             send_mail(
                 f"【通知】eBay価格更新失敗のため出品終了({end_reason}) {account} {vendor_item_id}",
                 "eBayの価格更新に失敗したため出品を終了し、GetItem で終了を確認してDBも削除済みにしました。\n\n"
