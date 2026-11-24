@@ -318,10 +318,11 @@ def pull_remaining_targets(conn, worker_name: str, batch_size: int = 5):
                 l.listing_id,
                 v.preset,
                 p.mode,
-                -- 既存出品の終了判定の範囲（収集範囲 low/high_usd_target ではない。
-                -- 収集範囲を狭めても、従来の範囲の中にある既存出品は終了させない）
-                p.keep_low_usd_target AS low_usd_target,
-                p.keep_high_usd_target AS high_usd_target,
+                -- 既存出品の「価格範囲外」判定の範囲は、出品しているアカウント自身の価格行の
+                -- low/high_usd_target（新規出品の範囲と同じ。delete_flag は見ない。2026-11-24）。
+                -- 価格行が無い出品（出品後に商品のカテゴリーが変わった等）だけ収集範囲で判定する。
+                COALESCE(r.low_usd_target, p.low_usd_target) AS low_usd_target,
+                COALESCE(r.high_usd_target, p.high_usd_target) AS high_usd_target,
                 p.preset AS lookup_preset
             FROM trx.vendor_item AS v WITH (UPDLOCK, ROWLOCK, READPAST)
             INNER JOIN trx.listings AS l
@@ -329,6 +330,14 @@ def pull_remaining_targets(conn, worker_name: str, batch_size: int = 5):
                AND l.vendor_item_id = v.vendor_item_id
             LEFT JOIN mst.presets_lookup AS p
                 ON p.preset = v.preset
+            LEFT JOIN mst.ebay_accounts AS a
+                ON a.account = l.account
+            LEFT JOIN mst.vendors AS vd
+                ON vd.vendor_name = v.vendor_name
+            LEFT JOIN mst.presets_price_ranges AS r
+                ON r.preset_group = a.preset_group
+               AND r.category_group = p.category_group
+               AND r.vendor_code = vd.vendor_code
             WHERE
                 l.is_deleted = 0
                 AND v.vendor_name IN (N'メルカリ', N'メルカリshops', N'ラクマ', N'ＰａｙＰａｙフリマ')

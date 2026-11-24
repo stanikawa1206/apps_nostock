@@ -14,11 +14,10 @@ from unittest import mock
 from apps.inventory import daily_check as dc
 
 
-def pr(pg, cg, vc, low, high, delete_flag=0, keep_low=None, keep_high=None):
+def pr(pg, cg, vc, low, high, delete_flag=0):
+    # 2026-11-24 keep_* 列は廃止（既存出品の終了判定はアカウント自身の low/high。listing_price_range）
     return NS(preset_group=pg, category_group=cg, vendor_code=vc,
-              low_usd_target=D(low), high_usd_target=D(high), delete_flag=delete_flag,
-              keep_low_usd_target=None if keep_low is None else D(keep_low),
-              keep_high_usd_target=None if keep_high is None else D(keep_high))
+              low_usd_target=D(low), high_usd_target=D(high), delete_flag=delete_flag)
 
 
 def ls(account, vc, preset, cnt=1):
@@ -52,64 +51,59 @@ class PlanCollectionRangesTest(unittest.TestCase):
         return dc.plan_collection_ranges(ranges, ACCOUNTS, listings, PAIRS)
 
     def test_min_max_over_rows_even_with_gap(self):
-        ranges, _, _ = self.plan([])
+        ranges, _ = self.plan([])
         # $200〜300 の空白があっても MIN〜MAX の1つの範囲
         self.assertEqual(ranges[("財布", "M")], (D(100), D(1000)))
 
     def test_delete_flag_row_counted_only_while_its_account_has_listings(self):
-        ranges, _, _ = self.plan([])
+        ranges, _ = self.plan([])
         self.assertEqual(ranges[("財布", "R")], (D(300), D(1000)))
-        ranges, _, _ = self.plan([ls("BUZZ②", "R", "グッチ財布R")])
+        ranges, _ = self.plan([ls("BUZZ②", "R", "グッチ財布R")])
         self.assertEqual(ranges[("財布", "R")], (D(100), D(1000)))
         # 他アカウントの出品では BUZZ② の行は集約に入らない
-        ranges, _, _ = self.plan([ls("貴文", "R", "グッチ財布R")])
+        ranges, _ = self.plan([ls("貴文", "R", "グッチ財布R")])
         self.assertEqual(ranges[("財布", "R")], (D(300), D(1000)))
 
     def test_unknown_preset_listing_of_that_account_counts_the_row(self):
-        ranges, _, _ = self.plan([ls("BUZZ②", "R", None)])
+        ranges, _ = self.plan([ls("BUZZ②", "R", None)])
         self.assertEqual(ranges[("財布", "R")], (D(100), D(1000)))
 
     def test_pair_with_new_listing_rows_is_not_pruned(self):
-        _, prune, _ = self.plan([])
+        _, prune = self.plan([])
         self.assertNotIn(("財布", "R"), prune)  # BUZZ② は delete_flag=1 でも他アカウントが新規出品
         self.assertNotIn(("財布", "M"), prune)
         self.assertNotIn(("腕時計", "R"), prune)
 
-    def test_keep_range_over_all_rows_null_is_row_range(self):
-        ranges = RANGES + [pr("谷川③", "財布", "MS", 300, 600, keep_low=100, keep_high=1500),
-                           pr("貴文", "財布", "MS", 600, 1000)]
-        _, _, keeps = self.plan([], ranges=ranges)
-        self.assertEqual(keeps[("財布", "MS")], (D(100), D(1500)))
-        # keep_* が NULL の行は low/high。delete_flag=1 の行も入る（出品の有無に関係なく）
-        self.assertEqual(keeps[("財布", "R")], (D(100), D(1000)))
-        self.assertEqual(keeps[("腕時計", "M")], (D(100), D(300)))
+    def test_returns_ranges_and_prune_only(self):
+        # 2026-11-24 keep（組で共有する終了判定の範囲）は返さない
+        self.assertEqual(len(self.plan([])), 2)
 
     def test_stopped_pair_keeps_only_listed_presets(self):
-        ranges, prune, _ = self.plan([ls("谷川④", "M", "セイコー腕時計M", 3), ls("谷川④", "R", "セイコー腕時計R")])
+        ranges, prune = self.plan([ls("谷川④", "M", "セイコー腕時計M", 3), ls("谷川④", "R", "セイコー腕時計R")])
         self.assertEqual(ranges[("腕時計", "M")], (D(100), D(300)))
         self.assertEqual(prune[("腕時計", "M")]["keep"], {"セイコー腕時計M"})
         self.assertIsNone(prune[("腕時計", "M")]["skip"])
 
     def test_stopped_pair_keeps_presets_listed_by_other_accounts(self):
         # 谷川④ の出品が0件でも、別アカウントの出品がある preset は残す（行は集約に入らないが組は残す）
-        ranges, prune, _ = self.plan([ls("貴文", "M", "シチズン腕時計M")])
+        ranges, prune = self.plan([ls("貴文", "M", "シチズン腕時計M")])
         self.assertEqual(ranges[("腕時計", "M")], (D(100), D(300)))
         self.assertEqual(prune[("腕時計", "M")]["keep"], {"シチズン腕時計M"})
         self.assertEqual(prune[("腕時計", "M")]["rows"], [("谷川④", 1, False)])
 
     def test_stopped_pair_without_listings_has_no_lookup(self):
-        ranges, prune, _ = self.plan([ls("谷川④", "R", "セイコー腕時計R")])
+        ranges, prune = self.plan([ls("谷川④", "R", "セイコー腕時計R")])
         self.assertNotIn(("腕時計", "M"), ranges)
         self.assertEqual(prune[("腕時計", "M")]["keep"], set())
 
     def test_unknown_preset_of_vendor_keeps_all(self):
         # どのアカウントの出品でも、preset の分からない M の出品があれば腕時計 M は全件残す
-        ranges, prune, _ = self.plan([ls("貴文", "M", None, 2)])
+        ranges, prune = self.plan([ls("貴文", "M", None, 2)])
         self.assertIn(("腕時計", "M"), ranges)
         self.assertIsNone(prune[("腕時計", "M")]["keep"])
         self.assertIn("preset が分からない未終了の出品 2 件", prune[("腕時計", "M")]["skip"])
         # preset が lookup の生成対象に無い（どの組か分からない）出品も同じ
-        _, prune, _ = self.plan([ls("貴文", "M", "消えたpresetM")])
+        _, prune = self.plan([ls("貴文", "M", "消えたpresetM")])
         self.assertIsNone(prune[("腕時計", "M")]["keep"])
 
 
@@ -144,8 +138,8 @@ def src_for(price_ranges, listings):
 
 class BuildPresetsLookupTest(unittest.TestCase):
 
-    RANGES = [pr("谷川④", "腕時計", "M", 100, 300, delete_flag=1, keep_low=100, keep_high=300),
-              pr("谷川④", "腕時計", "R", 150, 250, keep_low=100, keep_high=300)]
+    RANGES = [pr("谷川④", "腕時計", "M", 100, 300, delete_flag=1),
+              pr("谷川④", "腕時計", "R", 150, 250)]
 
     def build(self, listings, ranges=None):
         rows, prune = dc.build_presets_lookup(src_for(ranges or self.RANGES, listings))
@@ -157,14 +151,10 @@ class BuildPresetsLookupTest(unittest.TestCase):
         self.assertEqual((r["low_usd_target"], r["high_usd_target"]), (D(150), D(250)))
         self.assertEqual((r["low_jpy_target"], r["high_jpy_target"]),
                          dc.compute_cost_range_jpy_from_usd_range("DDP", 150.0, 250.0))
-        # 終了判定は presets_price_ranges の keep_*（100〜300）∪ 収集範囲
-        self.assertEqual((r["keep_low_usd_target"], r["keep_high_usd_target"]), (D(100), D(300)))
         self.assertEqual(r["mode"], "DDP")
-
-    def test_keep_range_widens_with_collection_range(self):
-        lk, _ = self.build([], ranges=[pr("谷川④", "腕時計", "R", 50, 400, keep_low=100, keep_high=300)])
-        r = lk["腕時計R"]
-        self.assertEqual((r["keep_low_usd_target"], r["keep_high_usd_target"]), (D(50), D(400)))
+        # lookup に keep_* は書かない（2026-11-24 廃止）
+        self.assertNotIn("keep_low_usd_target", r)
+        self.assertNotIn("keep_high_usd_target", dc.LOOKUP_INSERT_COLUMNS)
 
     def test_prune_counts_and_kept_rows(self):
         lk, prune = self.build([ls("谷川④", "M", "腕時計M", 2)])
@@ -177,7 +167,7 @@ class BuildPresetsLookupTest(unittest.TestCase):
         )
 
     def test_no_price_range_row_no_lookup(self):
-        lk, prune = self.build([], ranges=[pr("谷川④", "腕時計", "R", 100, 300)])  # keep_* NULL
+        lk, prune = self.build([], ranges=[pr("谷川④", "腕時計", "R", 100, 300)])
         self.assertEqual(sorted(lk), ["腕時計R"])
         self.assertEqual(prune, [])
 
@@ -220,9 +210,9 @@ class RefreshOrderTest(unittest.TestCase):
 
         result = [{"category_group": "腕時計", "vendor_code": "M", "deleted": 1, "kept": 2, "skip": None, "rows": []}]
         with mock.patch.object(dc, "load_lookup_sources", side_effect=lambda cur: order.append("load") or {}), \
-             mock.patch.object(dc, "build_presets_lookup", return_value=([("x",) * 17], result)):
+             mock.patch.object(dc, "build_presets_lookup", return_value=([("x",) * 15], result)):
             got = dc.refresh_presets_lookup(Conn())
-        self.assertEqual(order, ["load", "truncate", ("insert", 17, 1), "commit"])
+        self.assertEqual(order, ["load", "truncate", ("insert", 15, 1), "commit"])
         self.assertIs(got, result)
 
 

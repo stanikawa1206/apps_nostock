@@ -26,6 +26,7 @@ from apps.common.utils import (
     compute_start_price_usd,
 )
 from apps.adapters.mercari_search import make_search_url
+from apps.inventory.listing_price_range import listing_price_range
 from apps.adapters import search_api_block
 from apps.common.utils import compute_cost_range_jpy_from_usd_range
 from apps.adapters import yahoo_fleamarket as yahoo
@@ -436,7 +437,12 @@ def handle_price_change_side_effects(
 
     # ─────────────────────────────
     # ③ USDレンジ計算
+    # 範囲は出品しているアカウント自身の価格行（新規出品の範囲と同じ。2026-11-24）。
+    # 引数の low/high_usd_target（収集範囲）は、その価格行が無い出品だけに使う。
     # ─────────────────────────────
+    low_usd_target, high_usd_target, range_basis = listing_price_range(
+        conn, vendor_name, sku, low_usd_target, high_usd_target,
+    )
     usd = compute_start_price_usd(
         new_price_jpy,
         mode,
@@ -449,7 +455,8 @@ def handle_price_change_side_effects(
     # ─────────────────────────────
     if usd is None:
         print(
-            f"[PRICE OUT] {sku}: {old_price} -> {new_price_jpy} JPY",
+            f"[PRICE OUT] {sku}: {old_price} -> {new_price_jpy} JPY "
+            f"(range=${low_usd_target}-{high_usd_target} {range_basis})",
             flush=True,
         )
         handle_listing_delete(conn, sku, vendor_name,"価格範囲外",)

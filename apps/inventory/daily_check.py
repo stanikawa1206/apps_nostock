@@ -1062,11 +1062,10 @@ def load_lookup_sources(cur):
             FROM mst.brand_category_group_vendors
         """),
         # 収集価格帯の元。アカウント(preset_group)×カテゴリーグループ×仕入先。
-        # keep_* は既存出品の終了判定に使う範囲（NULL はその行の low/high と同じ）。
+        # 既存出品の終了判定もアカウント自身の low/high で行う（listing_price_range。2026-11-24 keep_* 廃止）。
         "price_ranges": q("""
             SELECT preset_group, category_group, vendor_code,
-                   low_usd_target, high_usd_target, delete_flag,
-                   keep_low_usd_target, keep_high_usd_target
+                   low_usd_target, high_usd_target, delete_flag
             FROM mst.presets_price_ranges
         """),
         "accounts": q("""
@@ -1247,8 +1246,7 @@ def plan_collection_ranges(price_ranges, accounts, listings, preset_pairs):
     """
     mst.presets_price_ranges から、カテゴリーグループ×仕入先ごとの収集価格帯と漸減の対象を決める。
 
-    price_ranges: preset_group, category_group, vendor_code, low/high_usd_target, delete_flag,
-                  keep_low/high_usd_target の行
+    price_ranges: preset_group, category_group, vendor_code, low/high_usd_target, delete_flag の行
     accounts: account, preset_group の行
     listings: 未終了出品の account, vendor_code, preset, cnt の行（preset は NULL がありうる）
     preset_pairs: {preset: (category_group, vendor_code)}（generate_preset_rows で作った全preset）
@@ -1264,14 +1262,12 @@ def plan_collection_ranges(price_ranges, accounts, listings, preset_pairs):
         未終了出品（全アカウント）がある preset の lookup は残し、無いものは作らない。
       - その仕入先に preset の分からない未終了出品があれば、その組の lookup は全件残す。
       - 集約に入る行が無くても、組に未終了出品が残っていれば delete_flag=1 の行の価格帯で残す。
-    終了判定の範囲（keep）:
-      - 組の全行（delete_flag に関係なく）の keep_low/high_usd_target（NULL はその行の low/high）の
-        MIN〜MAX。lookup の keep_* はこれと収集範囲を合わせた範囲になる。
-    戻り値: (ranges, prune, keeps)
+    既存出品の終了判定（価格範囲外）は収集範囲を使わず、出品しているアカウント自身の low/high で行う
+    （apps/inventory/listing_price_range.py。2026-11-24 keep_* 列を廃止）。
+    戻り値: (ranges, prune)
       ranges: {(category_group, vendor_code): (low_usd, high_usd)}（lookup を作る組だけ）
       prune: {(category_group, vendor_code): {"keep": set(preset) or None(全件), "skip": 理由 or None,
                "rows": [(preset_group, delete_flag, 集約に入れたか)]}}（漸減対象の組だけ）
-      keeps: {(category_group, vendor_code): (keep_low_usd, keep_high_usd)}（全組）
     """
     group_of_account = {r.account: r.preset_group for r in accounts}
 
@@ -1295,13 +1291,9 @@ def plan_collection_ranges(price_ranges, accounts, listings, preset_pairs):
     for r in price_ranges:
         by_pair.setdefault((r.category_group, r.vendor_code), []).append(r)
 
-    ranges, prune, keeps = {}, {}, {}
+    ranges, prune = {}, {}
     for pair, rows in by_pair.items():
         cg_name, vc = pair
-        keeps[pair] = (
-            min(r.low_usd_target if r.keep_low_usd_target is None else r.keep_low_usd_target for r in rows),
-            max(r.high_usd_target if r.keep_high_usd_target is None else r.keep_high_usd_target for r in rows),
-        )
 
         def counted(r):
             return (not r.delete_flag
@@ -1325,14 +1317,14 @@ def plan_collection_ranges(price_ranges, accounts, listings, preset_pairs):
             "skip": skip,
             "rows": [(r.preset_group, r.delete_flag, counted(r)) for r in rows],
         }
-    return ranges, prune, keeps
+    return ranges, prune
 
 
 LOOKUP_INSERT_COLUMNS = (
     "preset", "vendor_name", "brand_id", "category_id", "mode",
     "low_usd_target", "high_usd_target", "category_id_ebay", "department",
     "default_brand_en", "type_ebay", "low_jpy_target", "high_jpy_target",
-    "category_group", "is_active", "keep_low_usd_target", "keep_high_usd_target",
+    "category_group", "is_active",
 )
 
 
@@ -1345,7 +1337,7 @@ def build_presets_lookup(src):
     """
     generated = generate_preset_rows(src)
     preset_pairs = {g["preset"]: (g["category_group"], g["vendor_code"]) for g in generated}
-    ranges, prune, keeps = plan_collection_ranges(
+    ranges, prune = plan_collection_ranges(
         src["price_ranges"], src["accounts"], src["listings"], preset_pairs
     )
 
@@ -1365,7 +1357,6 @@ def build_presets_lookup(src):
             counts[pair][1] += 1
 
         low, high = rng
-        keep_low, keep_high = keeps[pair]
         # 検索（make_search_url）と同じ換算。mode は mst.category_groups のまま。
         low_jpy, high_jpy = compute_cost_range_jpy_from_usd_range(
             mode=g["mode"], low_usd_target=float(low), high_usd_target=float(high),
@@ -1386,10 +1377,6 @@ def build_presets_lookup(src):
             high_jpy,
             g["category_group"],
             g["is_active"],
-            # 既存出品を「価格範囲外」で終了する判定の範囲。収集範囲を狭めても、
-            # presets_price_ranges の keep_* の中にある既存出品は終了させない。
-            min(low, keep_low),
-            max(high, keep_high),
         ))
 
     results = []

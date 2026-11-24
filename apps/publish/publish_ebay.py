@@ -83,6 +83,7 @@ from apps.publish.material_check import (
     adjust_title_materials, check_material_with_cache, description_material_note, ensure_title_labels, material_labels,
 )
 from apps.publish.counterfeit_check import counterfeit_reason, fix_faux_material_en
+from apps.publish import card_listing_check
 from datetime import datetime
 
 # ========= 固定値／運用設定 =========
@@ -364,6 +365,10 @@ def parse_detail_shops(page, url: str, preset: str, vendor_name: str, driver,
         "description": detail.get("description", ""),
         "description_en": "",
         "item_attributes": detail.get("item_attributes", []),
+        # 種別・グレード等の属性（productDetail.variants[0].attributes をメルカリの item_attributes の形にしたもの）。
+        # トレカの出品前判定（card_listing_check）だけで使う。item_attributes に入れると素材判定等の入力も
+        # 変わるので分けている（2026-11-24）。
+        "card_attributes": card_listing_check.shops_attributes_to_item_attributes(detail),
         "is_variant": False,
         "variants": [],
     }
@@ -1544,6 +1549,30 @@ def heavy_check_detail(
         writes_since_commit += 1
         writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
         return None, debug_unavailable_dump, writes_since_commit, 1, 0
+
+    # === トレカ: 単品以外（BOX・パック・まとめ等）と、グレードを正しく渡せない鑑定品の NG（2026-11-24） ===
+    # 183454（単品カード）への誤出品と、鑑定品を未鑑定の Condition で出すのを防ぐ。
+    # 偽物疑いと同じく 出品不可flg=1 にして候補から外す（毎回の再判定をしない）。
+    if category_group in card_listing_check.CARD_CATEGORY_GROUPS:
+        card_attrs = rec.get("card_attributes") if vendor_name == "メルカリshops" else rec.get("item_attributes")
+        card_ng = card_listing_check.card_listing_ng(
+            vendor_name, rec.get("title_jp"), card_attrs,
+            parse_card_grade_text, CARD_GRADER_VALUE_IDS, CARD_GRADE_VALUE_IDS,
+        )
+        if card_ng:
+            ng_head, ng_reason = card_ng
+            print(f"  └─ [NG] {ng_head}: {ng_reason}", flush=True)
+            rec["listing_head"] = ng_head
+            rec["listing_detail"] = ng_reason
+            upsert_vendor_item(conn, rec)
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE trx.vendor_item SET 出品不可flg = 1 WHERE vendor_name = ? AND vendor_item_id = ?",
+                    vendor_name, sku,
+                )
+            writes_since_commit += 1
+            writes_since_commit = _maybe_commit(conn, writes_since_commit, BATCH_COMMIT)
+            return None, debug_unavailable_dump, writes_since_commit, 1, 0
 
     # === Yahoo!フリマ: カテゴリーグループごとの NG（腕時計以外・レンズ種別不明） ===
     # 検索時にタイトルで除外しているが、検索前から保存済みの商品と、説明文にだけ書かれている場合（腕時計）をここで止める。
