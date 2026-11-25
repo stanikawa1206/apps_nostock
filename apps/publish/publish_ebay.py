@@ -690,12 +690,21 @@ def upsert_vendor_item(conn, rec: Dict[str, Any]):
 
 
 RECORD_LISTING_DEADLOCK_WAITS = [0, 1, 3, 6]
+# 出品成功の記録で、DB への接続・通信の失敗も再試行する（2026-11-25）。
+# 11/16 谷川② 227616250122 は eBay に出品できた直後の接続で 08001（Login timeout）になり、記録されないまま
+# 「出品失敗(未分類)」として再出品候補に戻っていた。再試行するのは DB への書き込みだけで、eBay への出品はしない。
+RECORD_LISTING_RETRY_WAITS = [0, 2, 5, 15, 30, 60]
+_DB_CONNECTION_SQLSTATES = ("08001", "08S01", "08004", "HYT00", "HYT01")
 
 
 def _is_deadlock_error(e: Exception) -> bool:
     return isinstance(e, pyodbc.Error) and (
         (e.args and e.args[0] == "40001") or "(1205)" in str(e)
     )
+
+
+def _is_db_connection_error(e: Exception) -> bool:
+    return isinstance(e, pyodbc.Error) and bool(e.args) and e.args[0] in _DB_CONNECTION_SQLSTATES
 
 
 def record_ebay_listing(listing_id: str, account_name: str, vendor_item_id: str, vendor_name: str,
@@ -706,20 +715,36 @@ def record_ebay_listing(listing_id: str, account_name: str, vendor_item_id: str,
     (close_reason / close_reason_collectibles)='DONE' を、1つのトランザクションで行う。
     以前は登録と減算が別トランザクションで、減算側がデッドロック(1205)で失敗すると
     登録だけ残って残数が減らず、eBayの残数とずれていた（2026-10-16 谷川④ 137847598624）。
-    デッドロック時はトランザクション全体がロールバックされるため、そのまま再実行しても二重減算にならない。
-    再実行しても記録できない場合は、eBayには出品済みのため、出品失敗として再出品されないよう
-    ListingStateUnknownError を送出する（呼び出し元で出品不可にして通知）。
+    デッドロック・DB への接続や通信の失敗は、RECORD_LISTING_RETRY_WAITS の間隔で DB への記録だけを再試行する。
+    毎回、先にその listing_id が登録済みかを確かめる（前回の commit が実は成功していた場合）。登録と減算は
+    同じトランザクションなので、登録済みなら減算も済んでおり、何もせずに終える（二重登録・二重減算にならない）。
+    登録済みの行のアカウント・商品が違う場合と、再試行しても記録できない場合・再試行しないエラーの場合は、
+    eBayには出品済みのため、出品失敗として再出品されないよう ListingStateUnknownError を送出する
+    （呼び出し元で出品不可にして通知）。
     """
     if not listing_id:
         return
 
     last_error = None
-    for wait in RECORD_LISTING_DEADLOCK_WAITS:
+    for wait in RECORD_LISTING_RETRY_WAITS:
         if wait:
             time.sleep(wait)
-        conn = get_sql_server_connection()
+        conn = None
+        left = None
         try:
+            conn = get_sql_server_connection()
             with conn.cursor() as cur:
+                cur.execute("SELECT account, vendor_item_id FROM trx.listings WHERE listing_id = ?", listing_id)
+                existing = cur.fetchone()
+                if existing:
+                    conn.commit()
+                    if (existing[0], existing[1]) != (account_name, vendor_item_id):
+                        raise ListingStateUnknownError(
+                            -1, f"出品成功(listing_id={listing_id})だが trx.listings に別の出品として登録済み "
+                                f"(account={existing[0]} sku={existing[1]})")
+                    print(f"[RECORD_LISTING_EXISTS] acct={account_name} listing_id={listing_id} sku={vendor_item_id} "
+                          f"→ 登録済みのため記録・残数の減算はしない", flush=True)
+                    return
                 cur.execute("""
 INSERT INTO [trx].[listings]
     ([listing_id], [start_time], [account], [vendor_item_id], [vendor_name], [start_price], [is_deleted])
@@ -751,25 +776,35 @@ VALUES
                       AND {listing_class.today_count_sql('?', cls)} >= ISNULL({target_col}, 0)
                 """, (account_name, account_name))
             conn.commit()
+        except ListingStateUnknownError:
+            raise
         except Exception as e:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-            if not _is_deadlock_error(e):
-                raise
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            if not (_is_deadlock_error(e) or _is_db_connection_error(e)):
+                raise ListingStateUnknownError(
+                    -1, f"出品成功(listing_id={listing_id})だがDB記録・残数減算に失敗: {e}") from e
             last_error = e
-            print(f"[RECORD_LISTING_DEADLOCK] acct={account_name} listing_id={listing_id} sku={vendor_item_id} → 再実行 err={e}")
+            print(f"[RECORD_LISTING_RETRY] acct={account_name} listing_id={listing_id} sku={vendor_item_id} "
+                  f"→ DB への記録だけを再実行 err={e}", flush=True)
             continue
         finally:
-            conn.close()
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
         log_listings_change("INSERT", account_name, listing_id, vendor_item_id)
         print(f"[LISTING_LEFT] acct={account_name} listing_id={listing_id} {left[0] if left else '?'}={left[1] if left else '?'}")
         return
 
     raise ListingStateUnknownError(
-        1205, f"出品成功(listing_id={listing_id})だがDB記録・残数減算がデッドロックで失敗: {last_error}"
+        1205 if _is_deadlock_error(last_error) else -1,
+        f"出品成功(listing_id={listing_id})だがDB記録・残数減算が{len(RECORD_LISTING_RETRY_WAITS)}回とも失敗: {last_error}"
     )
 
 
@@ -2333,18 +2368,104 @@ def mark_listing_state_unknown(conn, rec: dict, acct: str, sku: str, err: Except
         mark_orphan_republish_pending(conn, rec, acct, sku, err, is_collectibles)
         return
     print(f"⚠️ 出品確認不可: acct={acct} SKU={sku} reason={err}")
-    rec["listing_head"] = "出品確認不可"
-    rec["listing_detail"] = str(err)
-    upsert_vendor_item(conn, rec)
-    with conn.cursor() as cur:
-        cur.execute("UPDATE trx.vendor_item SET 出品不可flg = 1 WHERE vendor_item_id = ?", sku)
-    conn.commit()
+    # メールは DB を使わないので先に送る（DB に書けない障害中でも、手で確認できるように内容を全部書く）
     send_mail(
         f"【要確認】eBay出品状態を確認できず {acct} {sku}",
-        "publishOffer が一時的エラーを返し、eBay側で出品されたかを確認できませんでした。\n"
+        "publishOffer が一時的エラーを返したか、eBayへの出品後に DB へ記録できず、eBay側の出品と DB が一致していない"
+        "可能性があります。\n"
         "二重出品を防ぐため出品不可(出品不可flg=1)にしています。eBayの出品状況を確認してください。\n\n"
-        f"account: {acct}\nsku: {sku}\nerror: {err}\n",
+        f"account: {acct}\nsku: {sku}\nvendor: {rec.get('vendor_name')}\n"
+        f"collectibles: {is_collectibles}\nerror: {err}\n",
     )
+    rec["listing_head"] = "出品確認不可"
+    rec["listing_detail"] = str(err)
+    try:
+        upsert_vendor_item(conn, rec)
+        with conn.cursor() as cur:
+            cur.execute("UPDATE trx.vendor_item SET 出品不可flg = 1 WHERE vendor_item_id = ?", sku)
+        conn.commit()
+        return
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        print(f"[STATE_UNKNOWN] 出品不可の記録に失敗 acct={acct} SKU={sku} err={e!r} → 新しい接続で再試行", flush=True)
+    detail = str(err)
+    for wait in RECORD_LISTING_RETRY_WAITS:
+        if wait:
+            time.sleep(wait)
+        if _set_listing_state_unknown_flag(sku, detail):
+            return
+    # DB に書けないまま（翌日 3:00 の処理中フラグの解除で候補に戻る恐れ）→ この PC に残し、次回の起動時に出品不可にする
+    _append_state_unknown_pending(acct, sku, detail)
+
+
+# 出品確認不可を DB に記録できなかった商品（publish_ebay の起動時に出品不可にする。1行1件の JSON）
+STATE_UNKNOWN_PENDING_PATH = _PROJECT_ROOT / "logs" / "listing_state_unknown_pending.jsonl"
+
+
+def _set_listing_state_unknown_flag(sku: str, detail: str) -> bool:
+    conn = None
+    try:
+        conn = get_sql_server_connection()
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE trx.vendor_item
+                   SET 出品不可flg = 1, [出品状況] = N'出品確認不可', [出品状況詳細] = ?
+                 WHERE vendor_item_id = ?
+            """, (detail[:4000], sku))
+        conn.commit()
+        print(f"[STATE_UNKNOWN] 出品不可にしました SKU={sku}", flush=True)
+        return True
+    except Exception as e:
+        print(f"[STATE_UNKNOWN] 出品不可の記録に失敗 SKU={sku} err={e!r}", flush=True)
+        return False
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _append_state_unknown_pending(acct: str, sku: str, detail: str) -> None:
+    line = json.dumps({"at": datetime.now().isoformat(timespec="seconds"), "account": acct, "sku": sku,
+                       "detail": detail[:4000]}, ensure_ascii=False)
+    try:
+        STATE_UNKNOWN_PENDING_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with STATE_UNKNOWN_PENDING_PATH.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+        print(f"[STATE_UNKNOWN] DB に書けないため {STATE_UNKNOWN_PENDING_PATH} に残しました SKU={sku}", flush=True)
+    except OSError as e:
+        print(f"[STATE_UNKNOWN] 記録ファイルにも書けません SKU={sku} err={e!r} {line}", flush=True)
+        send_mail(f"【要確認】出品不可にできませんでした {acct} {sku}",
+                  "DB にも記録ファイルにも書けませんでした。翌日の出品で再出品される恐れがあるため、"
+                  f"手で出品不可にしてください。\n\n{line}\n")
+
+
+def apply_state_unknown_pending() -> None:
+    """起動時に、前回 DB に書けなかった出品確認不可の商品を出品不可にする（書けた行だけファイルから消す）。"""
+    if not STATE_UNKNOWN_PENDING_PATH.exists():
+        return
+    try:
+        lines = [l for l in STATE_UNKNOWN_PENDING_PATH.read_text(encoding="utf-8").splitlines() if l.strip()]
+    except OSError as e:
+        print(f"[STATE_UNKNOWN] 記録ファイルを読めません err={e!r}", flush=True)
+        return
+    left = []
+    for l in lines:
+        try:
+            r = json.loads(l)
+        except ValueError:
+            print(f"[STATE_UNKNOWN] 読めない行を飛ばします: {l[:200]}", flush=True)
+            continue
+        if not _set_listing_state_unknown_flag(r["sku"], r.get("detail") or ""):
+            left.append(l)
+    if left:
+        STATE_UNKNOWN_PENDING_PATH.write_text("\n".join(left) + "\n", encoding="utf-8")
+    else:
+        STATE_UNKNOWN_PENDING_PATH.unlink()
 
 
 # ===== UNPUBLISHED出品の再公開待ち（保留）と再処理 =====
@@ -3517,6 +3638,8 @@ def main():
     current_pc = socket.gethostname().strip()
     processing_by = get_processing_by()
     start_time = datetime.now()
+    # 前回 DB に書けなかった出品確認不可の商品を、候補を取る前に出品不可にする（2026-11-25）
+    apply_state_unknown_pending()
 
     # 監視による自己終了（30分監視・Playwright driver監視・Renderer異常）の理由とスタックを残す
     set_exit_report(EXIT_REPORT_PATH)

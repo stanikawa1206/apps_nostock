@@ -3505,7 +3505,51 @@ def run_daily(dry_run: bool = True):
         )
     finally:
         cn.close()
+    # ---- 最後: キャンセル済みの注文で、eBay では終了したのに DB では出品中のままの出品を終了済みにする ----
+    try:
+        close_cancelled_listings(dry_run=dry_run)
+    except Exception as e:
+        log.exception(f"[daily][キャンセル出品の是正] 失敗（daily の他の処理には影響しない）: {e}")
     log.info("daily処理 完了")
+
+
+# キャンセル済みの注文の出品（2026-11-25）。注文の取得・キャンセルの検知は trx.listings を変えず、DB の出品終了は
+# 仕入先が売り切れになった時（在庫チェック）にしか起きないため、仕入先が販売中のままのキャンセル品は、eBay では
+# 終了しているのに DB では出品中のまま残っていた（谷川④ 137881105541）。キャンセル済み（確定）だけを対象にし、
+# 申請中は確定するまで待つ。終了済みにするのは GetItem で eBay の終了を確かめられた時だけ
+# （mark_listing_deleted_if_ended）。出品残数・当日の目標（listing_left・post_target 系）は変えない。
+SQL_CANCELLED_ACTIVE_LISTINGS = """
+SELECT DISTINCT l.account, l.listing_id, l.vendor_item_id
+  FROM trx.ebay_orders o
+  JOIN trx.listings l ON l.account = o.account AND l.listing_id = o.ebay_id AND l.vendor_item_id = o.vendor_item_id
+ WHERE o.status = N'キャンセル済み'
+   AND l.is_deleted = 0
+"""
+CANCELLED_DELETE_REASON = "キャンセル(eBay終了確認)"
+
+
+def close_cancelled_listings(dry_run: bool = True) -> int:
+    from apps.adapters.ebay_api import mark_listing_deleted_if_ended
+    cn = get_sql_server_connection()
+    try:
+        with cn.cursor() as cur:
+            rows = cur.execute(SQL_CANCELLED_ACTIVE_LISTINGS).fetchall()
+        cn.commit()
+    finally:
+        cn.close()
+    log.info(f"[daily][キャンセル出品の是正] 対象={len(rows)} dry_run={dry_run}")
+    closed = 0
+    for account, listing_id, sku in rows:
+        if dry_run:
+            log.info(f"[daily][キャンセル出品の是正][DRY-RUN] account={account} listing_id={listing_id} sku={sku}")
+            continue
+        if mark_listing_deleted_if_ended(account, str(listing_id), sku, CANCELLED_DELETE_REASON):
+            closed += 1
+            log.info(f"[daily][キャンセル出品の是正] 終了済みにしました account={account} listing_id={listing_id} sku={sku}")
+        else:
+            log.info(f"[daily][キャンセル出品の是正] eBay で終了を確認できず DB はそのまま account={account} "
+                     f"listing_id={listing_id} sku={sku}")
+    return closed
 
 
 # dailyの最終実行結果（Accessフォーム「ebay照会」が読んで表示する。最新1回分のみ・毎回上書き）
