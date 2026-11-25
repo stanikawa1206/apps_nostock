@@ -11,13 +11,15 @@ A. 仕入先で終了系（売り切れ・削除・公開停止・オークシ�
      （status が空欄に戻っただけでは解決にしない）。
 B. 仕入先の広範囲な障害（M・MS・R・Y ごと）
    - 直近30分の在庫チェック（inventory_ops_stats）と検索ジョブ（trx.scrape_job、1ジョブ1件で数え retry は重ねない）で、
+     （ラクマの自動停止による再試行待ちは数えない）
      失敗率 VENDOR_FAIL_RATE 以上かつ失敗 VENDOR_FAIL_MIN 件以上。
    - 件数が少ない仕入先も、直近60分に試行が VENDOR_DEAD_MIN_ATTEMPTS 件以上あって成功0件なら通知。
    - ラクマ障害の自動停止（mst.control ラクマ障害_開始）が RAKUMA_PAUSE_ALERT_MIN 分以上続いたら通知。
 C. eBay API の広範囲な障害
    - 直近60分の価格更新・出品終了のうち「一時的」（5xx・25001・通信エラー等）な失敗が、率 EBAY_FAIL_RATE 以上かつ
      EBAY_FAIL_MIN 件以上、または2アカウント以上で合計 EBAY_MULTI_ACCOUNT_MIN 件以上。個別商品のエラー（規約・重複等）は数えない。
-B・C は同じ障害につき発生時に1通、続く間は OUTAGE_RENOTIFY_HOURS ごとに再通知、解消したら回復メールを1通送って状態を消す。
+B・C は同じ障害につき発生時に1通、続く間は OUTAGE_RENOTIFY_HOURS ごとに再通知、解消したら回復メールを1通送って状態を消す
+（通知を送っていない障害は回復メールも送らない）。
 状態: logs/ops_alerts_state.json
 """
 from __future__ import annotations
@@ -40,7 +42,11 @@ VENDOR_FAIL_RATE = 0.10
 VENDOR_FAIL_MIN = 50
 VENDOR_DEAD_WINDOW_MIN = 60
 VENDOR_DEAD_MIN_ATTEMPTS = 5
-RAKUMA_PAUSE_ALERT_MIN = 60
+RAKUMA_PAUSE_ALERT_MIN = 30
+# ラクマの自動停止中に止めたジョブの再試行待ち（scrape_job.error_message に "RAKUMA_PAUSED kind="）。
+# 10分の自動停止→自動解除→再試行は想定どおりの処理なので失敗に数えない（11/25 に500が1回で614件が数えられた）。
+# 停止が長引いた場合は RAKUMA_PAUSE_ALERT_MIN で通知する。実際の HTTP エラーで再試行待ちになったジョブは従来どおり数える。
+RAKUMA_PAUSED_MARK = "RAKUMA_PAUSED kind="
 
 EBAY_WINDOW_MIN = 60
 EBAY_FAIL_RATE = 0.05
@@ -173,14 +179,14 @@ SELECT vendor_name,
  GROUP BY vendor_name
 """
 
-SQL_JOB_STATS = """
+SQL_JOB_STATS = f"""
 SELECT JSON_VALUE(job_payload, '$.vendor_name') AS vendor_name,
        SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done,
        SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS error,
        SUM(CASE WHEN status = 'retry_wait' THEN 1 ELSE 0 END) AS retry_wait
   FROM trx.scrape_job
  WHERE (status IN ('done', 'error') AND finished_at >= DATEADD(MINUTE, -?, SYSDATETIME()))
-    OR status = 'retry_wait'
+    OR (status = 'retry_wait' AND ISNULL(error_message, N'') NOT LIKE N'%{RAKUMA_PAUSED_MARK}%')
  GROUP BY JSON_VALUE(job_payload, '$.vendor_name')
 """
 
@@ -196,7 +202,8 @@ SELECT account,
 
 
 def _vendor_counts(conn, minutes: int) -> dict:
-    """仕入先ごとの (試行, 失敗)。在庫チェックは判定の件数、検索ジョブは1ジョブ1件（retry_wait 中は失敗1件）。"""
+    """仕入先ごとの (試行, 失敗)。在庫チェックは判定の件数、検索ジョブは1ジョブ1件（retry_wait 中は失敗1件。
+    ラクマの自動停止による retry_wait は試行にも失敗にも数えない）。"""
     out = {v: [0, 0] for v in VENDORS}
     with conn.cursor() as cur:
         for vn, items, fails in cur.execute(SQL_CHECK_STATS, minutes).fetchall():
@@ -262,11 +269,14 @@ def check_outages(conn, now: datetime) -> None:
     outages = state.setdefault("outages", {})
     changed = False
     # 解消したもの → 回復メール1通・状態を消す
+    # 通知していない障害（自動で短時間に解消したもの等）は回復メールを送らず状態だけ消す
     recovered = [k for k in outages if k not in current]
-    if recovered:
-        lines = [f"- {outages[k]['detail']}（{outages[k]['first']} から）" for k in recovered]
-        send_mail(f"【回復】在庫管理の障害が解消しました（{len(recovered)}件）",
+    notified_recovered = [k for k in recovered if outages[k].get("notified")]
+    if notified_recovered:
+        lines = [f"- {outages[k]['detail']}（{outages[k]['first']} から）" for k in notified_recovered]
+        send_mail(f"【回復】在庫管理の障害が解消しました（{len(notified_recovered)}件）",
                   "次の障害の条件に当たらなくなりました。\n\n" + "\n".join(lines) + "\n")
+    if recovered:
         for k in recovered:
             del outages[k]
         changed = True

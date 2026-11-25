@@ -74,8 +74,19 @@ class VendorOutageTest(unittest.TestCase):
         self.assertEqual(oa.vendor_outages(self.w(ラクマ=(0, 0)), self.w(ラクマ=(0, 0)), None), {})
 
     def test_rakuma_pause(self):
-        self.assertIn("rakuma_pause", oa.vendor_outages(self.w(), self.w(), 60))
-        self.assertNotIn("rakuma_pause", oa.vendor_outages(self.w(), self.w(), 59))
+        """自動停止が30分以上続いたら通知（10分の停止→自動解除は通知しない）"""
+        self.assertIn("rakuma_pause", oa.vendor_outages(self.w(), self.w(), 30))
+        self.assertNotIn("rakuma_pause", oa.vendor_outages(self.w(), self.w(), 29))
+        self.assertNotIn("rakuma_pause", oa.vendor_outages(self.w(), self.w(), 10))
+
+    def test_paused_retry_wait_is_not_counted(self):
+        """RAKUMA_PAUSED の再試行待ちは数えない。実際の HTTP エラー（500 等）の再試行待ち・error は従来どおり数える"""
+        sql = oa.SQL_JOB_STATS
+        self.assertIn("NOT LIKE N'%RAKUMA_PAUSED kind=%'", sql)
+        self.assertIn("status IN ('done', 'error')", sql)
+        # 11/25 08:26 の形の文言に一致すること（scrape_worker の retry_wait の error_message）
+        self.assertIn(oa.RAKUMA_PAUSED_MARK, "[RETRY_WAIT 1/6] RAKUMA_PAUSED kind=OUTAGE paused_until=2026-11-25 08:36:07 url=x")
+        self.assertNotIn(oa.RAKUMA_PAUSED_MARK, "[RETRY_WAIT 1/6] RAKUMA_HTTP status=500 retry_after=None url=x")
 
 
 class EbayOutageTest(unittest.TestCase):
@@ -126,6 +137,28 @@ class OutageStateTest(unittest.TestCase):
         self.assertTrue(sent[0].startswith("【回復】"))
         self.assertEqual(json.loads(oa.STATE_PATH.read_text(encoding="utf-8"))["outages"], {})
         self.assertEqual(len(self.run_at(NOW + timedelta(hours=8), o)), 1)        # 新たな障害は再び通知
+
+    def test_unnotified_outage_recovers_silently(self):
+        """通知を送れていない（送信失敗）まま解消した障害は回復メールを送らず状態だけ消す"""
+        o = {"vendor:ラクマ": "ラクマ: 失敗"}
+        with mock.patch.object(oa, "send_mail", return_value=False):
+            conn = mock.MagicMock()
+            conn.cursor.return_value.__enter__.return_value.execute.return_value.fetchall.return_value = []
+            with mock.patch.object(oa, "vendor_outages", return_value=dict(o)), mock.patch.object(oa, "_vendor_counts", return_value={}), mock.patch.object(oa, "_rakuma_pause_minutes", return_value=None), mock.patch.object(oa, "ebay_outages", return_value={}):
+                oa.check_outages(conn, NOW)
+        self.assertIn("vendor:ラクマ", json.loads(oa.STATE_PATH.read_text(encoding="utf-8"))["outages"])
+        self.assertEqual(self.run_at(NOW + timedelta(minutes=10), {}), [])
+        self.assertEqual(json.loads(oa.STATE_PATH.read_text(encoding="utf-8"))["outages"], {})
+
+    def test_notified_and_unnotified_recover_together(self):
+        """回復メールには通知済みの障害だけを載せる"""
+        self.run_at(NOW, {"vendor:ラクマ": "a"})
+        st = json.loads(oa.STATE_PATH.read_text(encoding="utf-8"))
+        st["outages"]["ebay"] = {"first": "x", "detail": "b", "notified": None}
+        oa.STATE_PATH.write_text(json.dumps(st, ensure_ascii=False), encoding="utf-8")
+        sent = self.run_at(NOW + timedelta(minutes=10), {})
+        self.assertEqual(sent, ["【回復】在庫管理の障害が解消しました（1件）"])
+        self.assertEqual(json.loads(oa.STATE_PATH.read_text(encoding="utf-8"))["outages"], {})
 
     def test_many_outages_one_mail(self):
         o = {"vendor:ラクマ": "a", "vendor:メルカリ": "b", "ebay": "c"}
