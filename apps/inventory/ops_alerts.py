@@ -9,6 +9,9 @@ A. 仕入先で終了系（売り切れ・削除・公開停止・オークシ�
    - 同じ明細は ISSUE_RENOTIFY_HOURS ごとにだけ再通知。何件あっても1通。通知後も各経路の終了処理は続く。
    - eBay で終了（trx.listings.is_deleted=1）すれば解決にする。「仕入不可出品中」は仕入先で販売中と確認できた時も解決にする
      （status が空欄に戻っただけでは解決にしない）。
+   - 通知の対象になった商品だけ、送る前に GetItem で eBay の実際の状態を確かめる（2026-11-26）。
+     eBay で終了済みなら mark_listing_deleted_if_ended で DB を終了済みにして解決し、通知しない（ログと実績だけ残す）。
+     出品中・確認できない・DB の是正に失敗した商品は、その状態を明記して通知する。
 B. 仕入先の広範囲な障害（M・MS・R・Y ごと）
    - 直近30分の在庫チェック（inventory_ops_stats）と検索ジョブ（trx.scrape_job、1ジョブ1件で数え retry は重ねない）で、
      （ラクマの自動停止による再試行待ちは数えない）
@@ -25,9 +28,14 @@ B・C は同じ障害につき発生時に1通、続く間は OUTAGE_RENOTIFY_HO
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timedelta
 
 from apps.common.utils import send_mail
+from apps.inventory import ops_stats
+
+# inventory_monitor が logs/inventory_monitor.log へのハンドラーを付ける
+_logger = logging.getLogger("inventory_monitor")
 
 STATE_PATH = None  # inventory_monitor が PROJECT_ROOT から設定する
 
@@ -131,6 +139,53 @@ def end_issue_alert(rows, now: datetime) -> list:
     return out
 
 
+# 通知前の確認で eBay の終了を確かめて DB を終了済みにした出品の削除理由
+VERIFIED_END_REASON = "仕入不可(通知前にeBay終了確認)"
+# 通知前の確認の実績（trx.inventory_ops_stats の kind）と結果
+VERIFY_KIND = "通知前確認"
+VERIFY_FIXED = "eBay終了済み・DB是正"
+VERIFY_ACTIVE = "eBay出品中"
+VERIFY_UNKNOWN = "eBay確認不可"
+VERIFY_DB_FAILED = "eBay終了済み・DB是正失敗"
+
+SQL_ACTIVE_LISTING = "SELECT COUNT(*) FROM trx.listings WHERE account = ? AND listing_id = ? AND is_deleted = 0"
+
+
+def verify_on_ebay(conn, account, listing_id, sku) -> tuple[str, str]:
+    """
+    通知の対象になった出品の eBay の実際の状態を GetItem で確かめる。戻り値は (結果, メールに書く説明)。
+      VERIFY_FIXED     eBay で終了済み → DB を終了済みにした（他の経路が先に終了済みにした場合も含む）
+      VERIFY_ACTIVE    eBay で出品中
+      VERIFY_UNKNOWN   GetItem に失敗して確認できない
+      VERIFY_DB_FAILED eBay で終了済みだが DB の是正に失敗
+    """
+    from apps.adapters.ebay_api import get_listing_status, mark_listing_deleted_if_ended
+    if not account or not listing_id:
+        return VERIFY_UNKNOWN, "eBay の状態を確認できませんでした（アカウント・出品番号が不明）"
+    try:
+        st = get_listing_status(account, str(listing_id))
+    except Exception as e:
+        st = {"ok": False, "ended": False, "error": f"{type(e).__name__}: {e}"}
+    if not st.get("ended"):
+        if st.get("ok"):
+            return VERIFY_ACTIVE, f"eBay で出品中を確認（{st.get('listing_status')}）"
+        return VERIFY_UNKNOWN, f"eBay の状態を確認できませんでした（GetItem 失敗: {str(st.get('error'))[:120]}）"
+    ended = f"eBay では終了済み（{st.get('listing_status')} {st.get('end_time') or ''}）"
+    try:
+        done = mark_listing_deleted_if_ended(account, str(listing_id), sku, VERIFIED_END_REASON)
+        if not done:
+            # 0行: 同じ時に他の経路が終了済みにした（解決）か、mark 内の GetItem で終了を確かめ直せなかった（DB は出品中のまま）
+            with conn.cursor() as cur:
+                done = cur.execute(SQL_ACTIVE_LISTING, account, str(listing_id)).fetchone()[0] == 0
+            conn.commit()
+        if done:
+            return VERIFY_FIXED, ended
+        err = "DB の行を更新できませんでした"
+    except Exception as e:
+        err = f"{type(e).__name__}: {e}"
+    return VERIFY_DB_FAILED, f"{ended}、DB への反映に失敗（DB は出品中のまま）: {err[:160]}"
+
+
 def check_listing_end(conn, now: datetime) -> None:
     scan_unavailable_active(conn)
     with conn.cursor() as cur:
@@ -147,17 +202,46 @@ def check_listing_end(conn, now: datetime) -> None:
     for r in due:
         by_item.setdefault((r["vendor_name"], r["vendor_item_id"]), []).append(r)
     lines = []
+    mailed = []
+    fixed = 0
     for (vn, sku), rs in by_item.items():
         first = min(x["first_at"] for x in rs)
         rr = rs[0]
         causes = " / ".join(f"{x['issue_kind']}: {(x['cause'] or '')[:160]}" for x in rs)
+        # 通知の前に eBay の実際の状態を確かめる（DB 同士の比較は一次の絞り込み）
+        verdict, note = verify_on_ebay(conn, rr["account"], rr["listing_id"], sku)
+        ops_stats.count(VERIFY_KIND, vn, verdict, account=rr["account"])
+        _logger.info(f"通知前確認 {verdict}: {rr['account']} eBay {rr['listing_id']} {vn} {sku} 発生 {first:%m/%d %H:%M}"
+                     f" / {causes} / {note}" + ("（通知しない）" if verdict == VERIFY_FIXED else "（通知する）"))
+        if verdict == VERIFY_FIXED:
+            fixed += 1
+            continue
+        mailed.extend(rs)
         lines.append(f"- {rr['account']} eBay {rr['listing_id']} {vn} {sku} 発生 {first:%m/%d %H:%M}"
-                     f"（{(now - first).total_seconds() / 3600:.1f}時間）回数 {sum(x['occurrences'] for x in rs)} / {causes}")
-    subject = f"【重要】仕入先で購入できないのに eBay で出品中の商品があります（{len(by_item)}件）"
+                     f"（{(now - first).total_seconds() / 3600:.1f}時間）回数 {sum(x['occurrences'] for x in rs)} / {causes}"
+                     f"\n    eBay の状態: [{verdict}] {note}")
+    if fixed:
+        # DB を終了済みにした商品の明細を解決にする（出品中の行が無くなった）
+        with conn.cursor() as cur:
+            cur.execute(SQL_RESOLVE_ISSUES)
+        conn.commit()
+    ops_stats.flush()
+    if not lines:
+        return
+    due = mailed
+    if any(f"[{VERIFY_ACTIVE}]" in ln for ln in lines):
+        subject = f"【重要】仕入先で購入できないのに eBay で出品中の商品があります（{len(lines)}件）"
+    else:
+        # eBay で出品中と確認できた商品は無い（確認できない・DB への反映に失敗した商品だけ）
+        subject = f"【要確認】仕入先で購入できない商品の eBay の状態を確認・DB に反映できていません（{len(lines)}件）"
     body = (
-        "仕入先では売り切れ・削除などなのに、eBay の出品を終了できていない商品があります（在庫切れ販売の恐れ）。\n"
+        "仕入先では売り切れ・削除などなのに、DB で eBay の出品中のまま残っている商品があります。\n"
         f"最初の発生から{ISSUE_ALERT_AFTER_MIN // 60}時間以上続いているもの、または構造的な失敗を含みます。"
         "終了処理は各工程で自動で再試行を続けています。\n"
+        "送る前に GetItem で eBay の実際の状態を確かめ、各行の「eBay の状態」に書いています"
+        f"（[{VERIFY_ACTIVE}] は在庫切れ販売の恐れ、[{VERIFY_UNKNOWN}] は eBay の状態が不明、"
+        f"[{VERIFY_DB_FAILED}] は eBay では終了済みで DB への反映だけ失敗）。"
+        "eBay で終了済みと確かめて DB を直せた商品は、このメールに含めていません。\n"
         f"同じ商品は{ISSUE_RENOTIFY_HOURS}時間ごとにだけ再通知します。eBay で終了すれば解決になります。\n\n"
         + "\n".join(lines) + "\n\n明細: trx.inventory_ops_issue（resolved_at IS NULL）\n"
     )

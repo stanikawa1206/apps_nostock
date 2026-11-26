@@ -27,7 +27,7 @@ from apps.adapters.ebay_api import (
     mark_listing_deleted_if_ended,
     update_ebay_price_rest,
 )
-from apps.common.utils import log_listings_change, send_mail
+from apps.common.utils import get_sql_server_connection, log_listings_change, send_mail
 from apps.inventory import ops_stats
 
 # ================================
@@ -725,6 +725,76 @@ def _end_listing_once(account: str, listing_id: str, vendor_item_id: str, reason
     return False, f"offerなし・出品番号での終了 {how} offer={res.get('error_code')}", transient
 
 
+# eBay の出品終了を確認した後の trx.listings の更新（終了済みにする）だけを、この間隔で再試行する（2026-11-26）。
+# 11/25 23:53 谷川④ 137953368991 は offer 削除で eBay を終了した直後の UPDATE が
+# 「Connection is busy with results for another command」(HY000) で例外になり、在庫チェックのプロセスごと終了した。
+# 同じサイクルでは再確認されないため、DB は次のサイクル（03:48）まで約4時間 出品中のまま残った。
+# eBay の終了処理は繰り返さない。1回目は呼び出し元の接続、2回目以降は毎回新しい接続を使う。
+# UPDATE は同じ値（deleted_at は1回目の時刻）を書くだけなので、前回の commit が実は通っていても結果は変わらない。
+END_DB_RETRY_WAITS = (0, 2, 5, 15, 30, 60)
+END_DB_FAILED_CAUSE = "eBay終了済み・DB反映失敗"
+
+SQL_MARK_LISTING_ENDED = """
+    UPDATE trx.listings
+       SET is_deleted = 1,
+           deleted_at = ?,
+           delete_reason = ?
+     WHERE listing_id = ?
+       AND account = ?
+"""
+
+
+def record_listing_ended(conn, account: str, listing_id: str, vendor_item_id: str, vendor_name: str,
+                         reason: str, tries: int = 1) -> bool:
+    """
+    eBay で終了を確認できた出品を trx.listings で終了済みにする。DB のエラーは END_DB_RETRY_WAITS の間隔で再試行する。
+    すべて失敗した場合は例外にせず、ログ [DELETE_DB_FAILED]・実績（出品終了/失敗/eBay終了済み・DB反映失敗）・
+    異常明細（出品終了失敗）を残して False を返す。DB が出品中のまま残った出品は、inventory_monitor が
+    通知前に GetItem で eBay の終了を確かめて是正する（ops_alerts.check_listing_end）。
+    """
+    deleted_at = datetime.now()
+    last_error = None
+    for attempt, wait in enumerate(END_DB_RETRY_WAITS, start=1):
+        if wait:
+            time.sleep(wait)
+        own = None
+        try:
+            if attempt == 1:
+                use = conn
+            else:
+                use = own = get_sql_server_connection()
+            try:
+                with use.cursor() as cur:
+                    cur.execute(SQL_MARK_LISTING_ENDED, (deleted_at, reason, listing_id, account))
+                use.commit()
+            finally:
+                if own is not None:
+                    own.close()
+        except pyodbc.Error as e:
+            last_error = e
+            if attempt == 1:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            print(f"[DELETE_DB_RETRY] listing_id={listing_id} account={account} sku={vendor_item_id} reason={reason} "
+                  f"try={attempt}/{len(END_DB_RETRY_WAITS)} eBay終了済み・DB反映失敗 {type(e).__name__}: {e}", flush=True)
+            continue
+        log_listings_change("DELETE", account, listing_id, vendor_item_id, reason)
+        ops_stats.count("出品終了", vendor_name, "成功", cause=reason, account=account,
+                        attempts=tries, retried=int(tries > 1 or attempt > 1))
+        return True
+
+    detail = (f"{reason}: {END_DB_FAILED_CAUSE}（{len(END_DB_RETRY_WAITS)}回）: "
+              f"{type(last_error).__name__}: {last_error}")
+    print(f"[DELETE_DB_FAILED] listing_id={listing_id} account={account} sku={vendor_item_id} {detail} "
+          f"→ eBay は終了済み・DB は出品中のまま（inventory_monitor が GetItem で確かめて是正する）", flush=True)
+    ops_stats.count("出品終了", vendor_name, "失敗", cause=END_DB_FAILED_CAUSE, account=account,
+                    attempts=tries, retried=1)
+    ops_stats.issue("出品終了失敗", vendor_name, vendor_item_id, detail, account=account, listing_id=listing_id)
+    return False
+
+
 def handle_listing_delete(
     conn,
     vendor_item_id: str,
@@ -782,19 +852,8 @@ def handle_listing_delete(
               f"{'' if ok else ' → DB変更なし'}", flush=True)
 
     if ok:
-        with conn.cursor() as cur:
-            cur.execute("""
-                UPDATE trx.listings
-                   SET is_deleted = 1,
-                       deleted_at = ?,
-                       delete_reason = ?
-                 WHERE listing_id = ?
-                   AND account = ?
-            """, (datetime.now(),reason, listing_id, account))
-        conn.commit()
-        log_listings_change("DELETE", account, listing_id, vendor_item_id, reason)
-        ops_stats.count("出品終了", vendor_name, "成功", cause=reason, account=account,
-                        attempts=tries, retried=int(tries > 1))
+        # eBay の終了は確認済み。DB への反映に失敗しても例外にせず、記録を残して後続の商品の処理を続ける
+        record_listing_ended(conn, account, listing_id, vendor_item_id, vendor_name, reason, tries)
     elif exc is not None:
         # 通信エラーで再試行もすべて失敗。従来どおり例外のまま（DB は変えず次回に再試行）。集計と未解決の記録を残す
         ops_stats.count("出品終了", vendor_name, "失敗", cause=type(exc).__name__, account=account,

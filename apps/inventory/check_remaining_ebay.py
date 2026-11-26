@@ -60,6 +60,7 @@ import sys
 import time
 from datetime import datetime
 
+import pyodbc
 import requests
 from pathlib import Path
 from typing import Optional
@@ -481,7 +482,21 @@ def run_remaining_worker(worker_name: str):
                         driver = build_driver()
                         print("[Selenium] build_driver() created for Mercari Shops")
 
-                    process_status_and_sync(work_conn, page, driver, row, worker_name)
+                    try:
+                        process_status_and_sync(work_conn, page, driver, row, worker_name)
+                    except pyodbc.Error as e:
+                        # この商品の DB への書き込みで接続が使えなくなった場合は、接続を作り直して次の商品へ進む（2026-11-26）。
+                        # 11/25 23:53 は出品終了直後の UPDATE の「Connection is busy」で、プロセスごと終了していた。
+                        # この商品は remaining_check_at が入らないため、ロックの期限後に status が空欄なら再確認される
+                        # （終了系の status が入っていれば、eBay の実態は inventory_monitor が通知前に確かめる）。
+                        # 作り直しにも失敗した場合は従来どおり例外で終了し、check_remaining_ebay.sh が再起動する。
+                        print(f"[WORK_CONN_RESET] sku={row['vendor_item_id']} vendor={row['vendor_name']} "
+                              f"{type(e).__name__}: {e} → DB 接続を作り直して次の商品へ", flush=True)
+                        try:
+                            work_conn.close()
+                        except Exception:
+                            pass
+                        work_conn = get_sql_server_connection()
                     item_watchdog.cancel()
                     processed_count += 1
                     if processed_count >= MAX_PER_RUN:
