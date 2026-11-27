@@ -23,6 +23,8 @@ from apps.adapters.rakuma_outage import worker_host
 from apps.common.utils import get_sql_server_connection
 
 FLUSH_EVERY_SEC = 300
+# check_remaining の1回目の判定不可（後回しにして再取得する）の実績の kind。在庫チェックの件数には入れない（2026-11-27）
+CHECK_RETRY_WAIT_KIND = "在庫チェック再取得待ち"
 BUCKET_SQL = "DATEADD(MINUTE, DATEDIFF(MINUTE, 0, SYSDATETIME()) / 10 * 10, 0)"
 
 _counts: Counter = Counter()          # key -> [items, attempts, retried] は3つの Counter で持つ
@@ -104,6 +106,42 @@ WHEN NOT MATCHED THEN INSERT
     (issue_kind, vendor_name, vendor_item_id, account, listing_id, cause, first_at, last_at, occurrences)
     VALUES (s.issue_kind, s.vendor_name, s.vendor_item_id, ?, ?, ?, SYSDATETIME(), SYSDATETIME(), 1);
 """
+
+
+# 「判定不可」の明細を解決にする条件（2026-11-27）。最後の判定不可の後に、検索（scrape_worker の MERGE）か
+# 在庫チェックで仕入先の状態を確かめた（vendor_item.last_checked_at が明細の last_at より新しく、status が判定不可でない）。
+# 判定不可の時は check_remaining が vendor_item を書いてから明細を記録するので、last_at は last_checked_at より後になる。
+# fetch_active が status を NULL に戻しても last_checked_at は残るので、確かめた事実は消えない。
+# last_checked_at は datetime2(0)（秒に丸める。最大0.5秒先になる）ので、1秒の余裕を見る（その後の確認は数時間後）。
+# 時間の経過や、確認の対象にならなかったことだけでは解決にしない。ops_alerts（10分ごと）と、
+# check_remaining が判定不可を記録する直前（下の resolve_undetermined_if_rechecked）の両方で使う。
+UNDETERMINED_RECHECKED_SQL = """
+i.issue_kind = N'判定不可' AND EXISTS (
+    SELECT 1 FROM trx.vendor_item v
+     WHERE v.vendor_name = i.vendor_name AND v.vendor_item_id = i.vendor_item_id
+       AND v.last_checked_at > DATEADD(SECOND, 1, i.last_at)
+       AND ISNULL(v.status, N'') <> N'判定不可')
+"""
+
+
+def resolve_undetermined_if_rechecked(vendor_name: str, vendor_item_id: str) -> None:
+    """この商品の未解決の「判定不可」を、その後に状態を確かめていれば解決にする（連続回数を数え直すため）。
+    失敗してもログだけ（その場合は ops_alerts が10分ごとに同じ条件で解決にする）。"""
+    if os.environ.get("OPS_STATS_DISABLED") == "1":
+        return
+    try:
+        conn = get_sql_server_connection()
+        try:
+            conn.cursor().execute(
+                "UPDATE i SET resolved_at = SYSDATETIME() FROM trx.inventory_ops_issue i "
+                "WHERE i.resolved_at IS NULL AND i.vendor_name = ? AND i.vendor_item_id = ? AND "
+                + UNDETERMINED_RECHECKED_SQL, (vendor_name, vendor_item_id))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"[OPS_STATS] 判定不可の解決の確認に失敗（処理は続ける） {vendor_item_id} {type(e).__name__}: {e}",
+              flush=True)
 
 
 def issue(issue_kind: str, vendor_name: str, vendor_item_id: str, cause: str,

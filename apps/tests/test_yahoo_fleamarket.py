@@ -469,10 +469,10 @@ class CheckRemainingYahooTest(unittest.TestCase):
         self.assertEqual(self.status(side_effect=yf.YahooHttpError(self.URL, 503, "")), ("判定不可", None))
         self.assertEqual(self.status(side_effect=requests.ConnectionError("down")), ("判定不可", None))
 
-    def run_sync(self, status, price, old_price=9000):
+    def run_sync(self, status, price, old_price=9000, retry_pass=True):
         row = {"vendor_name": yf.VENDOR_NAME, "vendor_item_id": "z123", "account": "谷川④", "listing_id": "1",
                "preset": "SEIKOメンズ腕時計menY", "mode": "DDP", "low_usd_target": 100.0, "high_usd_target": 300.0, "search_low_usd_target": 100.0, "search_high_usd_target": 300.0,
-               "has_preset": True}
+               "has_preset": True, "retry_pass": retry_pass}
         conn = mock.MagicMock()
         page = mock.MagicMock()
         with mock.patch.object(cr, "get_status", return_value=(status, price)),                 mock.patch.object(cr, "get_vendor_item_price", return_value=old_price),                 mock.patch.object(cr, "update_vendor_item_price_and_status") as upd,                 mock.patch.object(cr, "handle_listing_delete") as dele,                 mock.patch.object(cr, "handle_listing_price_update") as price_up:
@@ -486,6 +486,7 @@ class CheckRemainingYahooTest(unittest.TestCase):
             self.assertEqual(dele.call_args.args[3], st)
 
     def test_undetermined_keeps_listing(self):
+        # 後回しの再取得（2回目）でも判定不可の時。1回目は後回しにするだけ（test_undetermined_retry_notify）
         dele, price_up, upd = self.run_sync("判定不可", None)
         dele.assert_not_called()
         price_up.assert_not_called()

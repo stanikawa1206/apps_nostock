@@ -908,59 +908,87 @@ def notify_no_preset_listings(conn):
     return total
 
 
+# 在庫チェックの判定不可のメール（2026-11-27）。1サイクルだけの判定不可はメールせず（ログ・異常明細には残る）、
+# 同じ商品が次のサイクルでも判定不可（明細 trx.inventory_ops_issue の回数が2以上）の時だけ通知する。
+# 回数は在庫チェックのサイクル単位（取得の中の retry・後回しの再取得は数えない）。続く場合は同じ商品を24時間に1回だけ再通知する。
+# 明細は、その後に検索・在庫チェックで状態を確かめた時か eBay で終了した時に解決になり、回数は数え直しになる
+# （ops_stats.UNDETERMINED_RECHECKED_SQL）。
+UNDETERMINED_NOTIFY_MIN_CYCLES = 2
+UNDETERMINED_RENOTIFY_HOURS = 24
+
+SQL_UNDETERMINED_THIS_ROUND = """
+SELECT i.issue_id, i.vendor_name, i.vendor_item_id, i.account, i.listing_id, i.cause,
+       i.first_at, i.last_at, i.occurrences, i.notified_at,
+       CASE i.vendor_name
+           WHEN N'ラクマ'        THEN N'https://item.fril.jp/' + i.vendor_item_id
+           WHEN N'ＰａｙＰａｙフリマ' THEN N'https://paypayfleamarket.yahoo.co.jp/item/' + i.vendor_item_id
+           WHEN N'メルカリshops' THEN N'https://jp.mercari.com/shops/product/' + i.vendor_item_id
+           ELSE N'https://jp.mercari.com/item/' + i.vendor_item_id
+       END AS vendor_url
+  FROM trx.inventory_ops_issue AS i
+ WHERE i.issue_kind = N'判定不可'
+   AND i.resolved_at IS NULL
+   AND i.last_at >= ?
+   AND EXISTS (SELECT 1 FROM trx.listings AS l
+                WHERE l.vendor_name = i.vendor_name AND l.vendor_item_id = i.vendor_item_id AND l.is_deleted = 0)
+ ORDER BY i.vendor_name, i.account, i.last_at
+"""
+
+
+def undetermined_due(rows, now):
+    """(通知する行, 1回目のため通知しない行, 再通知の間隔内のため通知しない行)"""
+    due, first, waiting = [], [], []
+    for r in rows:
+        if (r.occurrences or 0) < UNDETERMINED_NOTIFY_MIN_CYCLES:
+            first.append(r)
+        elif r.notified_at and now - r.notified_at < timedelta(hours=UNDETERMINED_RENOTIFY_HOURS):
+            waiting.append(r)
+        else:
+            due.append(r)
+    return due, first, waiting
+
+
 def notify_undetermined_remaining(conn, rem_start):
     """
-    今回の remaining（rem_start 以降に在庫チェック済み）で「判定不可」になった出品中の商品を集計し、
-    1件以上あれば1通のメールにまとめて通知する（商品ごとの個別メールは送らない）。
+    今回の remaining（rem_start 以降）で「判定不可」になった出品中の商品のうち、前のサイクルから続けて
+    判定不可の商品（UNDETERMINED_NOTIFY_MIN_CYCLES サイクル以上連続）を1通のメールにまとめて通知する。
+    1サイクルだけの判定不可はメールしない。同じ商品の再通知は UNDETERMINED_RENOTIFY_HOURS 時間に1回。
 
     判定不可の商品は出品を維持し、次回の在庫管理で再確認される（check_remaining_ebay.py 参照）。
-    戻り値: 判定不可の件数
+    戻り値: 今回の判定不可の件数（通知しないものを含む）
     """
     cur = conn.cursor()
-    rows = cur.execute("""
-        SELECT
-            l.account,
-            l.listing_id,
-            v.vendor_name,
-            v.vendor_item_id,
-            CASE v.vendor_name
-                WHEN N'ラクマ'        THEN N'https://item.fril.jp/' + v.vendor_item_id
-                WHEN N'ＰａｙＰａｙフリマ' THEN N'https://paypayfleamarket.yahoo.co.jp/item/' + v.vendor_item_id
-                WHEN N'メルカリshops' THEN N'https://jp.mercari.com/shops/product/' + v.vendor_item_id
-                ELSE N'https://jp.mercari.com/item/' + v.vendor_item_id
-            END AS vendor_url,
-            v.remaining_check_at
-        FROM trx.listings AS l
-        INNER JOIN trx.vendor_item AS v
-            ON v.vendor_name = l.vendor_name
-           AND v.vendor_item_id = l.vendor_item_id
-        WHERE l.is_deleted = 0
-          AND v.status = N'判定不可'
-          AND v.remaining_check_at >= ?
-        ORDER BY v.vendor_name, l.account, v.remaining_check_at
-    """, rem_start).fetchall()
-
+    rows = cur.execute(SQL_UNDETERMINED_THIS_ROUND, rem_start).fetchall()
+    conn.commit()
+    due, first, waiting = undetermined_due(rows, datetime.now())
     total = len(rows)
-    print(f"🔎 在庫チェックの判定不可（出品維持）: {total} 件")
-    if total == 0:
-        return 0
+    print(f"🔎 在庫チェックの判定不可（出品維持）: {total} 件（連続で通知 {len(due)} / 1回目のため通知しない {len(first)}"
+          f" / {UNDETERMINED_RENOTIFY_HOURS}時間以内に通知済み {len(waiting)}）")
+    for r in first:
+        print(f"   1回目（通知しない）: {r.vendor_name} | {r.account} | eBay {r.listing_id} | {r.vendor_item_id} | {r.cause}")
+    if not due:
+        return total
 
     lines = [
-        f"{r.vendor_name} | {r.account} | eBay https://www.ebay.com/itm/{r.listing_id} | "
-        f"仕入元 {r.vendor_url} | 確認 {r.remaining_check_at:%m/%d %H:%M}"
-        for r in rows
+        f"{r.vendor_name} | {r.account} | eBay https://www.ebay.com/itm/{r.listing_id} | 仕入元 {r.vendor_url} | "
+        f"連続 {r.occurrences}回（初回 {r.first_at:%m/%d %H:%M}・今回 {r.last_at:%m/%d %H:%M}） | 原因 {(r.cause or '')[:100]}"
+        for r in due
     ]
     body = (
-        f"在庫チェックで仕入元の状態を判定できなかったeBay出品が {total} 件あります"
-        f"（{rem_start:%Y-%m-%d %H:%M} 開始の在庫チェック）。\n"
+        f"在庫チェックで仕入元の状態を判定できない状態が、{UNDETERMINED_NOTIFY_MIN_CYCLES}サイクル以上続いている"
+        f"eBay出品が {len(due)} 件あります（{rem_start:%Y-%m-%d %H:%M} 開始の在庫チェック）。\n"
         "出品は維持しています（削除・価格改定はしていません）。次回の在庫チェックで再確認します。\n"
-        "続く場合は仕入元ページを確認してください。\n\n"
-        "仕入元 | eBayアカウント | eBay出品 | 仕入元商品 | 確認日時\n"
-        + "\n".join(lines) + "\n"
+        "仕入元ページを確認してください（購入できない状態のまま判定できていない可能性があります）。\n"
+        f"1サイクルだけの判定不可はメールしません。同じ商品は{UNDETERMINED_RENOTIFY_HOURS}時間に1回だけ再通知します。\n\n"
+        "仕入元 | eBayアカウント | eBay出品 | 仕入元商品 | 連続回数 | 原因\n"
+        + "\n".join(lines) + "\n\n明細: trx.inventory_ops_issue（issue_kind=判定不可・resolved_at IS NULL）\n"
     )
     print(body)
-    if send_mail(f"【要確認】在庫チェック判定不可 {total}件", body):
+    if send_mail(f"【要確認】在庫チェックの判定不可が続いている商品 {len(due)}件", body):
         print("📧 判定不可の通知メール送信成功")
+        ids = ", ".join(str(int(r.issue_id)) for r in due)
+        cur.execute(f"UPDATE trx.inventory_ops_issue SET notified_at = SYSDATETIME() WHERE issue_id IN ({ids})")
+        conn.commit()
     else:
         print("❌ 判定不可の通知メール送信失敗")
     return total

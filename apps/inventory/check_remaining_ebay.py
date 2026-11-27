@@ -100,6 +100,17 @@ from apps.adapters import yahoo_fleamarket as yahoo
 # 全部が上限まで掛かっても数分で終わる。10分はそれを上回り、実測最大の7倍以上。
 CHECK_ITEM_WATCHDOG_TIMEOUT_SEC = 10 * 60
 
+# 判定不可の後回し再取得（2026-11-27）。1回目の判定不可（取得の中の1秒後の retry も失敗）では status を書かず、
+# remaining_check_by にこの印を入れて後回しにし、後続の商品を先に処理する。未処理の商品が無くなってから、
+# 最後の失敗から RETRY_WAIT_SEC 秒以上たった商品をもう一度取得する（別の台・ワーカーが取ることもある）。
+# 2回目も判定不可の時だけ、従来どおり status='判定不可'（出品維持）にして異常明細に記録する。
+# 印は reset_remaining_flags（サイクルの開始）が remaining_check_by ごと消す。
+RETRY_WAIT_MARK = "retry_wait"
+RETRY_WAIT_SEC = 60
+# 1回目の判定不可の実績（trx.inventory_ops_stats の kind）。在庫チェックの件数・成功率には入れず、
+# 広範囲な障害の監視（ops_alerts）の失敗には数える（全面停止の時に、後回しの再取得を待たずに気付くため）。
+RETRY_WAIT_KIND = ops_stats.CHECK_RETRY_WAIT_KIND
+
 # ===== UTF-8 出力の強制（絵文字/日本語の安全化） =====
 if os.name == "nt" and hasattr(sys.stdout, "reconfigure"):
     try:
@@ -345,10 +356,17 @@ def pull_remaining_targets(conn, worker_name: str, batch_size: int = 5):
                 AND (v.status IS NULL OR LTRIM(RTRIM(v.status)) = N'')
                 AND v.remaining_check_at IS NULL
                 AND (
-                    v.remaining_check_lock IS NULL
-                    OR v.remaining_check_lock < DATEADD(MINUTE, -5, SYSDATETIME())
+                    (ISNULL(v.remaining_check_by, N'') <> N'{RETRY_WAIT_MARK}' AND (
+                        v.remaining_check_lock IS NULL
+                        OR v.remaining_check_lock < DATEADD(MINUTE, -5, SYSDATETIME())
+                    ))
+                    -- 判定不可で後回しにした商品は、最後の失敗から RETRY_WAIT_SEC 秒たってから
+                    OR (v.remaining_check_by = N'{RETRY_WAIT_MARK}'
+                        AND v.remaining_check_lock < DATEADD(SECOND, -{RETRY_WAIT_SEC}, SYSDATETIME()))
                 )
-            ORDER BY v.remaining_check_lock ASC
+            -- 後回しにした商品は、まだ取得していない商品が無くなってから取る
+            ORDER BY CASE WHEN v.remaining_check_by = N'{RETRY_WAIT_MARK}' THEN 1 ELSE 0 END,
+                     v.remaining_check_lock ASC
         )
         UPDATE v
         SET
@@ -363,7 +381,8 @@ def pull_remaining_targets(conn, worker_name: str, batch_size: int = 5):
             cte.mode,
             cte.low_usd_target,
             cte.high_usd_target,
-            cte.lookup_preset
+            cte.lookup_preset,
+            deleted.remaining_check_by
         FROM trx.vendor_item AS v
         INNER JOIN cte
             ON v.vendor_name     = cte.vendor_name
@@ -391,6 +410,8 @@ def pull_remaining_targets(conn, worker_name: str, batch_size: int = 5):
             "low_usd_target": float(row[6]) if has_preset else None,
             "high_usd_target": float(row[7]) if has_preset else None,
             "has_preset": has_preset,
+            # True = 判定不可で後回しにした商品の再取得（2回目）。2回目も判定不可なら status='判定不可' にする
+            "retry_pass": row[9] == RETRY_WAIT_MARK,
         })
 
     return result
@@ -561,14 +582,40 @@ def process_status_and_sync(
             raise
         print(f"[STATUS] {url} -> {status} (price_jpy={price_jpy})")
         cause, retries = ops_stats.take_pending()
+        retry_pass = bool(row.get("retry_pass"))
         if status == "判定不可":
             cause = cause or "原因不明"
-            ops_stats.issue("判定不可", vendor_name, sku, cause, account=row.get("account"), listing_id=row.get("listing_id"))
-        ops_stats.count("在庫チェック", vendor_name, status, cause=cause if status == "判定不可" else None,
-                        account=row.get("account"), attempts=1 + retries, retried=int(retries > 0))
 
         # =====================
-        # ★ 判定不可: 出品は維持し、status='判定不可' と remaining_check_at を記録してこの回は完了とする
+        # ★ 1回目の判定不可: 後回しにして後続の商品を先に処理する（2026-11-27）
+        # =====================
+        # status・価格・remaining_check_at は書かない（出品終了・価格改定もしない）。未処理の商品が無くなってから
+        # RETRY_WAIT_SEC 秒以上たって、もう一度取得する（pull_remaining_targets）。
+        if status == "判定不可" and not retry_pass:
+            ops_stats.count(RETRY_WAIT_KIND, vendor_name, "再取得待ち", cause=cause, account=row.get("account"),
+                            attempts=1 + retries, retried=int(retries > 0))
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE trx.vendor_item
+                       SET remaining_check_by = ?, remaining_check_lock = SYSDATETIME()
+                     WHERE vendor_name = ? AND vendor_item_id = ?
+                """, (RETRY_WAIT_MARK, vendor_name, sku))
+            conn.commit()
+            print(f"[RETRY_WAIT] 判定不可（{cause}）→ 後回しにして {RETRY_WAIT_SEC}秒以上あとに再取得 sku={sku}", flush=True)
+            return
+
+        if retry_pass:
+            print(f"[RETRY_RESULT] 後回しの再取得 sku={sku} -> {status}", flush=True)
+        ops_stats.count("在庫チェック", vendor_name, status, cause=cause if status == "判定不可" else None,
+                        account=row.get("account"), attempts=1 + retries + int(retry_pass),
+                        retried=int(retries > 0 or retry_pass))
+        if status == "判定不可":
+            # 前回の判定不可の後に、検索・在庫チェックで状態を確かめられていれば、その明細は解決にしてから記録する
+            # （連続回数を数え直す）。vendor_item を書く前に見ること（下の 4. で last_checked_at が新しくなる）。
+            ops_stats.resolve_undetermined_if_rechecked(vendor_name, sku)
+
+        # =====================
+        # ★ 判定不可（後回しの再取得でも判定不可）: 出品は維持し、status='判定不可' と remaining_check_at を記録してこの回は完了とする
         # =====================
         # 以前は remaining_check_at を入れずに return していたため、ロック期限切れのたびに
         # 同じ回の中で再取得され、判定不可が続く商品があると remaining 対象が0件にならず
@@ -576,7 +623,8 @@ def process_status_and_sync(
         # status='判定不可' は eBay削除の対象（5.）にも価格改定（3.）にも該当しない（4. で status のみ更新）。
         # 次回の在庫管理で fetch_active_ebay が出品中の status を NULL に戻し、
         # reset_remaining_flags が remaining_check_at をクリアするため、必ず再確認される。
-        # 判定不可の件数は daily_check が remaining 終了時にまとめてメール通知する。
+        # 異常明細（判定不可）は 4. の後に記録する。同じ商品が次のサイクルでも判定不可なら、
+        # daily_check が remaining 終了時にメールする（1サイクルだけの判定不可はメールしない）。
         if status == "判定不可":
             print(f"[INFO] 判定不可（出品維持・次回再確認） sku={sku}")
 
@@ -677,6 +725,11 @@ def process_status_and_sync(
                 None,
                 status,
             )
+            if status == "判定不可":
+                # vendor_item（status・last_checked_at）を書いた後に記録する。明細の last_at が last_checked_at より
+                # 後になるので、「last_checked_at が last_at より新しい = その後に状態を確かめた」で解決を判定できる。
+                ops_stats.issue("判定不可", vendor_name, sku, cause, account=row.get("account"),
+                                listing_id=row.get("listing_id"))
 
 
         # =====================

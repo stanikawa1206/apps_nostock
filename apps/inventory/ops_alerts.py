@@ -13,7 +13,7 @@ A. 仕入先で終了系（売り切れ・削除・公開停止・オークシ�
      eBay で終了済みなら mark_listing_deleted_if_ended で DB を終了済みにして解決し、通知しない（ログと実績だけ残す）。
      出品中・確認できない・DB の是正に失敗した商品は、その状態を明記して通知する。
 B. 仕入先の広範囲な障害（M・MS・R・Y ごと）
-   - 直近30分の在庫チェック（inventory_ops_stats）と検索ジョブ（trx.scrape_job、1ジョブ1件で数え retry は重ねない）で、
+   - 直近30分の在庫チェック（inventory_ops_stats。1回目の判定不可で後回しにした再取得待ちを含む）と検索ジョブ（trx.scrape_job、1ジョブ1件で数え retry は重ねない）で、
      （ラクマの自動停止による再試行待ちは数えない）
      失敗率 VENDOR_FAIL_RATE 以上かつ失敗 VENDOR_FAIL_MIN 件以上。
    - 件数が少ない仕入先も、直近60分に試行が VENDOR_DEAD_MIN_ATTEMPTS 件以上あって成功0件なら通知。
@@ -41,8 +41,9 @@ STATE_PATH = None  # inventory_monitor が PROJECT_ROOT から設定する
 
 ISSUE_ALERT_AFTER_MIN = 120
 ISSUE_RENOTIFY_HOURS = 24
-ISSUE_STALE_HOURS = 24          # これだけ再発しない「出品終了失敗」「判定不可」は解決扱い
-JUDGE_STALE_HOURS = 8           # 判定不可は次のサイクル（約4.5時間）で再発しなければ解決扱い
+ISSUE_STALE_HOURS = 24          # これだけ再発しない「出品終了失敗」は解決扱い
+# 「判定不可」は時間の経過では解決にしない（2026-11-27 まで8時間で解決扱い）。その後に状態を確かめた時か、
+# eBay で終了した時だけ解決にする（ops_stats.UNDETERMINED_RECHECKED_SQL）。メールは daily_check（2サイクル連続の時）。
 STRUCTURAL_CAUSES = ("sku_mismatch",)
 
 VENDOR_WINDOW_MIN = 30
@@ -96,7 +97,8 @@ UPDATE i SET resolved_at = SYSDATETIME()
         NOT EXISTS (SELECT 1 FROM trx.listings l
                      WHERE l.vendor_name = i.vendor_name AND l.vendor_item_id = i.vendor_item_id AND l.is_deleted = 0)
         OR (i.issue_kind = N'出品終了失敗' AND i.last_at < DATEADD(HOUR, -{ISSUE_STALE_HOURS}, SYSDATETIME()))
-        OR (i.issue_kind = N'判定不可' AND i.last_at < DATEADD(HOUR, -{JUDGE_STALE_HOURS}, SYSDATETIME()))
+        -- 判定不可: 最後の判定不可の後に検索・在庫チェックで状態を確かめた時だけ（時間の経過では解決にしない。2026-11-27）
+        OR ({ops_stats.UNDETERMINED_RECHECKED_SQL})
         -- 仕入先で購入できる（販売中）と確認できた。次のサイクルの開始で status が空欄に戻っただけでは解決にしない
         -- （2026-11-24 BUZZ② 800909223838 は空欄に戻った 18:20 に解決扱いになり、eBay では 21:08 まで出品中だった）
         OR (i.issue_kind = N'仕入不可出品中' AND EXISTS (
@@ -257,9 +259,10 @@ def check_listing_end(conn, now: datetime) -> None:
 SQL_CHECK_STATS = f"""
 SELECT vendor_name,
        SUM(items) AS items,
-       SUM(CASE WHEN result IN (N'判定不可', N'例外') THEN items ELSE 0 END) AS fails
+       SUM(CASE WHEN result IN (N'判定不可', N'例外', N'再取得待ち') THEN items ELSE 0 END) AS fails
   FROM trx.inventory_ops_stats
- WHERE kind = N'在庫チェック' AND bucket_at >= DATEADD(MINUTE, -?, SYSDATETIME())
+ -- 1回目の判定不可（後回しの再取得待ち）も失敗に数える。全面停止の時は後回しの再取得がサイクルの最後になるため
+ WHERE kind IN (N'在庫チェック', N'{ops_stats.CHECK_RETRY_WAIT_KIND}') AND bucket_at >= DATEADD(MINUTE, -?, SYSDATETIME())
  GROUP BY vendor_name
 """
 
