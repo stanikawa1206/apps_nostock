@@ -44,40 +44,105 @@ class EndIssueAlertTest(unittest.TestCase):
 
 
 class VendorOutageTest(unittest.TestCase):
-    def w(self, **kw):
-        # キーワード引数の名前は NFKC で正規化される（ＰａｙＰａｙ→PayPay）ので、仕入先名は Y= で渡す
+    """B: 仕入先ごと（在庫チェックと検索を分ける・前半/後半の15分とも続く時だけ）、台ごと、検索の0件、検索APIの停止（2026-11-27）"""
+    OK = [500, 0, 500, 0]
+
+    def halves(self, check=None, job=None, zero=None, host=None):
+        def fill(d):
+            out = {v: list(self.OK) for v in oa.VENDORS}
+            out.update(d or {})
+            return out
+        return {"check": fill(check), "job": fill(job), "zero": {v: [100, 10, 100, 10] for v in oa.VENDORS} | (zero or {}),
+                "host": host or {}}
+
+    def dead(self, **kw):
         base = {v: (1000, 0) for v in oa.VENDORS}
         if "Y" in kw:
             kw["ＰａｙＰａｙフリマ"] = kw.pop("Y")
         base.update(kw)
         return base
 
-    def test_rate_and_count(self):
-        r = oa.vendor_outages(self.w(ラクマ=(500, 60)), self.w(), None)
-        self.assertIn("vendor:ラクマ", r)
+    def test_sustained_check_failure(self):
+        r = oa.vendor_outages(self.halves(check={"メルカリ": [100, 12, 100, 15]}), self.dead(), None)
+        self.assertEqual(list(r), ["vendor:メルカリ"])
+        self.assertIn("個別の在庫チェックの失敗 27/200件", r["vendor:メルカリ"])
 
-    def test_rate_without_count_is_not_outage(self):
-        self.assertEqual(oa.vendor_outages(self.w(ラクマ=(100, 49)), self.w(), None), {})
+    def test_burst_in_one_half_is_not_outage(self):
+        # 20件以上・10%以上でも、失敗が後半（または前半）だけに集中した場合は通知しない
+        self.assertEqual(oa.vendor_outages(self.halves(check={"メルカリ": [100, 0, 100, 30]}), self.dead(), None), {})
+        self.assertEqual(oa.vendor_outages(self.halves(check={"メルカリ": [100, 30, 100, 1]}), self.dead(), None), {})  # 回復済み
 
-    def test_count_without_rate_is_not_outage(self):
-        self.assertEqual(oa.vendor_outages(self.w(ラクマ=(5000, 60)), self.w(), None), {})
+    def test_min_count_is_20(self):
+        self.assertIn("vendor:ラクマ", oa.vendor_outages(self.halves(check={"ラクマ": [50, 10, 50, 10]}), self.dead(), None))
+        self.assertEqual(oa.vendor_outages(self.halves(check={"ラクマ": [50, 10, 50, 9]}), self.dead(), None), {})
+
+    def test_low_rate_is_not_outage(self):
+        self.assertEqual(oa.vendor_outages(self.halves(check={"ラクマ": [2000, 30, 2000, 30]}), self.dead(), None), {})
+
+    def test_check_and_search_are_not_mixed(self):
+        # 検索の失敗が多数の在庫チェックの成功に埋もれない（以前は仕入先ごとに合計していた）
+        r = oa.vendor_outages(self.halves(check={"ラクマ": [2800, 0, 2800, 0]}, job={"ラクマ": [50, 50, 50, 50]}),
+                              self.dead(), None)
+        self.assertIn("検索ジョブの失敗 100/100件", r["vendor:ラクマ"])
+
+    def test_one_key_per_vendor(self):
+        r = oa.vendor_outages(self.halves(check={"メルカリ": [100, 50, 100, 50]}, job={"メルカリ": [40, 40, 40, 40]},
+                                          zero={"メルカリ": [20, 20, 20, 20]}), self.dead(), None)
+        self.assertEqual(list(r), ["vendor:メルカリ"])
+        for part in ("個別の在庫チェック", "検索ジョブ", "検索の結果が0件"):
+            self.assertIn(part, r["vendor:メルカリ"])
+
+    def test_search_zero_results(self):
+        self.assertIn("vendor:ＰａｙＰａｙフリマ",
+                      oa.vendor_outages(self.halves(zero={"ＰａｙＰａｙフリマ": [10, 10, 10, 10]}), self.dead(), None))
+        # 実績の最大 61% は通知しない、件数が少ない（30分に20回未満）も通知しない、片方の半分だけも通知しない
+        self.assertEqual(oa.vendor_outages(self.halves(zero={"ＰａｙＰａｙフリマ": [100, 61, 100, 61]}), self.dead(), None), {})
+        self.assertEqual(oa.vendor_outages(self.halves(zero={"メルカリ": [9, 9, 10, 10]}), self.dead(), None), {})
+        self.assertEqual(oa.vendor_outages(self.halves(zero={"メルカリ": [2, 2, 30, 30]}), self.dead(), None), {})
+
+    def test_host_rule(self):
+        host = {"x162-43-42-135": {"メルカリ": [10, 6, 10, 6]}, "x162-43-15-160": {"メルカリ": [10, 0, 10, 0]}}
+        r = oa.vendor_outages(self.halves(host=host), self.dead(), None)
+        self.assertEqual(list(r), ["host:x162-43-42-135"])
+        # 実績の最大（8件中1件）や、失敗が前半だけの台は通知しない
+        host = {"mouse": {"メルカリshops": [8, 1, 8, 1]}, "x": {"ラクマ": [20, 20, 20, 0]}}
+        self.assertEqual(oa.vendor_outages(self.halves(host=host), self.dead(), None), {})
+
+    def test_host_rule_excludes_vendor_outage(self):
+        # 仕入先全体の障害では、各台の同じ失敗を台の障害として重ねない（1通に何行も並ばない）
+        host = {h: {"メルカリ": [50, 50, 50, 50]} for h in ("a", "b", "c")}
+        r = oa.vendor_outages(self.halves(check={"メルカリ": [150, 150, 150, 150]}, host=host), self.dead(), None)
+        self.assertEqual(list(r), ["vendor:メルカリ"])
 
     def test_low_volume_complete_failure(self):
-        r = oa.vendor_outages(self.w(), self.w(Y=(6, 6)), None)
+        r = oa.vendor_outages(self.halves(), self.dead(Y=(6, 6)), None)
         self.assertIn("vendor:ＰａｙＰａｙフリマ", r)
 
     def test_low_volume_partial_failure_is_not_outage(self):
-        self.assertEqual(oa.vendor_outages(self.w(), self.w(Y=(6, 5)), None), {})
+        self.assertEqual(oa.vendor_outages(self.halves(), self.dead(Y=(6, 5)), None), {})
 
     def test_no_attempts_is_not_outage(self):
         """試行0件（処理していない）は成功扱いにも障害扱いにもしない"""
-        self.assertEqual(oa.vendor_outages(self.w(ラクマ=(0, 0)), self.w(ラクマ=(0, 0)), None), {})
+        zero = {v: [0, 0, 0, 0] for v in oa.VENDORS}
+        self.assertEqual(oa.vendor_outages({"check": zero, "job": zero, "zero": zero, "host": {}},
+                                           self.dead(ラクマ=(0, 0)), None), {})
 
     def test_rakuma_pause(self):
         """自動停止が30分以上続いたら通知（10分の停止→自動解除は通知しない）"""
-        self.assertIn("rakuma_pause", oa.vendor_outages(self.w(), self.w(), 30))
-        self.assertNotIn("rakuma_pause", oa.vendor_outages(self.w(), self.w(), 29))
-        self.assertNotIn("rakuma_pause", oa.vendor_outages(self.w(), self.w(), 10))
+        self.assertIn("rakuma_pause", oa.vendor_outages(self.halves(), self.dead(), 30))
+        self.assertNotIn("rakuma_pause", oa.vendor_outages(self.halves(), self.dead(), 29))
+        self.assertNotIn("rakuma_pause", oa.vendor_outages(self.halves(), self.dead(), 10))
+
+    def test_search_api_block(self):
+        self.assertIn("search_api_block", oa.vendor_outages(self.halves(), self.dead(), None, 30))
+        self.assertEqual(oa.vendor_outages(self.halves(), self.dead(), None, 29), {})
+        self.assertEqual(oa.vendor_outages(self.halves(), self.dead(), None, None), {})
+
+    def test_half_sql(self):
+        self.assertIn("NOT LIKE N'RakumaPausedError%'", oa.SQL_CHECK_HALVES)
+        self.assertIn(f"N'{oa.ops_stats.CHECK_RETRY_WAIT_KIND}'", oa.SQL_CHECK_HALVES)
+        self.assertIn("job_kind = 'fetch_active_ebay' AND status = 'done' AND fetched_items = 0", oa.SQL_JOB_HALVES)
+        self.assertIn("NOT LIKE N'%RAKUMA_PAUSED kind=%'", oa.SQL_JOB_HALVES)
 
     def test_paused_retry_wait_is_not_counted(self):
         """RAKUMA_PAUSED の再試行待ちは数えない。実際の HTTP エラー（500 等）の再試行待ち・error は従来どおり数える"""
@@ -121,6 +186,8 @@ class OutageStateTest(unittest.TestCase):
         conn.cursor.return_value.__enter__.return_value.execute.return_value.fetchall.return_value = []
         with mock.patch.object(oa, "vendor_outages", return_value=dict(outages)), \
              mock.patch.object(oa, "_vendor_counts", return_value={}), \
+             mock.patch.object(oa, "_half_counts", return_value={}), \
+             mock.patch.object(oa, "_search_block_minutes", return_value=None), \
              mock.patch.object(oa, "_rakuma_pause_minutes", return_value=None), \
              mock.patch.object(oa, "ebay_outages", return_value={}), \
              mock.patch.object(oa, "send_mail", return_value=True) as sm:
@@ -144,7 +211,7 @@ class OutageStateTest(unittest.TestCase):
         with mock.patch.object(oa, "send_mail", return_value=False):
             conn = mock.MagicMock()
             conn.cursor.return_value.__enter__.return_value.execute.return_value.fetchall.return_value = []
-            with mock.patch.object(oa, "vendor_outages", return_value=dict(o)), mock.patch.object(oa, "_vendor_counts", return_value={}), mock.patch.object(oa, "_rakuma_pause_minutes", return_value=None), mock.patch.object(oa, "ebay_outages", return_value={}):
+            with mock.patch.object(oa, "vendor_outages", return_value=dict(o)), mock.patch.object(oa, "_vendor_counts", return_value={}), mock.patch.object(oa, "_half_counts", return_value={}), mock.patch.object(oa, "_search_block_minutes", return_value=None), mock.patch.object(oa, "_rakuma_pause_minutes", return_value=None), mock.patch.object(oa, "ebay_outages", return_value={}):
                 oa.check_outages(conn, NOW)
         self.assertIn("vendor:ラクマ", json.loads(oa.STATE_PATH.read_text(encoding="utf-8"))["outages"])
         self.assertEqual(self.run_at(NOW + timedelta(minutes=10), {}), [])

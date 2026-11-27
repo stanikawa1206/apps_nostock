@@ -46,9 +46,25 @@ ISSUE_STALE_HOURS = 24          # これだけ再発しない「出品終了失�
 # eBay で終了した時だけ解決にする（ops_stats.UNDETERMINED_RECHECKED_SQL）。メールは daily_check（2サイクル連続の時）。
 STRUCTURAL_CAUSES = ("sku_mismatch",)
 
+# 仕入先ごとの障害（2026-11-27 改）: 在庫チェックと検索ジョブを分けて数え、直近30分を前半・後半の15分ずつに分けて、
+# 30分の合計の条件に加えて前半・後半のどちらでも失敗が続いている時だけ障害にする（短い時間に失敗が集中しただけ・
+# 既に回復したものは通知しない）。11/19〜27 の実績では、在庫チェックの失敗は仕入先ごとに30分で最大5件、検索ジョブは1件。
 VENDOR_WINDOW_MIN = 30
+VENDOR_HALF_MIN = 15
 VENDOR_FAIL_RATE = 0.10
-VENDOR_FAIL_MIN = 50
+VENDOR_FAIL_MIN = 20            # 30分の失敗件数（11/27 まで50件・在庫チェックと検索の合計）
+VENDOR_HALF_FAIL_MIN = 5        # 前半・後半それぞれの失敗件数
+# 台（PC）ごと: 障害中の仕入先を除いて、30分に10件以上かつ50%以上の失敗が前半・後半とも続く（実績は最大12.5%）
+HOST_FAIL_MIN = 10
+HOST_FAIL_RATE = 0.50
+HOST_HALF_FAIL_MIN = 3
+# 検索の0件（仕様変更の疑い）: fetch_active の検索で、30分に20回以上・95%以上が0件、前半・後半とも
+# （11/24〜27 の実績では30分に20回以上の検索の0件の割合は最大61%: M 25%・MS 38%・R 54%・Y 61%）
+SEARCH_ZERO_MIN_JOBS = 20
+SEARCH_ZERO_RATE = 0.95
+SEARCH_ZERO_HALF_MIN_JOBS = 5
+# 検索APIの停止（search_api_block、401・403・429）がこの分数以上続いたら通知（自動の確認で15分後に解除されることが多い）
+SEARCH_BLOCK_ALERT_MIN = 30
 VENDOR_DEAD_WINDOW_MIN = 60
 VENDOR_DEAD_MIN_ATTEMPTS = 5
 RAKUMA_PAUSE_ALERT_MIN = 30
@@ -305,18 +321,108 @@ def _vendor_counts(conn, minutes: int) -> dict:
     return out
 
 
-def vendor_outages(window: dict, dead_window: dict, rakuma_pause_min) -> dict:
-    """{障害キー: 説明}。window/dead_window は {仕入先: (試行, 失敗)}。"""
+# 前半（30〜15分前）・後半（直近15分）に分けた件数。在庫チェックの実績は10分単位の bucket_at で分ける（おおよそ）。
+# ラクマの自動停止で取得しなかったもの（在庫チェックの RakumaPausedError・検索の RAKUMA_PAUSED の再試行待ち）は数えない
+# （自動停止は rakuma_pause で別に見る）。
+SQL_CHECK_HALVES = f"""
+SELECT vendor_name, host,
+       CASE WHEN bucket_at >= DATEADD(MINUTE, -{VENDOR_HALF_MIN}, SYSDATETIME()) THEN 1 ELSE 0 END AS late,
+       SUM(items) AS items,
+       SUM(CASE WHEN result IN (N'判定不可', N'例外', N'再取得待ち') THEN items ELSE 0 END) AS fails
+  FROM trx.inventory_ops_stats
+ WHERE kind IN (N'在庫チェック', N'{ops_stats.CHECK_RETRY_WAIT_KIND}')
+   AND bucket_at >= DATEADD(MINUTE, -{VENDOR_WINDOW_MIN}, SYSDATETIME())
+   AND ISNULL(cause, N'') NOT LIKE N'RakumaPausedError%'
+ GROUP BY vendor_name, host, CASE WHEN bucket_at >= DATEADD(MINUTE, -{VENDOR_HALF_MIN}, SYSDATETIME()) THEN 1 ELSE 0 END
+"""
+
+# 検索ジョブ。done・error は finished_at、ラクマの HTTP エラーの再試行待ち（retry_wait）は失敗した時刻
+# （locked_at = 次に取り出す時刻 = 失敗から約10分後。scrape_worker.RAKUMA_HTTP_RETRY_INTERVAL_SEC）で分ける。
+# zero_jobs・zeros は fetch_active の検索の件数と、そのうち0件だった件数（仕様変更の疑いを見る。fetch_sold は
+# 0件が普通に多い（Y は最大88%）ので見ない）。
+SQL_JOB_HALVES = f"""
+WITH j AS (
+    SELECT JSON_VALUE(job_payload, '$.vendor_name') AS vendor_name, worker_name AS host, job_kind, status, fetched_items,
+           CASE WHEN status = 'retry_wait' THEN DATEADD(SECOND, -600, locked_at) ELSE finished_at END AS at
+      FROM trx.scrape_job
+     WHERE (status IN ('done', 'error') AND finished_at >= DATEADD(MINUTE, -{VENDOR_WINDOW_MIN}, SYSDATETIME()))
+        OR (status = 'retry_wait' AND ISNULL(error_message, N'') NOT LIKE N'%{RAKUMA_PAUSED_MARK}%')
+)
+SELECT vendor_name, host,
+       CASE WHEN at >= DATEADD(MINUTE, -{VENDOR_HALF_MIN}, SYSDATETIME()) THEN 1 ELSE 0 END AS late,
+       COUNT(*) AS jobs,
+       SUM(CASE WHEN status IN ('error', 'retry_wait') THEN 1 ELSE 0 END) AS fails,
+       SUM(CASE WHEN job_kind = 'fetch_active_ebay' AND status = 'done' THEN 1 ELSE 0 END) AS zero_jobs,
+       SUM(CASE WHEN job_kind = 'fetch_active_ebay' AND status = 'done' AND fetched_items = 0 THEN 1 ELSE 0 END) AS zeros
+  FROM j
+ GROUP BY vendor_name, host, CASE WHEN at >= DATEADD(MINUTE, -{VENDOR_HALF_MIN}, SYSDATETIME()) THEN 1 ELSE 0 END
+"""
+
+
+def _half_counts(conn) -> dict:
+    """{"check"|"job"|"zero": {仕入先: [前半の件数, 前半の失敗, 後半の件数, 後半の失敗]},
+        "host": {台: {仕入先: [同じ4つ（在庫チェックと検索の合計）]}}}"""
+    out = {"check": {}, "job": {}, "zero": {}, "host": {}}
+
+    def add(d, key, late, n, f):
+        h = d.setdefault(key, [0, 0, 0, 0])
+        h[2 if late else 0] += n or 0
+        h[3 if late else 1] += f or 0
+
+    with conn.cursor() as cur:
+        for vn, host, late, items, fails in cur.execute(SQL_CHECK_HALVES).fetchall():
+            add(out["check"], vn, late, items, fails)
+            add(out["host"].setdefault(host, {}), vn, late, items, fails)
+        for vn, host, late, jobs, fails, zero_jobs, zeros in cur.execute(SQL_JOB_HALVES).fetchall():
+            add(out["job"], vn, late, jobs, fails)
+            add(out["zero"], vn, late, zero_jobs, zeros)
+            add(out["host"].setdefault(host, {}), vn, late, jobs, fails)
+    conn.commit()
+    return out
+
+
+def sustained(h, min_total: int, rate: float, min_half: int) -> bool:
+    """h = [前半の件数, 前半の失敗, 後半の件数, 後半の失敗]。30分の合計で min_total 件以上・rate 以上、
+    かつ前半・後半のどちらでも min_half 件以上・rate 以上（失敗が続いている）。"""
+    ea, ef, la, lf = h
+    return (ef + lf >= min_total and (ef + lf) >= rate * (ea + la)
+            and ef >= min_half and ef >= rate * ea and lf >= min_half and lf >= rate * la)
+
+
+def _fmt_half(h) -> str:
+    ea, ef, la, lf = h
+    return f"{ef + lf}/{ea + la}件（{(ef + lf) / (ea + la):.0%}、前半 {ef}/{ea}・後半 {lf}/{la}）"
+
+
+def vendor_outages(halves: dict, dead_window: dict, rakuma_pause_min, search_block_min=None) -> dict:
+    """{障害キー: 説明}。halves は _half_counts()、dead_window は {仕入先: (試行, 失敗)}（直近60分、在庫チェック＋検索）。
+    同じ仕入先の条件（在庫チェック・検索・検索の0件・成功0件）は1つのキー vendor:<仕入先> にまとめる（メールは1通・1行）。"""
     out = {}
     for vn in VENDORS:
-        att, fail = window.get(vn, (0, 0))
-        if fail >= VENDOR_FAIL_MIN and att and fail / att >= VENDOR_FAIL_RATE:
-            out[f"vendor:{vn}"] = f"{vn}: 直近{VENDOR_WINDOW_MIN}分の失敗 {fail}/{att}件（{fail / att:.0%}）"
+        found = []
+        for src, label in (("check", "個別の在庫チェック"), ("job", "検索ジョブ")):
+            h = halves.get(src, {}).get(vn)
+            if h and sustained(h, VENDOR_FAIL_MIN, VENDOR_FAIL_RATE, VENDOR_HALF_FAIL_MIN):
+                found.append(f"{label}の失敗 {_fmt_half(h)}")
+        z = halves.get("zero", {}).get(vn)
+        if z and sustained(z, SEARCH_ZERO_MIN_JOBS, SEARCH_ZERO_RATE, SEARCH_ZERO_HALF_MIN_JOBS):
+            found.append(f"検索の結果が0件 {_fmt_half(z)}（検索の仕様変更の疑い）")
         datt, dfail = dead_window.get(vn, (0, 0))
-        if f"vendor:{vn}" not in out and datt >= VENDOR_DEAD_MIN_ATTEMPTS and dfail == datt:
-            out[f"vendor:{vn}"] = f"{vn}: 直近{VENDOR_DEAD_WINDOW_MIN}分に {datt}件試して成功0件"
+        if not found and datt >= VENDOR_DEAD_MIN_ATTEMPTS and dfail == datt:
+            found.append(f"直近{VENDOR_DEAD_WINDOW_MIN}分に {datt}件試して成功0件")
+        if found:
+            out[f"vendor:{vn}"] = f"{vn}: " + " / ".join(found)
+    # 台ごと: 障害中の仕入先の失敗は除く（仕入先全体の障害で全部の台が当たって、何行も並ばないように）
+    bad_vendors = {k.split(":", 1)[1] for k in out}
+    for host, by_vendor in sorted(halves.get("host", {}).items()):
+        h = [sum(v[i] for vn, v in by_vendor.items() if vn not in bad_vendors) for i in range(4)]
+        if sustained(h, HOST_FAIL_MIN, HOST_FAIL_RATE, HOST_HALF_FAIL_MIN):
+            out[f"host:{host}"] = f"{host}（台）: 直近{VENDOR_WINDOW_MIN}分の在庫チェック・検索の失敗 {_fmt_half(h)}"
     if rakuma_pause_min is not None and rakuma_pause_min >= RAKUMA_PAUSE_ALERT_MIN:
         out["rakuma_pause"] = f"ラクマ障害による自動停止が {rakuma_pause_min:.0f}分 続いています（mst.control ラクマ障害_開始）"
+    if search_block_min is not None and search_block_min >= SEARCH_BLOCK_ALERT_MIN:
+        out["search_api_block"] = (f"メルカリ検索APIの停止（401・403・429）が {search_block_min:.0f}分 続いています。"
+                                   "停止中は全台が検索ジョブを取りません（mst.control 検索API停止_開始。自動の確認で200なら全台再開）")
     return out
 
 
@@ -343,10 +449,20 @@ def _rakuma_pause_minutes(conn):
     return float(row[0]) if row and row[0] is not None else None
 
 
+def _search_block_minutes(conn):
+    # 値は 2000-01-01 からの秒数（DB の時刻。search_api_block.py 参照）。NULL = 停止していない
+    with conn.cursor() as cur:
+        row = cur.execute("""SELECT DATEDIFF(SECOND, DATEADD(SECOND, TRY_CAST(param_value AS bigint), '2000-01-01'),
+                                    SYSDATETIME()) / 60.0
+                               FROM mst.control WHERE param_key = N'検索API停止_開始' AND param_value IS NOT NULL""").fetchone()
+    conn.commit()
+    return float(row[0]) if row and row[0] is not None else None
+
+
 def check_outages(conn, now: datetime) -> None:
     current = {}
-    current.update(vendor_outages(_vendor_counts(conn, VENDOR_WINDOW_MIN), _vendor_counts(conn, VENDOR_DEAD_WINDOW_MIN),
-                                  _rakuma_pause_minutes(conn)))
+    current.update(vendor_outages(_half_counts(conn), _vendor_counts(conn, VENDOR_DEAD_WINDOW_MIN),
+                                  _rakuma_pause_minutes(conn), _search_block_minutes(conn)))
     with conn.cursor() as cur:
         rows = cur.execute(SQL_EBAY_STATS, EBAY_WINDOW_MIN).fetchall()
     conn.commit()
