@@ -64,6 +64,9 @@ from apps.inventory.daily_check import (
 # 進捗（残件数）がこの時間変化しなければ停止の疑いとして通知する。
 # 実測（2026-10-27）: ジョブ1件の最長は fetch_active 約35分、fetch_sold 約2分。
 STALL_ALERT_MINUTES = 60
+# check_remaining（個別の在庫チェック）は 20分（2026-11-27）。10/28〜11/27 の135回で、件数が動かなかった最長は約1分
+# （1件ずつ減り、工程全体も35〜45分）。検索（fetch_active・fetch_sold）はジョブ1件が最長約35分かかるため60分のまま。
+REMAINING_STALL_ALERT_MINUTES = 20
 POLL_SECONDS = 30
 # 残件数が変わらなくても、この間隔で待機状況をログに残す
 LOG_EVERY_MINUTES = 10
@@ -192,16 +195,35 @@ def search_api_block_note() -> str:
     return "\n" + note if note else ""
 
 
-def wait_until_zero(conn, phase: str, count_fn) -> int:
+# 検索APIの停止（search_api_block）を ops_alerts が既にメールしていれば、同じ障害の進捗停止メールは送らない（2026-11-27）。
+# ops_alerts の状態ファイル（logs/ops_alerts_state.json）の outages[キー].notified を見る。回復のメールも ops_alerts が送る。
+STALL_COVERED_OUTAGE_KEYS = ("search_api_block",)
+OPS_ALERTS_STATE_PATH = PROJECT_ROOT / "logs" / "ops_alerts_state.json"
+
+
+def covered_by_outage_alert() -> str:
+    """進捗停止の原因として、ops_alerts が既に通知している障害があればそのキー。無ければ空文字（読めなくても空文字）。"""
+    try:
+        outages = json.loads(OPS_ALERTS_STATE_PATH.read_text(encoding="utf-8")).get("outages", {})
+    except Exception:
+        return ""
+    for k in STALL_COVERED_OUTAGE_KEYS:
+        if (outages.get(k) or {}).get("notified"):
+            return k
+    return ""
+
+
+def wait_until_zero(conn, phase: str, count_fn, stall_minutes: int = STALL_ALERT_MINUTES) -> int:
     """
     count_fn(conn) が0になるまで待つ。戻り値は待ち始めの件数。
-    件数が STALL_ALERT_MINUTES 変化しなければ1回だけメールし、その後に件数が動いたら回復メールを送る。
+    件数が stall_minutes（既定 STALL_ALERT_MINUTES）変化しなければ1回だけメールし、その後に件数が動いたら回復メールを送る。
     """
     initial = conn.run(count_fn)
     last_count = initial
     last_change = _now()
     last_log = last_change
     stall_notified = False
+    stall_covered = False   # 進捗停止に当たったが、ops_alerts が同じ障害を通知済みのためメールしなかった
     log(f"[{phase}] 完了待ち開始: 残り {initial} 件")
 
     while True:
@@ -218,6 +240,9 @@ def wait_until_zero(conn, phase: str, count_fn) -> int:
                 log(f"[{phase}] 進捗再開: {last_count} → {count} 件")
                 send_mail(f"【回復】在庫管理の進捗が再開しました（{phase}）", msg)
                 stall_notified = False
+            elif stall_covered:
+                log(f"[{phase}] 進捗再開: {last_count} → {count} 件（障害の回復メールは ops_alerts が送る）")
+                stall_covered = False
             last_count = count
             last_change = now
 
@@ -231,9 +256,16 @@ def wait_until_zero(conn, phase: str, count_fn) -> int:
             log(f"[{phase}] 待機中: 残り {count} 件（最後に件数が動いたのは {last_change:%H:%M}）")
             last_log = now
 
-        if not stall_notified and now - last_change >= timedelta(minutes=STALL_ALERT_MINUTES):
+        if not stall_notified and not stall_covered and now - last_change >= timedelta(minutes=stall_minutes):
+            covered = covered_by_outage_alert()
+            if covered:
+                log(f"[{phase}] 進捗停止の疑い: 残り {count} 件が {last_change:%H:%M} から変化なし"
+                    f"（ops_alerts が {covered} を通知済みのためメールしない）")
+                stall_covered = True
+                time.sleep(POLL_SECONDS)
+                continue
             msg = (
-                f"在庫管理の工程「{phase}」で、残り件数が {STALL_ALERT_MINUTES} 分以上変化していません。\n"
+                f"在庫管理の工程「{phase}」で、残り件数が {stall_minutes} 分以上変化していません。\n"
                 f"残り: {count} 件（{last_change:%m/%d %H:%M} から変化なし）\n"
                 "scrape_worker / watchdog / check_remaining の各ワーカーが動いているか確認してください。\n"
                 "在庫管理は待機を続けます（打ち切りません）。進捗が再開したら回復メールを送ります。\n"
@@ -276,7 +308,7 @@ def run_remaining_step(conn, phase: str):
 
     # 待機中に例外で抜けた場合も、ここまでに出た判定不可は必ず通知する
     try:
-        targets = wait_until_zero(conn, phase, count_remaining_targets)
+        targets = wait_until_zero(conn, phase, count_remaining_targets, stall_minutes=REMAINING_STALL_ALERT_MINUTES)
     finally:
         conn.run(notify_undetermined_remaining, started)
 

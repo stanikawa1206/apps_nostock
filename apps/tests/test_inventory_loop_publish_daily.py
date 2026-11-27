@@ -303,7 +303,7 @@ class InventoryMainTest(TempStatusMixin, unittest.TestCase):
             self.calls.append(f"run:{path.name}")
             return self.run_script_codes.get(path.name, (0, ""))
 
-        def wait_until_zero(conn, phase, count_fn):
+        def wait_until_zero(conn, phase, count_fn, **_):
             self.calls.append(f"wait:{phase}:{count_fn.__name__}")
             return 3
 
@@ -388,7 +388,7 @@ class InventoryMainTest(TempStatusMixin, unittest.TestCase):
         self.assertEqual(il.read_status()["state"], "error")
 
     def test_undetermined_is_notified_even_if_remaining_wait_fails(self):
-        def failing_wait(conn, phase, count_fn):
+        def failing_wait(conn, phase, count_fn, **_):
             self.calls.append(f"wait:{phase}")
             if "remaining" in phase:
                 raise RuntimeError("DB切断")
@@ -451,6 +451,10 @@ class WaitUntilZeroTest(TempStatusMixin, unittest.TestCase):
         p = mock.patch.object(il.time, "sleep", side_effect=self.advance)
         p.start()
         self.addCleanup(p.stop)
+        self.ops_state = Path(self._tmp.name) / "ops_alerts_state.json"
+        p = mock.patch.object(il, "OPS_ALERTS_STATE_PATH", self.ops_state)
+        p.start()
+        self.addCleanup(p.stop)
 
     def advance(self, seconds):
         self.clock[0] += timedelta(seconds=seconds)
@@ -484,6 +488,45 @@ class WaitUntilZeroTest(TempStatusMixin, unittest.TestCase):
         fn = self.counts_by_minute([(59 * (i + 1), 10 - i) for i in range(10)])
         self.assertEqual(il.wait_until_zero(FakeConn(), "完全 check_remaining", fn), 10)
         self.assertEqual(self.mails, [])
+
+    def test_remaining_stall_alert_after_20_minutes(self):
+        # 個別の在庫チェックは20分止まれば通知（2026-11-27）。19分30秒で動けば通知しない
+        fn = self.counts_by_minute([(19.5, 5), (21, 4)])
+        il.wait_until_zero(FakeConn(), "完全 check_remaining", fn, stall_minutes=il.REMAINING_STALL_ALERT_MINUTES)
+        self.assertEqual(self.mails, [])
+        fn = self.counts_by_minute([(20.5, 5)])
+        il.wait_until_zero(FakeConn(), "完全 check_remaining", fn, stall_minutes=il.REMAINING_STALL_ALERT_MINUTES)
+        self.assertEqual([s for s, _ in self.mails], ["【要確認】在庫管理の進捗が停止しています（完全 check_remaining）",
+                                                     "【回復】在庫管理の進捗が再開しました（完全 check_remaining）"])
+        self.assertIn("20 分以上", self.mails[0][1])
+
+    def test_stall_mail_skipped_when_search_block_already_notified(self):
+        # 検索APIの停止を ops_alerts が通知済みなら、同じ障害の進捗停止・回復メールは送らない（ログだけ）
+        self.ops_state.write_text(json.dumps({"outages": {"search_api_block": {"notified": "2026-11-01T09:30:00"}}}),
+                                  encoding="utf-8")
+        fn = self.counts_by_minute([(90, 10), (120, 9)])
+        il.wait_until_zero(FakeConn(), "完全 fetch_active", fn)
+        self.assertEqual(self.mails, [])
+
+    def test_stall_mail_sent_when_block_not_notified(self):
+        self.ops_state.write_text(json.dumps({"outages": {"search_api_block": {"notified": None}}}), encoding="utf-8")
+        fn = self.counts_by_minute([(90, 10), (120, 9)])
+        il.wait_until_zero(FakeConn(), "完全 fetch_active", fn)
+        self.assertEqual(len(self.mails), 2)
+
+    def test_remaining_step_uses_20_minutes(self):
+        seen = {}
+        def fake_wait(conn, phase, count_fn, stall_minutes=il.STALL_ALERT_MINUTES):
+            seen[phase] = stall_minutes
+            return 0
+        with mock.patch.object(il, "wait_until_zero", fake_wait), \
+                mock.patch.object(il, "reset_remaining_flags", lambda c: None), \
+                mock.patch.object(il, "launch_remaining_workers", lambda: None), \
+                mock.patch.object(il, "notify_undetermined_remaining", lambda c, s: None), \
+                mock.patch.object(il, "notify_no_preset_listings", lambda c: None):
+            il.run_remaining_step(FakeConn(), "完全 check_remaining")
+        self.assertEqual(seen, {"完全 check_remaining": 20})
+        self.assertEqual(il.STALL_ALERT_MINUTES, 60)  # 検索は60分のまま
 
     def test_stall_alert_boundary(self):
         # 59分30秒で件数が動けば通知しない、60分ちょうど止まれば通知
